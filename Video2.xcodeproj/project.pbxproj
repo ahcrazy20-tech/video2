@@ -1,0 +1,323 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000100000001 /* Video2App.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000001 /* Video2App.swift */; };
+		A10000000000000100000002 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000002 /* Models.swift */; };
+		A10000000000000100000003 /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000003 /* LibraryStore.swift */; };
+		A10000000000000100000004 /* ExtractorScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000004 /* ExtractorScript.swift */; };
+		A10000000000000100000005 /* HLSDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000005 /* HLSDownloader.swift */; };
+		A10000000000000100000006 /* DownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000006 /* DownloadManager.swift */; };
+		A10000000000000100000007 /* BrowserModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000007 /* BrowserModel.swift */; };
+		A10000000000000100000008 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000008 /* Theme.swift */; };
+		A10000000000000100000009 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000009 /* RootView.swift */; };
+		A1000000000000010000000A /* WebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000000A /* WebView.swift */; };
+		A1000000000000010000000B /* BrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000000B /* BrowserView.swift */; };
+		A1000000000000010000000C /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000000C /* LibraryView.swift */; };
+		A1000000000000010000000D /* DownloadsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000000D /* DownloadsView.swift */; };
+		A1000000000000010000000E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000000E /* SettingsView.swift */; };
+		A1000000000000010000000F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000000F /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		B10000000000000100000001 /* Video2App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Video2App.swift; sourceTree = "<group>"; };
+		B10000000000000100000002 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		B10000000000000100000003 /* LibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStore.swift; sourceTree = "<group>"; };
+		B10000000000000100000004 /* ExtractorScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtractorScript.swift; sourceTree = "<group>"; };
+		B10000000000000100000005 /* HLSDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HLSDownloader.swift; sourceTree = "<group>"; };
+		B10000000000000100000006 /* DownloadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManager.swift; sourceTree = "<group>"; };
+		B10000000000000100000007 /* BrowserModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserModel.swift; sourceTree = "<group>"; };
+		B10000000000000100000008 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		B10000000000000100000009 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		B1000000000000010000000A /* WebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebView.swift; sourceTree = "<group>"; };
+		B1000000000000010000000B /* BrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserView.swift; sourceTree = "<group>"; };
+		B1000000000000010000000C /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+		B1000000000000010000000D /* DownloadsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadsView.swift; sourceTree = "<group>"; };
+		B1000000000000010000000E /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		B1000000000000010000000F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B10000000000000100000010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B10000000000000100000011 /* Video2.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Video2.entitlements; sourceTree = "<group>"; };
+		B10000000000000100000012 /* Video2.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Video2.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		C10000000000000100000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		D10000000000000100000001 = {
+			isa = PBXGroup;
+			children = (
+				D10000000000000100000002 /* Video2 */,
+				D10000000000000100000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		D10000000000000100000002 /* Video2 */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000100000001 /* Video2App.swift */,
+				D10000000000000100000004 /* Models */,
+				D10000000000000100000005 /* Services */,
+				D10000000000000100000006 /* Views */,
+				B1000000000000010000000F /* Assets.xcassets */,
+				B10000000000000100000010 /* Info.plist */,
+				B10000000000000100000011 /* Video2.entitlements */,
+			);
+			path = Video2;
+			sourceTree = "<group>";
+		};
+		D10000000000000100000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000100000012 /* Video2.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		D10000000000000100000004 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000100000002 /* Models.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		D10000000000000100000005 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000100000003 /* LibraryStore.swift */,
+				B10000000000000100000004 /* ExtractorScript.swift */,
+				B10000000000000100000005 /* HLSDownloader.swift */,
+				B10000000000000100000006 /* DownloadManager.swift */,
+				B10000000000000100000007 /* BrowserModel.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		D10000000000000100000006 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000100000008 /* Theme.swift */,
+				B10000000000000100000009 /* RootView.swift */,
+				B1000000000000010000000A /* WebView.swift */,
+				B1000000000000010000000B /* BrowserView.swift */,
+				B1000000000000010000000C /* LibraryView.swift */,
+				B1000000000000010000000D /* DownloadsView.swift */,
+				B1000000000000010000000E /* SettingsView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		E10000000000000100000001 /* Video2 */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F10000000000000100000002 /* Build configuration list for PBXNativeTarget "Video2" */;
+			buildPhases = (
+				E10000000000000100000002 /* Sources */,
+				C10000000000000100000001 /* Frameworks */,
+				E10000000000000100000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Video2;
+			productName = Video2;
+			productReference = B10000000000000100000012 /* Video2.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E10000000000000100000000 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1430;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					E10000000000000100000001 = {
+						CreatedOnToolsVersion = 14.3;
+					};
+				};
+			};
+			buildConfigurationList = F10000000000000100000001 /* Build configuration list for PBXProject "Video2" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = ar;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				ar,
+				en,
+				Base,
+			);
+			mainGroup = D10000000000000100000001;
+			productRefGroup = D10000000000000100000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E10000000000000100000001 /* Video2 */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E10000000000000100000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000000000000010000000F /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		E10000000000000100000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000100000001 /* Video2App.swift in Sources */,
+				A10000000000000100000002 /* Models.swift in Sources */,
+				A10000000000000100000003 /* LibraryStore.swift in Sources */,
+				A10000000000000100000004 /* ExtractorScript.swift in Sources */,
+				A10000000000000100000005 /* HLSDownloader.swift in Sources */,
+				A10000000000000100000006 /* DownloadManager.swift in Sources */,
+				A10000000000000100000007 /* BrowserModel.swift in Sources */,
+				A10000000000000100000008 /* Theme.swift in Sources */,
+				A10000000000000100000009 /* RootView.swift in Sources */,
+				A1000000000000010000000A /* WebView.swift in Sources */,
+				A1000000000000010000000B /* BrowserView.swift in Sources */,
+				A1000000000000010000000C /* LibraryView.swift in Sources */,
+				A1000000000000010000000D /* DownloadsView.swift in Sources */,
+				A1000000000000010000000E /* SettingsView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		F20000000000000100000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		F20000000000000100000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		F20000000000000100000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Video2/Video2.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Video2/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "فيديو ٢";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ahcrazy.video2;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		F20000000000000100000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Video2/Video2.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Video2/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "فيديو ٢";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ahcrazy.video2;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		F10000000000000100000001 /* Build configuration list for PBXProject "Video2" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F20000000000000100000001 /* Debug */,
+				F20000000000000100000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F10000000000000100000002 /* Build configuration list for PBXNativeTarget "Video2" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F20000000000000100000003 /* Debug */,
+				F20000000000000100000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = E10000000000000100000000 /* Project object */;
+}
