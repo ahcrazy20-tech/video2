@@ -1,0 +1,60 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    name: Unsigned IPA for TrollStore
+    runs-on: macos-13
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_15.2.app || sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Build (no code sign)
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project Video2.xcodeproj \
+            -scheme Video2 \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath derived \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            PRODUCT_BUNDLE_IDENTIFIER=com.ahcrazy.video2 \
+            IPHONEOS_DEPLOYMENT_TARGET=16.4 \
+            ONLY_ACTIVE_ARCH=NO \
+            build
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          APP=$(find derived/Build/Products -name "Video2.app" -type d | head -n 1)
+          test -n "$APP"
+          echo "APP=$APP"
+          rm -rf Payload Video2.ipa
+          mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry Video2.ipa Payload
+          ls -lh Video2.ipa
+          unzip -l Video2.ipa | head
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Video2-TrollStore
+          path: Video2.ipa
+          if-no-files-found: error
