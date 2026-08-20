@@ -46,6 +46,14 @@ struct WebView: UIViewRepresentable {
             }
         }
 
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            if AdBlock.isEnabled, AdBlock.hostIsAd(navigationAction.request.url?.host) {
+                decisionHandler(.cancel)
+                return
+            }
+            decisionHandler(.allow)
+        }
+
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             tab.isLoading = true
         }
@@ -53,6 +61,9 @@ struct WebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             tab.isLoading = false
             webView.evaluateJavaScript(ExtractorScript.source, completionHandler: nil)
+            if AdBlock.isEnabled {
+                webView.evaluateJavaScript(AdBlock.cosmeticJS, completionHandler: nil)
+            }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -60,6 +71,9 @@ struct WebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+            if AdBlock.isEnabled, AdBlock.hostIsAd(navigationAction.request.url?.host) {
+                return nil
+            }
             if navigationAction.targetFrame == nil {
                 webView.load(navigationAction.request)
             }

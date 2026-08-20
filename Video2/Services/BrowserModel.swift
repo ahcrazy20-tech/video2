@@ -19,11 +19,11 @@ final class BrowserTab: Identifiable, ObservableObject {
         cfg.allowsPictureInPictureMediaPlayback = true
         cfg.preferences.javaScriptCanOpenWindowsAutomatically = true
         let uc = cfg.userContentController
-        let js = WKUserScript(source: ExtractorScript.source, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
-        uc.addUserScript(js)
+        AdBlock.attach(to: uc)
         webView = WKWebView(frame: .zero, configuration: cfg)
         webView.allowsBackForwardNavigationGestures = true
         webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Mobile/15E148 Safari/604.1"
+        AdBlock.applyRules(to: webView)
     }
 
     func load(_ raw: String) {

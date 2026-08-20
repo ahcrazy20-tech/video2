@@ -22,6 +22,8 @@
 		A1000000000000010000000D /* DownloadsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000000D /* DownloadsView.swift */; };
 		A1000000000000010000000E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000000E /* SettingsView.swift */; };
 		A1000000000000010000000F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000000F /* Assets.xcassets */; };
+		A10000000000000100000010 /* AdBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000013 /* AdBlock.swift */; };
+		A10000000000000100000011 /* adblock-rules.json in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000014 /* adblock-rules.json */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -43,6 +45,8 @@
 		B10000000000000100000010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B10000000000000100000011 /* Video2.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Video2.entitlements; sourceTree = "<group>"; };
 		B10000000000000100000012 /* Video2.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Video2.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000100000013 /* AdBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdBlock.swift; sourceTree = "<group>"; };
+		B10000000000000100000014 /* adblock-rules.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "adblock-rules.json"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -72,6 +76,7 @@
 				D10000000000000100000005 /* Services */,
 				D10000000000000100000006 /* Views */,
 				B1000000000000010000000F /* Assets.xcassets */,
+				D10000000000000100000007 /* Resources */,
 				B10000000000000100000010 /* Info.plist */,
 				B10000000000000100000011 /* Video2.entitlements */,
 			);
@@ -102,6 +107,7 @@
 				B10000000000000100000005 /* HLSDownloader.swift */,
 				B10000000000000100000006 /* DownloadManager.swift */,
 				B10000000000000100000007 /* BrowserModel.swift */,
+				B10000000000000100000013 /* AdBlock.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -118,6 +124,14 @@
 				B1000000000000010000000E /* SettingsView.swift */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		D10000000000000100000007 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000100000014 /* adblock-rules.json */,
+			);
+			path = Resources;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -180,6 +194,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000000000000010000000F /* Assets.xcassets in Resources */,
+				A10000000000000100000011 /* adblock-rules.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -197,6 +212,7 @@
 				A10000000000000100000005 /* HLSDownloader.swift in Sources */,
 				A10000000000000100000006 /* DownloadManager.swift in Sources */,
 				A10000000000000100000007 /* BrowserModel.swift in Sources */,
+				A10000000000000100000010 /* AdBlock.swift in Sources */,
 				A10000000000000100000008 /* Theme.swift in Sources */,
 				A10000000000000100000009 /* RootView.swift in Sources */,
 				A1000000000000010000000A /* WebView.swift in Sources */,

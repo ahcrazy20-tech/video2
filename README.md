@@ -10,12 +10,14 @@
 - جهاز iPhone 11 بـ iOS 16.4 و TrollStore
 - Bundle ID: `com.ahcrazy.video2`
 
-## البناء والتثبيت
+## البناء بدون ماك (GitHub Actions)
 
-1. افتح `Video2.xcodeproj` في Xcode.
-2. Signing: Personal Team أو أي شهادة؛ لـ TrollStore يمكن تعطيل التوقيع ثم التوقيع بـ `ldid` مع `Video2/Video2.entitlements`.
-3. Product → Archive → Distribute → Export IPA.
-4. انقل الـ IPA إلى الجهاز وثبّته من TrollStore.
+1. ادفع الكود إلى GitHub (أو شغّل workflow يدوياً).
+2. افتح المستودع → **Actions** → **Build IPA**.
+3. بعد نجاح المهمة نزّل الأداة `Video2-TrollStore` وفيها `Video2.ipa`.
+4. انقل الملف إلى الآيفون وثبّته من TrollStore.
+
+الملف: `.github/workflows/build.yml` يعمل على `macos-13` بدون شهادة تطوير.
 
 أوامر تقريبية بعد `xcodebuild`:
 

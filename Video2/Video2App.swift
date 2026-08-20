@@ -10,6 +10,7 @@ struct Video2App: App {
     init() {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         try? AVAudioSession.sharedInstance().setActive(true)
+        AdBlock.compileIfNeeded()
     }
 
     var body: some Scene {
