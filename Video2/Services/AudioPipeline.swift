@@ -54,10 +54,15 @@ enum AudioPipeline {
         let out = FileManager.default.temporaryDirectory
             .appendingPathComponent("v2-hls-\(UUID().uuidString).mp4")
         try? FileManager.default.removeItem(at: out)
-        do {
-            try await session.export(to: out, as: .mp4)
-        } catch {
-            throw AudioPipelineError.exportFailed(error.localizedDescription)
+         session.outputURL = out
+        session.outputFileType = .mp4
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            session.exportAsynchronously {
+                cont.resume()
+            }
+        }
+        guard session.status == .completed else {
+            throw AudioPipelineError.exportFailed(session.error?.localizedDescription ?? "فشل غير معروف")
         }
         guard FileManager.default.fileExists(atPath: out.path) else {
             throw AudioPipelineError.exportFailed("الملف الناتج فارغ")
