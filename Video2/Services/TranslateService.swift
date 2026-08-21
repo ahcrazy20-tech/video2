@@ -210,14 +210,14 @@ enum TranslateService {
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let lines = obj["lines"] as? [[String: Any]] {
             for l in lines {
-                if let n = HTTP.num(l["i"]), let i = Int(n), let t = l["t"] as? String {
+                if let n = HTTP.num(l["i"]), let i = Int(exactly: n), let t = l["t"] as? String {
                     map[i] = t.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
             }
         } else if let data = cleaned.data(using: .utf8),
                   let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
             for l in arr {
-                if let n = HTTP.num(l["i"]), let i = Int(n), let t = l["t"] as? String {
+                if let n = HTTP.num(l["i"]), let i = Int(exactly: n), let t = l["t"] as? String {
                     map[i] = t.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
             }
