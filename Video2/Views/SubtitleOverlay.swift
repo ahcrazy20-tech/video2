@@ -18,8 +18,10 @@ struct SubtitleOverlay: View {
                 Text(line)
                     .font(.system(size: CGFloat(fontSize), weight: .semibold))
                     .multilineTextAlignment(.center)
+                    .lineLimit(nil)
                     .lineSpacing(4)
                     .foregroundColor(.white)
+                    .environment(\.layoutDirection, startsRTL(line) ? .rightToLeft : .leftToRight)
             }
         }
         .padding(.horizontal, 14)
@@ -32,6 +34,20 @@ struct SubtitleOverlay: View {
         .padding(.horizontal, 24)
         .allowsHitTesting(false)
         .animation(.easeInOut(duration: 0.12), value: text)
+    }
+
+    private func startsRTL(_ s: String) -> Bool {
+        for scalar in s.unicodeScalars {
+            switch scalar.value {
+            case 0x0600...0x08FF, 0xFB50...0xFDFF, 0xFE70...0xFEFF:
+                return true
+            case 0x0041...0x005A, 0x0061...0x007A, 0x0030...0x0039:
+                return false
+            default:
+                continue
+            }
+        }
+        return false
     }
 }
 

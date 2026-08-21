@@ -136,7 +136,7 @@ struct TranslationJobRow: View {
                     .font(.caption)
                 }
             } else {
-                Text(subtitleTextValue)
+                BidiText(text: subtitleTextValue)
                     .font(.caption)
                     .foregroundStyle(job.state == .failed ? Color.red : Color.secondary)
             }

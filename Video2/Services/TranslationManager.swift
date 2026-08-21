@@ -70,6 +70,8 @@ final class TranslationManager: ObservableObject {
         switch kind {
         case .auto:
             if KeychainStore.has("assemblyai") { return .assemblyai }
+            if KeychainStore.has("sttai") { return .sttai }
+            if KeychainStore.has("speechmatics") { return .speechmatics }
             if KeychainStore.has("groq") { return .groq }
             return .groq
         default:
@@ -247,7 +249,7 @@ final class TranslationManager: ObservableObject {
                 setJob(jobID) { $0.state = .extracting; $0.progress = 0.02 }
                 saveIndex()
 
-                let singleFile = job.sttProvider == .assemblyai
+                let singleFile = job.sttProvider == .assemblyai || job.sttProvider == .sttai || job.sttProvider == .speechmatics
                 let (chunks, dur) = try await AudioPipeline.extractChunks(
                     from: video.localURL,
                     into: dir,
@@ -306,6 +308,46 @@ final class TranslationManager: ObservableObject {
                     detected = result.detectedLang
                     setJob(jobID) { j in
                         j.assemblyTranscriptID = tid
+                        j.detectedLang = detected
+                        j.doneChunks = 1
+                        j.totalChunks = 1
+                        j.cueCount = allCues.count
+                        j.errorMessage = nil
+                        j.progress = 0.72
+                    }
+                } else if job.sttProvider == .sttai {
+                    let audioFile = dir.appendingPathComponent("chunks/audio-full.m4a")
+                    guard FileManager.default.fileExists(atPath: audioFile.path) else {
+                        throw AudioPipelineError.writerFailed("ملف الصوت المجمّع مفقود — أعد المهمة")
+                    }
+                    let key = Self.sttHasKey(.sttai) ?? ""
+                    let result = try await STTService.sttaiTranscribe(
+                        audioURL: audioFile,
+                        language: job.sourceLang,
+                        apiKey: key)
+                    allCues = SubtitleCodec.normalize(SubtitleCodec.sortedAndMerged(result.cues))
+                    detected = result.detectedLang
+                    setJob(jobID) { j in
+                        j.detectedLang = detected
+                        j.doneChunks = 1
+                        j.totalChunks = 1
+                        j.cueCount = allCues.count
+                        j.errorMessage = nil
+                        j.progress = 0.72
+                    }
+                } else if job.sttProvider == .speechmatics {
+                    let audioFile = dir.appendingPathComponent("chunks/audio-full.m4a")
+                    guard FileManager.default.fileExists(atPath: audioFile.path) else {
+                        throw AudioPipelineError.writerFailed("ملف الصوت المجمّع مفقود — أعد المهمة")
+                    }
+                    let key = Self.sttHasKey(.speechmatics) ?? ""
+                    let result = try await STTService.speechmaticsTranscribe(
+                        audioURL: audioFile,
+                        language: job.sourceLang,
+                        apiKey: key)
+                    allCues = SubtitleCodec.normalize(SubtitleCodec.sortedAndMerged(result.cues))
+                    detected = result.detectedLang
+                    setJob(jobID) { j in
                         j.detectedLang = detected
                         j.doneChunks = 1
                         j.totalChunks = 1

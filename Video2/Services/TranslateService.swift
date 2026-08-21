@@ -41,6 +41,8 @@ enum TranslateService {
         case .groqLLM:
             return try await groqBatch(batch, contextTail: contextTail, source: source, target: target,
                                        videoTitle: videoTitle)
+        case .deepL:
+            return try await deepLBatch(batch, source: source, target: target)
         case .auto:
             throw APIError(status: 0, body: "لا يوجد مزود ترجمة مفعّل")
         }
@@ -52,6 +54,7 @@ enum TranslateService {
         case .auto:
             if KeychainStore.has("gemini") { return .gemini }
             if KeychainStore.has("groq") { return .groqLLM }
+            if KeychainStore.has("deepl") { return .deepL }
             return .auto
         default:
             return provider
@@ -66,7 +69,8 @@ enum TranslateService {
     static func providerName(_ provider: TranslatorKind) -> String {
         switch resolved(provider: provider) {
         case .gemini: return "Gemini"
-        case .groqLLM: return "Groq Llama"
+        case .groqLLM: return "Groq LLM"
+        case .deepL: return "DeepL"
         case .auto: return "—"
         }
     }
@@ -164,7 +168,7 @@ enum TranslateService {
             throw APIError(status: 401, body: "أدخل مفتاح Groq من الإعدادات")
         }
         let body: [String: Any] = [
-            "model": "llama-3.3-70b-versatile",
+            "model": "openai/gpt-oss-120b",
             "temperature": 0.15,
             "response_format": ["type": "json_object"],
             "messages": [
@@ -192,6 +196,51 @@ enum TranslateService {
             throw APIError(status: 0, body: "استجابة Groq فارغة")
         }
         return parseLines(rawJSON: text, batch: batch)
+    }
+
+    // MARK: DeepL
+
+    private static func deepLBatch(_ batch: Batch,
+                                   source: SubLang,
+                                   target: SubLang) async throws -> [String] {
+        guard let key = KeychainStore.get("deepl") else {
+            throw APIError(status: 401, body: "أدخل مفتاح DeepL من الإعدادات")
+        }
+        let url = "https://api-free.deepl.com/v2/translate"
+        var texts = batch.texts
+        // DeepL API expects uppercase 2-letter target lang codes
+        let targetCode = target.rawValue.uppercased()
+        var body: [String: Any] = [
+            "text": texts,
+            "target_lang": targetCode
+        ]
+        if source != .auto {
+            body["source_lang"] = source.rawValue.uppercased()
+        }
+        let payload = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await HTTP.withRetry(attempts: 3, baseDelay: 2) {
+            try await HTTP.request("POST", url,
+                                   headers: [
+                                    "Authorization": "DeepL-Auth-Key \(key)",
+                                    "Content-Type": "application/json"
+                                   ],
+                                   body: payload,
+                                   timeout: 180)
+        }
+        let json = HTTP.json(from: data)
+        guard let translations = json["translations"] as? [[String: Any]] else {
+            throw APIError(status: 0, body: "استجابة DeepL غير متوقعة")
+        }
+        var result: [String] = []
+        for t in translations {
+            let translatedText = (t["text"] as? String) ?? ""
+            result.append(translatedText)
+        }
+        // إذا كان عدد النتائج أقل من المدخلات، نملأ بالباقي فارغاً
+        while result.count < batch.texts.count {
+            result.append("")
+        }
+        return Array(result.prefix(batch.texts.count))
     }
 
     // MARK: تحليل الاستجابة
