@@ -105,7 +105,7 @@ enum SubLang: String, CaseIterable, Codable, Identifiable {
 // MARK: - مزودو التفريغ الصوتي (Speech-to-Text)
 
 enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
-    case auto, groq, assemblyai
+    case auto, groq, assemblyai, sttai, speechmatics
     var id: String { rawValue }
 
     var titleAR: String {
@@ -113,6 +113,8 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
         case .auto: return "تلقائي (الأفضل المتاح)"
         case .groq: return "Groq Whisper (سريع جداً)"
         case .assemblyai: return "AssemblyAI (الأقوى للطويل)"
+        case .sttai: return "STT.ai (600 دقيقة مجاناً/شهر)"
+        case .speechmatics: return "Speechmatics (480 دقيقة مجاناً/شهر)"
         }
     }
 
@@ -124,6 +126,10 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
             return "whisper-large-v3-turbo — أسرع وأرخص خيار، مع تقطيع الفيديو لأجزاء متوازية. مناسب للفيديوهات حتى 5 ساعات وأكثر."
         case .assemblyai:
             return "ملف واحد حتى 10 ساعات بدون تقطيع، أعلى دقة في التوقيتات. يحتاج مفتاحاً ورصيداً."
+        case .sttai:
+            return "STT.ai Enhanced Whisper — 600 دقيقة شهرية مجانية + 100 دقيقة API. بديل قوي وسريع."
+        case .speechmatics:
+            return "Speechmatics — 480 دقيقة مجانية شهرياً، دقة عالية لـ 55+ لغة مع دعم اللهجات."
         }
     }
 
@@ -132,6 +138,8 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
         case .auto: return nil
         case .groq: return "groq"
         case .assemblyai: return "assemblyai"
+        case .sttai: return "sttai"
+        case .speechmatics: return "speechmatics"
         }
     }
 }
@@ -139,14 +147,15 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
 // MARK: - مزودو الترجمة النصية
 
 enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
-    case auto, gemini, groqLLM
+    case auto, gemini, groqLLM, deepL
     var id: String { rawValue }
 
     var titleAR: String {
         switch self {
         case .auto: return "تلقائي (الأفضل المتاح)"
         case .gemini: return "Gemini (ترجمة سياقية)"
-        case .groqLLM: return "Groq Llama (سريع)"
+        case .groqLLM: return "Groq LLM (GPT-OSS 120B — سريع جداً)"
+        case .deepL: return "DeepL (500K حرف/شهر مجاناً)"
         }
     }
 
@@ -157,7 +166,9 @@ enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
         case .gemini:
             return "ترجمة طبيعية تفهم السياق والمصطلحات، مناسبة للهندية والإنجليزية إلى العربية."
         case .groqLLM:
-            return "Llama 3.3 70B عبر Groq — سريع جداً بنفس مفتاح التفريغ."
+            return "GPT-OSS 120B عبر Groq (بديل Llama 3.3 المنتهي) — سريع جداً بنفس مفتاح التفريغ."
+        case .deepL:
+            return "DeepL — 500 ألف حرف/شهر مجاناً، جودة عالية للترجمة السياقية. يحتاج مفتاح DeepL (deepl)."
         }
     }
 
@@ -166,6 +177,7 @@ enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
         case .auto: return nil
         case .gemini: return "gemini"
         case .groqLLM: return "groq"
+        case .deepL: return "deepl"
         }
     }
 }

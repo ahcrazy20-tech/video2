@@ -385,6 +385,98 @@ enum STTService {
         return cues
     }
 
+    // MARK: STT.ai (تفريغ سريع — 600 دقيقة مجاناً/شهر + 100 دقيقة API)
+
+    static func sttaiTranscribe(audioURL: URL,
+                                language: SubLang,
+                                apiKey: String) async throws -> STTResult {
+        let (upData, _) = try await HTTP.withRetry(attempts: 3) {
+            try await HTTP.uploadFile("https://api.stt.ai/v1/upload",
+                                      fileURL: audioURL,
+                                      headers: ["Authorization": "Bearer \(apiKey)",
+                                                "Content-Type": "audio/mpeg"])
+        }
+        guard let uploadURL = HTTP.json(from: upData)["url"] as? String else {
+            throw APIError(status: 0, body: "استجابة رفع STT.ai غير متوقعة")
+        }
+        var body: [String: Any] = [
+            "audio_url": uploadURL,
+            "language": language.bcp47 ?? language.rawValue,
+            "model": "whisper-large-v3"
+        ]
+        let payload = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await HTTP.withRetry(attempts: 3) {
+            try await HTTP.request("POST", "https://api.stt.ai/v1/transcribe",
+                                   headers: ["Authorization": "Bearer \(apiKey)",
+                                             "Content-Type": "application/json"],
+                                   body: payload,
+                                   timeout: 300)
+        }
+        let json = HTTP.json(from: data)
+        var cues: [SubCue] = []
+        if let results = json["results"] as? [[String: Any]] {
+            for r in results {
+                if let text = r["text"] as? String, !text.isEmpty {
+                    cues.append(SubCue(id: cues.count, start: 0, end: 10, text: text, translated: nil))
+                }
+            }
+        }
+        return STTResult(cues: cues, detectedLang: language.rawValue)
+    }
+
+    // MARK: Speechmatics (480 دقيقة مجاناً/شهر — دقة عالية لـ 55+ لغة)
+
+    static func speechmaticsTranscribe(audioURL: URL,
+                                       language: SubLang,
+                                       apiKey: String) async throws -> STTResult {
+        // 1) إنشاء مهمة
+        var body: [String: Any] = [
+            "audio_url": audioURL.absoluteString,
+            "language": language.bcp47 ?? language.rawValue,
+            "model": "enhanced"
+        ]
+        let payload = try JSONSerialization.data(withJSONObject: body)
+        let (jobData, _) = try await HTTP.withRetry(attempts: 2) {
+            try await HTTP.request("POST", "https://asr.api.speechmatics.com/v2/jobs/",
+                                   headers: ["api-key": apiKey,
+                                             "Content-Type": "application/json"],
+                                   body: payload,
+                                   timeout: 60)
+        }
+        let jobJson = HTTP.json(from: jobData)
+        guard let jobID = jobJson["id"] as? String else {
+            throw APIError(status: 0, body: "تعذر إنشاء مهمة Speechmatics")
+        }
+        // 2) الاستعلام الدوري (تبسيط: ننتظر حتى يكتمل)
+        let start = Date()
+        while true {
+            if Task.isCancelled { throw CancellationError() }
+            let (data, _) = try await HTTP.withRetry(attempts: 3, baseDelay: 3) {
+                try await HTTP.request("GET", "https://asr.api.speechmatics.com/v2/jobs/\(jobID)/transcript",
+                                       headers: ["api-key": apiKey], timeout: 60)
+            }
+            let json = HTTP.json(from: data)
+            if let jobStatus = json["job"] as? [String: Any],
+               let status = jobStatus["status"] as? String, status == "done" {
+                var cues: [SubCue] = []
+                if let results = json["results"] as? [[String: Any]] {
+                    for r in results {
+                        if let alternatives = r["alternatives"] as? [[String: Any]],
+                           let best = alternatives.first,
+                           let text = best["content"] as? String, !text.isEmpty {
+                            cues.append(SubCue(id: cues.count, start: 0, end: 10, text: text, translated: nil))
+                        }
+                    }
+                }
+                return STTResult(cues: cues, detectedLang: language.rawValue)
+            }
+            if Date().timeIntervalSince(start) > 600 {
+                throw APIError(status: 0, body: "انتهت مدة الانتظار لـ Speechmatics")
+            }
+            try await Task.sleep(nanoseconds: 5_000_000_000)
+        }
+    }
+
     // MARK: بناء Multipart
 
     private static func multipart(fields: [String: String],
