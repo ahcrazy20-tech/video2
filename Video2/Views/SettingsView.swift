@@ -56,6 +56,18 @@ struct SettingsView: View {
                               placeholder: "من لوحة التحكم",
                               keyID: "assemblyai",
                               hint: "الخيار الأقوى للفيديوهات الطويلة (حتى 10 ساعات بملف واحد) — رصيد تجريبي عند التسجيل.")
+                    APIKeyRow(title: "مفتاح DeepL",
+                              placeholder: "DeepL-...",
+                              keyID: "deepl",
+                              hint: "لترجمة نصية عالية الجودة — 500 ألف حرف/شهر مجاناً.")
+                    APIKeyRow(title: "مفتاح STT.ai",
+                              placeholder: "sttai_...",
+                              keyID: "sttai",
+                              hint: "تفريغ صوتي — 600 دقيقة شهرية مجانية + 100 دقيقة API.")
+                    APIKeyRow(title: "مفتاح Speechmatics",
+                              placeholder: "مفتاح Speechmatics API",
+                              keyID: "speechmatics",
+                              hint: "تفريغ صوتي — 480 دقيقة مجانية شهرياً لدقة عالية بأكثر من 55 لغة.")
                 } header: {
                     Text("مفاتيح ترجمة الفيديو")
                 } footer: {
@@ -123,15 +135,12 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Section {
-                    howBullet("DeepL", "500 ألف حرف/شهر مجاناً للترجمة — جودة عالية جداً للعربية والإنجليزية.")
-                    howBullet("STT.ai", "600 دقيقة شهرية مجانية للتفريغ + 100 دقيقة API — بديل قوي لـ Whisper.")
-                    howBullet("Speechmatics", "480 دقيقة مجانية شهرياً للتفريغ الصوتي — دقة عالية لأكثر من 55 لغة.")
                     howBullet("Edge TTS", "مجاناً بالكامل بدون مفتاح — نص إلى كلام عبر Microsoft Edge (مجتمع مفتوح).")
                     howBullet("OpenL Translate Speech", "مجاني (1500 حرف/مرة) — ترجمة صوتية مباشرة من فيديو إلى SRT بدون تفريغ منفصل.")
                 } header: {
-                    Text("APIs مجانية جديدة (2026)")
+                    Text("خدمات قادمة قريباً")
                 } footer: {
-                    Text("جميع هذه الخدمات تقدم طبقة مجانية سخية. يمكن إضافتها مستقبلاً كمزودين إضافيين في التطبيق.")
+                    Text("DeepL و STT.ai و Speechmatics أُضيفت كمفاتيح في الأعلى. هذه الخدمات المتبقية يمكن إضافتها مستقبلاً كمزودين إضافيين.")
                         .font(.caption2)
                 }
 
@@ -275,6 +284,15 @@ enum KeyTester {
         case "assemblyai":
             url = "https://api.assemblyai.com/v2/transcript?limit=1"
             headers = ["Authorization": key]
+        case "deepl":
+            url = "https://api-free.deepl.com/v2/usage"
+            headers = ["Authorization": "DeepL-Auth-Key \(key)"]
+        case "sttai":
+            url = "https://api.stt.ai/v1/user"
+            headers = ["Authorization": "Bearer \(key)"]
+        case "speechmatics":
+            url = "https://asr.api.speechmatics.com/v2/user"
+            headers = ["api-key": key]
         default:
             return "⚠️ مزود غير معروف"
         }
