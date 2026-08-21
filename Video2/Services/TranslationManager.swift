@@ -12,7 +12,7 @@ final class TranslationManager: ObservableObject {
     private var running = false
     private var currentTask: Task<Void, Never>? = nil
 
-    static let root = LibraryStore.documents.appendingPathComponent("Translations", isDirectory: true)
+    nonisolated static let root = LibraryStore.documents.appendingPathComponent("Translations", isDirectory: true)
 
     // MARK: دورة الحياة
 
@@ -98,7 +98,7 @@ final class TranslationManager: ObservableObject {
 
         let resolvedTranslator = TranslateService.resolved(provider: translator)
 
-        var job = TranslationJob(id: UUID(),
+        let job = TranslationJob(id: UUID(),
                                  videoID: video.id,
                                  videoTitle: video.title,
                                  isHLS: video.kind == .hls,
@@ -548,7 +548,7 @@ final class TranslationManager: ObservableObject {
         return map[c] ?? c
     }
 
-    static func subtitleURLs(for video: SavedVideo) -> (orig: URL?, target: URL?, bilingual: URL?) {
+    nonisolated static func subtitleURLs(for video: SavedVideo) -> (orig: URL?, target: URL?, bilingual: URL?) {
         guard let files = video.subtitleFiles else { return (nil, nil, nil) }
         func url(_ key: String) -> URL? {
             guard let rel = files[key] else { return nil }
