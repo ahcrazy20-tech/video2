@@ -11,12 +11,15 @@ struct RootView: View {
             LibraryView()
                 .tabItem { Label("المكتبة", systemImage: "play.square.stack.fill") }
                 .tag(1)
+            TranslateView()
+                .tabItem { Label("الترجمة", systemImage: "captions.bubble.fill") }
+                .tag(2)
             DownloadsView()
                 .tabItem { Label("التحميلات", systemImage: "arrow.down.circle.fill") }
-                .tag(2)
+                .tag(3)
             SettingsView()
                 .tabItem { Label("إعدادات", systemImage: "gearshape.fill") }
-                .tag(3)
+                .tag(4)
         }
         .tint(V2Theme.accent)
         .background(V2Theme.bg.ignoresSafeArea())

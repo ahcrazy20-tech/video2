@@ -68,8 +68,20 @@ struct SavedVideo: Identifiable, Codable, Hashable {
     var lastPosition: Double
     var extractionMethod: String
 
+    /// مسارات ملفات الترجمة نسبةً إلى مجلد المستندات: "orig" / "target" / "bilingual"
+    var subtitleFiles: [String: String]?
+    /// كود لغة الترجمة الهدف (مثل "ar")
+    var subtitleTargetLang: String?
+
     var localURL: URL {
         LibraryStore.documents.appendingPathComponent(localRelativePath)
+    }
+
+    var hasSubtitles: Bool {
+        guard let files = subtitleFiles else { return false }
+        return files.values.contains {
+            FileManager.default.fileExists(atPath: LibraryStore.documents.appendingPathComponent($0).path)
+        }
     }
 }
 

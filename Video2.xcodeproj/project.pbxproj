@@ -24,6 +24,15 @@
 		A1000000000000010000000F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000000F /* Assets.xcassets */; };
 		A10000000000000100000010 /* AdBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000013 /* AdBlock.swift */; };
 		A10000000000000100000011 /* adblock-rules.json in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000014 /* adblock-rules.json */; };
+		A10000000000000100000015 /* SubtitleModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000015 /* SubtitleModels.swift */; };
+		A10000000000000100000016 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000016 /* KeychainStore.swift */; };
+		A10000000000000100000017 /* SubtitleCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000017 /* SubtitleCodec.swift */; };
+		A10000000000000100000018 /* AudioPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000018 /* AudioPipeline.swift */; };
+		A10000000000000100000019 /* STTService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000019 /* STTService.swift */; };
+		A1000000000000010000001A /* TranslateService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000001A /* TranslateService.swift */; };
+		A1000000000000010000001B /* TranslationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000001B /* TranslationManager.swift */; };
+		A1000000000000010000001C /* TranslateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000001C /* TranslateView.swift */; };
+		A1000000000000010000001D /* SubtitleOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000001D /* SubtitleOverlay.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -47,6 +56,15 @@
 		B10000000000000100000012 /* Video2.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Video2.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000100000013 /* AdBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdBlock.swift; sourceTree = "<group>"; };
 		B10000000000000100000014 /* adblock-rules.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "adblock-rules.json"; sourceTree = "<group>"; };
+		B10000000000000100000015 /* SubtitleModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SubtitleModels.swift"; sourceTree = "<group>"; };
+		B10000000000000100000016 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "KeychainStore.swift"; sourceTree = "<group>"; };
+		B10000000000000100000017 /* SubtitleCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SubtitleCodec.swift"; sourceTree = "<group>"; };
+		B10000000000000100000018 /* AudioPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AudioPipeline.swift"; sourceTree = "<group>"; };
+		B10000000000000100000019 /* STTService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "STTService.swift"; sourceTree = "<group>"; };
+		B1000000000000010000001A /* TranslateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TranslateService.swift"; sourceTree = "<group>"; };
+		B1000000000000010000001B /* TranslationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TranslationManager.swift"; sourceTree = "<group>"; };
+		B1000000000000010000001C /* TranslateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TranslateView.swift"; sourceTree = "<group>"; };
+		B1000000000000010000001D /* SubtitleOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SubtitleOverlay.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -95,6 +113,7 @@
 			isa = PBXGroup;
 			children = (
 				B10000000000000100000002 /* Models.swift */,
+				B10000000000000100000015 /* SubtitleModels.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -108,6 +127,12 @@
 				B10000000000000100000006 /* DownloadManager.swift */,
 				B10000000000000100000007 /* BrowserModel.swift */,
 				B10000000000000100000013 /* AdBlock.swift */,
+				B10000000000000100000016 /* KeychainStore.swift */,
+				B10000000000000100000017 /* SubtitleCodec.swift */,
+				B10000000000000100000018 /* AudioPipeline.swift */,
+				B10000000000000100000019 /* STTService.swift */,
+				B1000000000000010000001A /* TranslateService.swift */,
+				B1000000000000010000001B /* TranslationManager.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -122,6 +147,8 @@
 				B1000000000000010000000C /* LibraryView.swift */,
 				B1000000000000010000000D /* DownloadsView.swift */,
 				B1000000000000010000000E /* SettingsView.swift */,
+				B1000000000000010000001C /* TranslateView.swift */,
+				B1000000000000010000001D /* SubtitleOverlay.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -220,6 +247,15 @@
 				A1000000000000010000000C /* LibraryView.swift in Sources */,
 				A1000000000000010000000D /* DownloadsView.swift in Sources */,
 				A1000000000000010000000E /* SettingsView.swift in Sources */,
+				A10000000000000100000015 /* SubtitleModels.swift in Sources */,
+				A10000000000000100000016 /* KeychainStore.swift in Sources */,
+				A10000000000000100000017 /* SubtitleCodec.swift in Sources */,
+				A10000000000000100000018 /* AudioPipeline.swift in Sources */,
+				A10000000000000100000019 /* STTService.swift in Sources */,
+				A1000000000000010000001A /* TranslateService.swift in Sources */,
+				A1000000000000010000001B /* TranslationManager.swift in Sources */,
+				A1000000000000010000001C /* TranslateView.swift in Sources */,
+				A1000000000000010000001D /* SubtitleOverlay.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
