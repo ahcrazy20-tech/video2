@@ -72,25 +72,54 @@ struct LibraryView: View {
                     .environmentObject(translations)
                     .environmentObject(library)
             }
-            .alert(lang.t("lib.rename"), isPresented: Binding(get: { renameTarget != nil }, set: { if !$0 { renameTarget = nil } })) {
-                TextField(lang.t("lib.title"), text: $renameText)
-                Button(lang.t("lib.save")) {
-                    if let t = renameTarget { library.rename(t, title: renameText) }
-                    renameTarget = nil
-                }
-                Button(lang.t("lib.cancel"), role: .cancel) { renameTarget = nil }
-            }
             .onReceive(NotificationCenter.default.publisher(for: .v2ThumbReady)) { _ in
                 thumbTick += 1
             }
         }
+        .sheet(item: $renameTarget) { v in
+            renameSheet(v)
+                .presentationDetents([.medium])
+        }
+    }
+
+    /// إعادة التسمية في sheet بخانة كتابة LTR — تمنع تقلّب ترتيب الكلمات في العناوين اللاتينية
+    private func renameSheet(_ v: SavedVideo) -> some View {
+        NavigationStack {
+            Form {
+                Section(lang.t("lib.title")) {
+                    TextField(lang.t("lib.title"), text: $renameText)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .environment(\.layoutDirection, .leftToRight)
+                    Text("اكتب الاسم الجديد ثم اضغط حفظ — خانة الكتابة بالاتجاه الإنجليزي حتى لا تتقلب الكلمات.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle(lang.t("lib.rename"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(lang.t("lib.cancel")) { renameTarget = nil }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(lang.t("lib.save")) {
+                        let t = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !t.isEmpty { library.rename(v, title: t) }
+                        renameTarget = nil
+                    }
+                }
+            }
+        }
+        .onAppear { renameText = v.title }
     }
 
     private func continueCard(_ v: SavedVideo) -> some View {
         Button { playing = v } label: {
             VStack(alignment: .leading, spacing: 6) {
                 poster(v, width: 220, height: 124)
-                Text(v.title).font(.caption.bold()).lineLimit(2).frame(width: 220, alignment: .leading)
+                BidiText(text: v.title, font: .caption.bold())
+                    .frame(width: 220, alignment: .leading)
             }
         }
         .buttonStyle(.plain)
@@ -101,7 +130,7 @@ struct LibraryView: View {
             HStack(spacing: 12) {
                 poster(v, width: 128, height: 74)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(v.title).font(.headline).lineLimit(2).foregroundStyle(.primary)
+                    BidiText(text: v.title).foregroundStyle(.primary)
                     Text(meta(v)).font(.caption).foregroundStyle(.secondary)
                     if v.lastPosition > 8 {
                         Text(lang.t("lib.resume") + fmt(v.lastPosition)).font(.caption2).foregroundStyle(V2Theme.gold)
@@ -131,12 +160,11 @@ struct LibraryView: View {
                 let url = LibraryStore.documents.appendingPathComponent(rel)
                 if FileManager.default.fileExists(atPath: url.path) {
                     ShareLink(item: url) {
-                        Label("SRT", systemImage: "square.and.arrow.up")
+                        Label("تصدير SRT", systemImage: "square.and.arrow.up")
                     }
                 }
             }
             Button(lang.t("lib.rename")) {
-                renameText = v.title
                 renameTarget = v
             }
             Button(lang.t("lib.delete"), role: .destructive) { library.delete(v) }
@@ -181,8 +209,10 @@ struct LibraryView: View {
     }
 
     private func meta(_ v: SavedVideo) -> String {
-        var parts = [v.kind.titleAR, ByteCountFormatter.string(fromByteCount: v.fileSize, countStyle: .file)]
-        if let d = v.duration, d > 0 { parts.insert(fmt(d), at: 0) }
+        // النوع بالعربي أولاً حتى يبقى ترتيب السطر ثابتاً في الواجهة العربية
+        var parts = [v.kind.titleAR]
+        if let d = v.duration, d > 0 { parts.append(fmt(d)) }
+        parts.append(ByteCountFormatter.string(fromByteCount: v.fileSize, countStyle: .file))
         return parts.joined(separator: " · ")
     }
 
@@ -190,5 +220,34 @@ struct LibraryView: View {
         let n = Int(max(0, s))
         if n >= 3600 { return String(format: "%d:%02d:%02d", n / 3600, (n % 3600) / 60, n % 60) }
         return String(format: "%d:%02d", n / 60, n % 60)
+    }
+}
+
+/// نص يُعرض باتجاهه الطبيعي: عربي يمين-لليسار، لاتيني يسار-لليمين
+/// — يمنع تقلّب ترتيب كلمات العناوين الإنجليزية/المختلطة في الواجهة العربية
+struct BidiText: View {
+    let text: String
+    var font: Font = .headline
+    var lineLimit: Int? = 2
+
+    private var startsRTL: Bool {
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x0600...0x08FF, 0xFB50...0xFDFF, 0xFE70...0xFEFF:
+                return true
+            case 0x0041...0x005A, 0x0061...0x007A:
+                return false
+            default:
+                continue
+            }
+        }
+        return false
+    }
+
+    var body: some View {
+        Text(text)
+            .font(font)
+            .lineLimit(lineLimit)
+            .environment(\.layoutDirection, startsRTL ? .rightToLeft : .leftToRight)
     }
 }
