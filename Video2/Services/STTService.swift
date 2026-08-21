@@ -399,7 +399,7 @@ enum STTService {
         guard let uploadURL = HTTP.json(from: upData)["url"] as? String else {
             throw APIError(status: 0, body: "استجابة رفع STT.ai غير متوقعة")
         }
-        var body: [String: Any] = [
+        let body: [String: Any] = [
             "audio_url": uploadURL,
             "language": language.bcp47 ?? language.rawValue,
             "model": "whisper-large-v3"

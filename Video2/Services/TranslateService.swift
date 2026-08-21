@@ -207,7 +207,7 @@ enum TranslateService {
             throw APIError(status: 401, body: "أدخل مفتاح DeepL من الإعدادات")
         }
         let url = "https://api-free.deepl.com/v2/translate"
-        var texts = batch.texts
+        let texts = batch.texts
         // DeepL API expects uppercase 2-letter target lang codes
         let targetCode = target.rawValue.uppercased()
         var body: [String: Any] = [
