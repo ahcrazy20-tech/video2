@@ -61,7 +61,7 @@ struct WebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             tab.isLoading = false
             webView.evaluateJavaScript(ExtractorScript.source, completionHandler: nil)
-            if AdBlock.isEnabled {
+            if AdBlock.isEnabled, AdBlock.mode == "strict" {
                 webView.evaluateJavaScript(AdBlock.cosmeticJS, completionHandler: nil)
             }
         }
@@ -94,15 +94,23 @@ struct WebView: UIViewRepresentable {
                     let url = item["url"] as? String ?? ""
                     let drmRaw = item["drm"] as? String ?? "none"
                     let kindRaw = item["kind"] as? String ?? "other"
+                    let dur = (item["duration"] as? NSNumber)?.doubleValue
+                    let w = (item["width"] as? NSNumber)?.intValue
+                    let h = (item["height"] as? NSNumber)?.intValue
                     let media = DetectedMedia(
                         url: url,
                         title: (item["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (body["title"] as? String ?? self.tab.title),
-                        kind: MediaKind(rawValue: kindRaw) ?? .other,
+                        kind: MediaKind(rawValue: kindRaw) ?? MediaKind.infer(url: url, mime: item["mime"] as? String),
                         mime: item["mime"] as? String,
                         qualityLabel: item["qualityLabel"] as? String,
                         drm: DRMKind(rawValue: drmRaw) ?? .none,
                         pageURL: body["page"] as? String,
-                        extractionMethod: item["extractionMethod"] as? String ?? "js"
+                        extractionMethod: item["extractionMethod"] as? String ?? "js",
+                        duration: (dur ?? 0) > 0 ? dur : nil,
+                        byteSize: nil,
+                        width: (w ?? 0) > 0 ? w : nil,
+                        height: (h ?? 0) > 0 ? h : nil,
+                        probed: false
                     )
                     self.model.ingest(media: media, tab: self.tab)
                 }

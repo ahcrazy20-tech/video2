@@ -77,15 +77,41 @@ final class BrowserModel: ObservableObject {
 
     func ingest(media: DetectedMedia, tab: BrowserTab) {
         if let i = tab.detected.firstIndex(where: { $0.url == media.url }) {
-            if media.drm.isProtected { tab.detected[i].drm = media.drm }
+            var old = tab.detected[i]
+            if media.drm.isProtected { old.drm = media.drm }
+            if old.duration == nil || old.duration == 0 { old.duration = media.duration }
+            if old.height == nil { old.height = media.height }
+            if old.width == nil { old.width = media.width }
+            if (old.qualityLabel ?? "").isEmpty { old.qualityLabel = media.qualityLabel }
+            tab.detected[i] = old
             return
         }
+        if media.isFragment { return }
         tab.detected.insert(media, at: 0)
+        tab.detected.sort { score($0) > score($1) }
         if media.drm.isProtected {
             lastDRM = media.drm
             showDRMBanner = true
             tab.drmAlert = media.drm
         }
+        Task { @MainActor in
+            let enriched = await MediaProbe.enrich(media)
+            if let i = tab.detected.firstIndex(where: { $0.url == enriched.url }) {
+                tab.detected[i] = enriched
+                tab.detected.sort { self.score($0) > self.score($1) }
+            }
+        }
+    }
+
+    private func score(_ m: DetectedMedia) -> Int {
+        var s = 0
+        if m.kind.isCompleteVideo { s += 50 }
+        if m.kind.avPlayerSupported { s += 20 }
+        if (m.duration ?? 0) > 5 { s += 15 }
+        if m.extractionMethod.contains("html5") { s += 25 }
+        if let h = m.height { s += min(h / 10, 40) }
+        if m.drm.isProtected { s -= 80 }
+        return s
     }
 
     func ingestDRM(_ kind: DRMKind, tab: BrowserTab) {
