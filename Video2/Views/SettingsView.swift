@@ -145,7 +145,7 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - صف إدخال مفتاح API (يُخزَّن في Keychain)
+// MARK: - صف إدخال مفتاح API (يُخزَّن في Keychain) مع زر اختبار
 
 struct APIKeyRow: View {
     let title: String
@@ -155,6 +155,8 @@ struct APIKeyRow: View {
 
     @State private var value: String = ""
     @State private var savedFlash = false
+    @State private var testing = false
+    @State private var testResult: String?
 
     private var stored: Bool { KeychainStore.has(keyID) }
 
@@ -175,6 +177,19 @@ struct APIKeyRow: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.footnote)
+                    .environment(\.layoutDirection, .leftToRight)
+                if testing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(.horizontal, 4)
+                } else {
+                    Button("اختبار") {
+                        runTest()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(stored == false && value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
                 Button(stored ? "تحديث" : "حفظ") {
                     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else { return }
@@ -189,6 +204,7 @@ struct APIKeyRow: View {
                 if stored {
                     Button(role: .destructive) {
                         KeychainStore.delete(keyID)
+                        testResult = nil
                     } label: {
                         Image(systemName: "trash")
                     }
@@ -203,7 +219,68 @@ struct APIKeyRow: View {
                     .font(.caption2)
                     .foregroundStyle(.green)
             }
+            if let r = testResult {
+                Text(r)
+                    .font(.caption.bold())
+                    .foregroundStyle(r.hasPrefix("✅") ? Color.green : (r.hasPrefix("❌") ? Color.red : Color.orange))
+            }
         }
         .padding(.vertical, 2)
+    }
+
+    private func runTest() {
+        let typed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = typed.isEmpty ? (KeychainStore.get(keyID) ?? "") : typed
+        guard !key.isEmpty else {
+            testResult = "⚠️ اكتب المفتاح أولاً أو احفظه ثم اختبر"
+            return
+        }
+        testing = true
+        testResult = nil
+        let provider = keyID
+        Task {
+            let result = await KeyTester.verify(provider: provider, key: key)
+            testing = false
+            testResult = result
+        }
+    }
+}
+
+// MARK: - اختبار صلاحية المفاتيح
+
+enum KeyTester {
+    static func verify(provider: String, key: String) async -> String {
+        let url: String
+        var headers: [String: String] = [:]
+        switch provider {
+        case "groq":
+            url = "https://api.groq.com/openai/v1/models"
+            headers = ["Authorization": "Bearer \(key)"]
+        case "gemini":
+            url = "https://generativelanguage.googleapis.com/v1beta/models?key=\(key)"
+        case "assemblyai":
+            url = "https://api.assemblyai.com/v2/transcript?limit=1"
+            headers = ["Authorization": key]
+        default:
+            return "⚠️ مزود غير معروف"
+        }
+        do {
+            let (_, resp) = try await HTTP.request("GET", url, headers: headers, timeout: 30)
+            _ = resp
+            return "✅ المفتاح يعمل بنجاح"
+        } catch let e as APIError {
+            if e.status == 401 || e.status == 403 {
+                return "❌ المفتاح غير صحيح أو منتهي (رمز \(e.status))"
+            }
+            if e.status == 404 {
+                return "✅ المفتاح مقبول (تجاوز المصادقة)"
+            }
+            if e.status == 429 {
+                return "⚠️ المفتاح يعمل لكن وصلت لحد الطلبات مؤقتاً — جرب بعد دقيقة"
+            }
+            return "⚠️ استجابة غير متوقعة (رمز \(e.status))"
+        } catch {
+            return "⚠️ تعذر الاتصال — تحقق من الإنترنت"
+        }
     }
 }
