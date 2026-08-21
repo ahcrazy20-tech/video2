@@ -199,6 +199,7 @@ enum AudioPipeline {
             if writer == nil {
                 chunkStartPTS = pts
                 let (w, input) = try makeWriter(index: chunkIndex)
+                w.startWriting()
                 w.startSession(atSourceTime: CMTime(seconds: pts, preferredTimescale: 600))
                 writer = w
                 writerInput = input
@@ -215,6 +216,7 @@ enum AudioPipeline {
                 chunkIndex += 1
                 chunkStartPTS = pts
                 let (w, input) = try makeWriter(index: chunkIndex)
+                w.startWriting()
                 w.startSession(atSourceTime: CMTime(seconds: pts, preferredTimescale: 600))
                 writer = w
                 writerInput = input
