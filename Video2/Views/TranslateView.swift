@@ -104,14 +104,14 @@ struct TranslationJobRow: View {
                     .font(.headline)
                     .lineLimit(2)
                 Spacer()
-                Text("\(job.sourceLang == .auto ? "تلقائي" : job.sourceLang.nameAR) → \(job.targetLang.nameAR)")
+                Text("من \(job.sourceLang == .auto ? "تلقائي" : job.sourceLang.nameAR) إلى \(job.targetLang.nameAR)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
             HStack(spacing: 6) {
-                chip(providerTitle + " · تفريغ")
-                chip(translatorTitle + " · ترجمة")
+                chip("التفريغ: " + providerTitle)
+                chip("الترجمة: " + translatorTitle)
                 if job.isHLS { chip("HLS") }
                 if let detected = TranslationManager.detectedLangNameAR(job.detectedLang) {
                     chip("اللغة: " + detected)
