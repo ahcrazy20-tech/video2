@@ -122,14 +122,14 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Section("APIs مجانية جديدة (2026)") {
+                Section {
                     howBullet("DeepL", "500 ألف حرف/شهر مجاناً للترجمة — جودة عالية جداً للعربية والإنجليزية.")
                     howBullet("STT.ai", "600 دقيقة شهرية مجانية للتفريغ + 100 دقيقة API — بديل قوي لـ Whisper.")
                     howBullet("Speechmatics", "480 دقيقة مجانية شهرياً للتفريغ الصوتي — دقة عالية لأكثر من 55 لغة.")
                     howBullet("Edge TTS", "مجاناً بالكامل بدون مفتاح — نص إلى كلام عبر Microsoft Edge (مجتمع مفتوح).")
                     howBullet("OpenL Translate Speech", "مجاني (1500 حرف/مرة) — ترجمة صوتية مباشرة من فيديو إلى SRT بدون تفريغ منفصل.")
                 } header: {
-                    Text("مفاتيح وأدوات إضافية مجانية")
+                    Text("APIs مجانية جديدة (2026)")
                 } footer: {
                     Text("جميع هذه الخدمات تقدم طبقة مجانية سخية. يمكن إضافتها مستقبلاً كمزودين إضافيين في التطبيق.")
                         .font(.caption2)

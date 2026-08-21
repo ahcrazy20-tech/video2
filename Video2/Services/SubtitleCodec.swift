@@ -146,7 +146,7 @@ enum SubtitleCodec {
         out.reserveCapacity(sorted.count)
         for var c in sorted {
             if c.end <= c.start { c.end = c.start + 0.8 }
-            if var last = out.last, c.start < last.end - 0.05, last.end - last.start < 0.2 {
+            if let last = out.last, c.start < last.end - 0.05, last.end - last.start < 0.2 {
                 // استبدال سطر شبه الفارغ
                 out.removeLast()
                 c.id = last.id

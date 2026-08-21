@@ -54,7 +54,7 @@ enum SubtitleDisplayMode: String, CaseIterable, Identifiable {
 
 // MARK: - اللغات
 
-enum SubLang: String, CaseIterable, Codable, Identifiable {
+enum SubLang: String, CaseIterable, Codable, Identifiable, Hashable {
     case auto, ar, en, hi, ur, fr, tr, de, es, ru, fa, id
     var id: String { rawValue }
 
