@@ -46,6 +46,7 @@ enum AudioPipeline {
     // MARK: تحويل HLS إلى MP4 مؤقت
 
     /// AVAssetReader لا يقرأ بث HLS حتى المحلي؛ نصدّره أولاً لملف مؤقت ثم نكمل.
+    /// ملاحظة: النسخة المتزامنة export(to:as:) متاحة iOS 18+ فقط — نستخدم الكلاسيكية.
     static func exportHLSToTempMP4(_ url: URL) async throws -> URL {
         let asset = AVURLAsset(url: url)
         guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPreset960x540) else {
@@ -54,7 +55,7 @@ enum AudioPipeline {
         let out = FileManager.default.temporaryDirectory
             .appendingPathComponent("v2-hls-\(UUID().uuidString).mp4")
         try? FileManager.default.removeItem(at: out)
-         session.outputURL = out
+        session.outputURL = out
         session.outputFileType = .mp4
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             session.exportAsynchronously {
@@ -175,8 +176,8 @@ enum AudioPipeline {
         func finishWriter() async throws {
             writerInput?.markAsFinished()
             if let w = writer {
-                let ok = await w.finishWriting()
-                if !ok || w.status == .failed {
+                await w.finishWriting()
+                if w.status == .failed {
                     throw AudioPipelineError.writerFailed(w.error?.localizedDescription ?? "غير معروف")
                 }
             }
@@ -242,8 +243,8 @@ enum AudioPipeline {
         // إغلاق آخر جزء
         if let w = writer {
             writerInput?.markAsFinished()
-            let ok = await w.finishWriting()
-            if !ok || w.status == .failed {
+            await w.finishWriting()
+            if w.status == .failed {
                 throw AudioPipelineError.writerFailed(w.error?.localizedDescription ?? "غير معروف")
             }
             chunks.append(AudioChunk(index: chunkIndex,
