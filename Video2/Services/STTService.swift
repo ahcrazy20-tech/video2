@@ -9,8 +9,10 @@ struct APIError: LocalizedError {
 
     var errorDescription: String? {
         switch status {
-        case 401, 403:
-            return "المفتاح غير صحيح أو منتهي الصلاحية (رمز \(status))."
+        case 401:
+            return "المفتاح غير صحيح أو منتهي الصلاحية (401)."
+        case 403:
+            return "مرفوض (403) — لو المفتاح سليم فغالباً حجب شبكة عند المزود: بدّل Wi-Fi/البيانات أو جرّب VPN."
         case 402:
             return "الرصيد غير كافٍ لدى مزود الخدمة — أضف رصيداً أو بدّل المزود."
         case 429:
@@ -35,6 +37,7 @@ enum HTTP {
         req.httpMethod = method
         req.timeoutInterval = timeout
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
+        applyDefaultHeaders(&req)
         req.httpBody = body
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse else {
@@ -47,6 +50,16 @@ enum HTTP {
         return (data, http)
     }
 
+    /// ترويسات افتراضية — Groq (خلف Cloudflare) قد يرفض الطلبات بـ 403 بدون User-Agent
+    static func applyDefaultHeaders(_ req: inout URLRequest) {
+        if req.value(forHTTPHeaderField: "User-Agent") == nil {
+            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+        }
+        if req.value(forHTTPHeaderField: "Accept") == nil {
+            req.setValue("application/json", forHTTPHeaderField: "Accept")
+        }
+    }
+
     static func uploadFile(_ url: String,
                            fileURL: URL,
                            headers: [String: String] = [:],
@@ -56,6 +69,7 @@ enum HTTP {
         req.httpMethod = "POST"
         req.timeoutInterval = timeout
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
+        applyDefaultHeaders(&req)
         let (data, resp) = try await URLSession.shared.upload(for: req, fromFile: fileURL)
         guard let http = resp as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
@@ -126,7 +140,6 @@ enum STTService {
         let boundary = "v2\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
         var detected: String? = nil
         var allCues: [SubCue] = []
-        let lock = NSLock()
 
         // نوافذ متوازية بحجم محدود
         var i = 0
@@ -147,10 +160,9 @@ enum STTService {
                     }
                 }
                 for try await (idx, cues, lang) in group {
-                    lock.lock()
+                    // حلقة الاستهلاك تسلسلية داخل المهمة الأم — لا حاجة لقفل
                     allCues.append(contentsOf: cues)
                     if detected == nil { detected = lang }
-                    lock.unlock()
                     chunkDone(idx)
                     chunkResult(idx, cues, lang)
                 }
