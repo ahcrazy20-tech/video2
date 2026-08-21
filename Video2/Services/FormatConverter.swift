@@ -4,7 +4,7 @@ import Combine
 
 // MARK: - صيغ الإخراج المدعومة
 
-enum OutputFormat: String, CaseIterable, Identifiable {
+enum OutputFormat: String, CaseIterable, Identifiable, Codable {
     case mp4, mov, m4v
 
     var id: String { rawValue }
@@ -193,7 +193,7 @@ final class FormatConverter: ObservableObject {
 
         // نقل الملف الجديد لمكان القديم
         let newKind = MediaKind.infer(url: outRel, mime: nil)
-        let destURL = video.localURL.deletingPathExtension().appendingPathExtension(format.fileExtension)
+        let destURL = video.localURL.deletingPathExtension().appendingPathExtension(job.outputFormat.fileExtension)
         do {
             try FileManager.default.moveItem(at: outURL, to: destURL)
         } catch {
@@ -201,7 +201,7 @@ final class FormatConverter: ObservableObject {
             try? FileManager.default.removeItem(at: outURL)
         }
 
-        let bytes = (try? destURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
+        let bytes = (try? destURL.resourceValues(forKeys: Set([URL.ResourceKey.fileSizeKey])).fileSize).map { Int64($0) } ?? 0
         video.localRelativePath = destURL.v2RelativePath(from: LibraryStore.documents)
         video.kind = newKind
         video.fileSize = bytes
@@ -289,7 +289,7 @@ final class FormatConverter: ObservableObject {
             jobs[i].errorMessage = ConversionError.noExportSession.localizedDescription
             jobs[i].finishedAt = Date()
             saveIndex()
-            try? FileManager.default.removeItem(at: tempHLSFile)
+            if let tempHLSFile { try? FileManager.default.removeItem(at: tempHLSFile) }
             return
         }
 
@@ -303,7 +303,7 @@ final class FormatConverter: ObservableObject {
                 jobs[i].errorMessage = ConversionError.presetNotSupported.localizedDescription
                 jobs[i].finishedAt = Date()
                 saveIndex()
-                try? FileManager.default.removeItem(at: tempHLSFile)
+                if let tempHLSFile { try? FileManager.default.removeItem(at: tempHLSFile) }
                 return
             }
         }
@@ -342,11 +342,11 @@ final class FormatConverter: ObservableObject {
         progressTask.cancel()
 
         // تنظيف ملف HLS المؤقت
-        try? FileManager.default.removeItem(at: tempHLSFile)
+        if let tempHLSFile { try? FileManager.default.removeItem(at: tempHLSFile) }
 
         if session.status == .completed,
            FileManager.default.fileExists(atPath: outputURL.path) {
-            let bytes = (try? outputURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
+            let bytes = (try? outputURL.resourceValues(forKeys: Set([URL.ResourceKey.fileSizeKey])).fileSize).map { Int64($0) } ?? 0
             let relPath = outputURL.v2RelativePath(from: LibraryStore.documents)
 
             guard let idx = jobs.firstIndex(where: { $0.id == jobID }) else { return }
