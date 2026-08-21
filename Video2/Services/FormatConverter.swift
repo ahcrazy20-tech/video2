@@ -206,7 +206,7 @@ final class FormatConverter: ObservableObject {
             try? FileManager.default.removeItem(at: outURL)
         }
 
-        let bytes = (try? destURL.resourceValues(forKeys: Set([URL.ResourceKey.fileSizeKey])).fileSize).map { Int64($0) } ?? 0
+        let bytes = (try? destURL.resourceValues(forKeys: Set([URLResourceKey.fileSizeKey])).fileSize).map { Int64($0) } ?? 0
         video.localRelativePath = destURL.v2RelativePath(from: LibraryStore.documents)
         video.kind = newKind
         video.fileSize = bytes
@@ -352,7 +352,7 @@ final class FormatConverter: ObservableObject {
 
         if session.status == .completed,
            FileManager.default.fileExists(atPath: outputURL.path) {
-            let bytes = (try? outputURL.resourceValues(forKeys: Set([URL.ResourceKey.fileSizeKey])).fileSize).map { Int64($0) } ?? 0
+            let bytes = (try? outputURL.resourceValues(forKeys: Set([URLResourceKey.fileSizeKey])).fileSize).map { Int64($0) } ?? 0
             let relPath = outputURL.v2RelativePath(from: LibraryStore.documents)
 
             guard let idx = jobs.firstIndex(where: { $0.id == jobID }) else { return }
