@@ -87,6 +87,7 @@ struct SettingsView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.footnote)
+                        .environment(\.layoutDirection, .leftToRight)
 
                     Stepper("توازي التفريغ: \(sttConcurrency)", value: $sttConcurrency, in: 1...4)
                     Text("عدد أجزاء الصوت التي تُفرَّغ معاً. قلّله عند ظهور أخطاء 429.")
@@ -269,8 +270,18 @@ enum KeyTester {
             _ = resp
             return "✅ المفتاح يعمل بنجاح"
         } catch let e as APIError {
-            if e.status == 401 || e.status == 403 {
-                return "❌ المفتاح غير صحيح أو منتهي (رمز \(e.status))"
+            if e.status == 403 {
+                let b = e.body.lowercased()
+                if b.contains("cloudflare") || b.contains("<html") || b.contains("just a moment") {
+                    return "🚫 المفتاح سليم غالباً — الشبكة محجوبة عند المزود. بدّل Wi-Fi/البيانات أو جرّب VPN ثم أعد الاختبار"
+                }
+                if b.contains("organization") || b.contains("disabled") || b.contains("suspended") || b.contains("blocked") {
+                    return "❌ الحساب موقوف أو مقيّد عند المزود (403)"
+                }
+                return "❌ مرفوض (403) — تأكد من المفتاح، ولو سليم بدّل الشبكة (Wi-Fi/بيانات/VPN) وأعد الاختبار"
+            }
+            if e.status == 401 {
+                return "❌ المفتاح غير صحيح أو منتهي (401)"
             }
             if e.status == 404 {
                 return "✅ المفتاح مقبول (تجاوز المصادقة)"
