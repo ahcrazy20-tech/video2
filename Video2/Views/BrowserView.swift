@@ -3,6 +3,7 @@ import SwiftUI
 struct BrowserView: View {
     @EnvironmentObject var browser: BrowserModel
     @EnvironmentObject var downloads: DownloadManager
+    @EnvironmentObject var lang: LanguageStore
     @State private var address: String = ""
     @State private var showTabs = false
     @State private var showManual = false
@@ -26,15 +27,15 @@ struct BrowserView: View {
             .navigationBarHidden(true)
             .sheet(isPresented: $browser.showDetector) { DetectorSheet() }
             .sheet(isPresented: $showTabs) { TabsSheet() }
-            .alert("لصق رابط فيديو", isPresented: $showManual) {
+            .alert(lang.t("paste.title"), isPresented: $showManual) {
                 TextField("https://...", text: $manualURL)
-                Button("تحميل") {
+                Button(lang.t("paste.download")) {
                     downloads.enqueueManual(urlString: manualURL, title: browser.current.title, page: browser.current.urlString)
                     manualURL = ""
                 }
-                Button("إلغاء", role: .cancel) {}
+                Button(lang.t("lib.cancel"), role: .cancel) {}
             } message: {
-                Text("ضع رابط MP4 أو m3u8 مباشراً إن لم يُكتشف تلقائياً.")
+                Text(lang.t("paste.hint"))
             }
             .onAppear { address = browser.current.urlString }
             .onChange(of: browser.selectedID) { _ in address = browser.current.urlString }
@@ -51,7 +52,7 @@ struct BrowserView: View {
             }
             HStack {
                 Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
-                TextField("ابحث أو اكتب موقعاً", text: $address)
+                TextField(lang.t("addr.placeholder"), text: $address)
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
                     .submitLabel(.go)
@@ -86,11 +87,11 @@ struct BrowserView: View {
             Image(systemName: "lock.trianglebadge.exclamationmark.fill")
                 .foregroundStyle(V2Theme.gold)
             VStack(alignment: .leading, spacing: 4) {
-                Text("تحذير DRM").font(.headline)
-                Text(browser.lastDRM.messageAR).font(.caption).foregroundStyle(.secondary)
+                Text(lang.t("drm.title")).font(.headline)
+                Text(lang.t("drm.body")).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Button("إخفاء") { browser.showDRMBanner = false }
+            Button(lang.t("drm.hide")) { browser.showDRMBanner = false }
                 .font(.caption.bold())
         }
         .padding(12)
@@ -101,39 +102,58 @@ struct BrowserView: View {
 struct DetectorSheet: View {
     @EnvironmentObject var browser: BrowserModel
     @EnvironmentObject var downloads: DownloadManager
+    @EnvironmentObject var lang: LanguageStore
     @Environment(\.dismiss) var dismiss
+    @State private var onlyPlayable = true
+
+    var items: [DetectedMedia] {
+        let all = browser.current.detected
+        if onlyPlayable {
+            return all.filter { $0.kind.isCompleteVideo || $0.kind == .mp3 || $0.kind == .aac }
+        }
+        return all
+    }
 
     var body: some View {
         NavigationStack {
             List {
                 if browser.current.drmAlert.isProtected {
                     Section {
-                        Label(browser.current.drmAlert.messageAR, systemImage: "exclamationmark.shield.fill")
+                        Label(lang.t("drm.body"), systemImage: "exclamationmark.shield.fill")
                             .foregroundStyle(V2Theme.gold)
                     }
                 }
-                Section("المصادر المكتشفة") {
-                    if browser.current.detected.isEmpty {
-                        Text("لا يوجد فيديو بعد. شغّل المقطع في الصفحة ثم اضغط تحديث، أو الصق الرابط يدوياً.")
+                Section {
+                    Toggle(lang.t("det.filter"), isOn: $onlyPlayable)
+                }
+                Section("\(lang.t("det.sources")) (\(items.count))") {
+                    if items.isEmpty {
+                        Text(lang.t("det.empty"))
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(browser.current.detected) { item in
+                    ForEach(items) { item in
                         VStack(alignment: .leading, spacing: 8) {
                             Text(item.title).font(.headline)
-                            Text(item.url).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                            HStack(spacing: 10) {
+                                labeled(lang.t("det.duration"), item.durationText)
+                                labeled(lang.t("det.size"), item.sizeText)
+                                if let r = item.resolutionText { labeled(lang.t("det.quality"), r) }
+                            }
                             HStack {
                                 chip(item.kind.titleAR)
+                                chip(item.kind.avPlayerSupported ? lang.t("det.play.offline") : lang.t("det.play.maybe"))
+                                if item.drm.isProtected { chip("DRM") }
                                 chip(item.extractionMethod)
-                                if let q = item.qualityLabel, !q.isEmpty { chip(q) }
-                                if item.drm.isProtected {
-                                    chip("DRM")
-                                }
                             }
+                            if let mime = item.mime, !mime.isEmpty {
+                                Text(mime).font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Text(item.url).font(.caption2).foregroundStyle(.tertiary).lineLimit(2)
                             Button {
                                 downloads.enqueue(item)
                                 dismiss()
                             } label: {
-                                Label(item.canDownload ? "تحميل وحفظ في المكتبة" : "محمي — لا يمكن التحميل", systemImage: item.canDownload ? "arrow.down.circle.fill" : "lock.fill")
+                                Label(item.canDownload ? lang.t("det.save") : lang.t("det.protected"), systemImage: item.canDownload ? "arrow.down.circle.fill" : "lock.fill")
                             }
                             .disabled(!item.canDownload)
                             .buttonStyle(.borderedProminent)
@@ -143,14 +163,22 @@ struct DetectorSheet: View {
                     }
                 }
             }
-            .navigationTitle("استخراج الفيديو")
+            .navigationTitle(lang.t("det.title"))
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("إغلاق") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button(lang.t("det.close")) { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("مسح") { browser.current.detected.removeAll() }
+                    Button(lang.t("det.clear")) { browser.current.detected.removeAll() }
                 }
             }
         }
+    }
+
+    private func labeled(_ k: String, _ v: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(k).font(.caption2).foregroundStyle(.secondary)
+            Text(v).font(.caption.bold())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func chip(_ t: String) -> some View {
@@ -164,6 +192,7 @@ struct DetectorSheet: View {
 
 struct TabsSheet: View {
     @EnvironmentObject var browser: BrowserModel
+    @EnvironmentObject var lang: LanguageStore
     @Environment(\.dismiss) var dismiss
 
     var body: some View {
@@ -180,7 +209,7 @@ struct TabsSheet: View {
                         }
                     }
                     .swipeActions {
-                        Button(role: .destructive) { browser.close(tab.id) } label: { Text("إغلاق") }
+                        Button(role: .destructive) { browser.close(tab.id) } label: { Text(lang.t("tabs.close")) }
                     }
                 }
             }

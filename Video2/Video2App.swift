@@ -6,6 +6,8 @@ struct Video2App: App {
     @StateObject private var library = LibraryStore()
     @StateObject private var downloads = DownloadManager()
     @StateObject private var browser = BrowserModel()
+    @StateObject private var lang = LanguageStore()
+    @StateObject private var translations = TranslationManager()
 
     init() {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
@@ -19,11 +21,14 @@ struct Video2App: App {
                 .environmentObject(library)
                 .environmentObject(downloads)
                 .environmentObject(browser)
-                .environment(\.layoutDirection, .rightToLeft)
+                .environmentObject(lang)
+                .environmentObject(translations)
                 .preferredColorScheme(.dark)
                 .onAppear {
                     downloads.attach(library: library)
+                    translations.attach(library: library)
                     library.load()
+                    translations.load()
                 }
         }
     }

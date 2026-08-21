@@ -23,12 +23,7 @@ final class DownloadManager: ObservableObject {
     }
 
     func enqueueManual(urlString: String, title: String, page: String?) {
-        let kind: MediaKind
-        let l = urlString.lowercased()
-        if l.contains(".m3u8") { kind = .hls }
-        else if l.contains(".mpd") { kind = .dash }
-        else if l.contains(".webm") { kind = .webm }
-        else { kind = .mp4 }
+        let kind = MediaKind.infer(url: urlString.lowercased(), mime: nil)
         let media = DetectedMedia(url: urlString, title: title.isEmpty ? "رابط يدوي" : title, kind: kind, mime: nil, qualityLabel: nil, drm: .none, pageURL: page, extractionMethod: "manual-url")
         enqueue(media)
     }
@@ -75,7 +70,7 @@ final class DownloadManager: ObservableObject {
 
         if job.media.kind == .hls || remote.pathExtension.lowercased() == "m3u8" || job.media.url.contains(".m3u8") {
             let folder = LibraryStore.videosDir.appendingPathComponent(id.uuidString, isDirectory: true)
-            let playlist = try await hls.download(masterURL: remote, destFolder: folder) { [weak self] p in
+            _ = try await hls.download(masterURL: remote, destFolder: folder) { [weak self] p in
                 Task { @MainActor in
                     if let i = self?.jobs.firstIndex(where: { $0.id == job.id }) {
                         self?.jobs[i].progress = p
@@ -83,14 +78,15 @@ final class DownloadManager: ObservableObject {
                 }
             }
             let size = folderSize(folder)
-            return SavedVideo(id: id, title: title, sourceURL: job.media.url, pageURL: job.media.pageURL, localRelativePath: "Videos/\(id.uuidString)/index.m3u8", thumbnailRelativePath: nil, kind: .hls, createdAt: Date(), duration: nil, fileSize: size, lastPosition: 0, extractionMethod: job.media.extractionMethod)
+            return SavedVideo(id: id, title: title, sourceURL: job.media.url, pageURL: job.media.pageURL, localRelativePath: "Videos/\(id.uuidString)/index.m3u8", thumbnailRelativePath: nil, kind: .hls, createdAt: Date(), duration: job.media.duration, fileSize: size, lastPosition: 0, extractionMethod: job.media.extractionMethod)
         }
 
         if job.media.kind == .dash {
             throw HLSError.drmProtected(.unknownProtected)
         }
 
-        let dest = LibraryStore.videosDir.appendingPathComponent("\(id.uuidString).mp4")
+        let ext = job.media.kind.fileExtension
+        let dest = LibraryStore.videosDir.appendingPathComponent("\(id.uuidString).\(ext)")
         let (tmp, response) = try await URLSession.shared.download(from: remote)
         try FileManager.default.moveItem(at: tmp, to: dest)
         let bytes = (try? dest.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
@@ -99,7 +95,7 @@ final class DownloadManager: ObservableObject {
             jobs[i].bytesWritten = bytes
         }
         _ = response
-        return SavedVideo(id: id, title: title, sourceURL: job.media.url, pageURL: job.media.pageURL, localRelativePath: "Videos/\(id.uuidString).mp4", thumbnailRelativePath: nil, kind: job.media.kind, createdAt: Date(), duration: nil, fileSize: bytes, lastPosition: 0, extractionMethod: job.media.extractionMethod)
+        return SavedVideo(id: id, title: title, sourceURL: job.media.url, pageURL: job.media.pageURL, localRelativePath: "Videos/\(id.uuidString).\(ext)", thumbnailRelativePath: nil, kind: job.media.kind, createdAt: Date(), duration: job.media.duration, fileSize: bytes, lastPosition: 0, extractionMethod: job.media.extractionMethod)
     }
 
     private func folderSize(_ url: URL) -> Int64 {

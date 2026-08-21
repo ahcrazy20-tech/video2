@@ -124,6 +124,11 @@ final class HLSDownloader {
             progress(Double(segIndex) / Double(total))
         }
 
+        if !rewritten.contains("#EXTM3U") { rewritten = "#EXTM3U\n" + rewritten }
+        if !rewritten.uppercased().contains("EXT-X-PLAYLIST-TYPE") {
+            rewritten = rewritten.replacingOccurrences(of: "#EXTM3U", with: "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD")
+        }
+        if !rewritten.contains("#EXT-X-ENDLIST") { rewritten += "#EXT-X-ENDLIST\n" }
         let playlistURL = destFolder.appendingPathComponent("index.m3u8")
         try rewritten.write(to: playlistURL, atomically: true, encoding: .utf8)
         return playlistURL

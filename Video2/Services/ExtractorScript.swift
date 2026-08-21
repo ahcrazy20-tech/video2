@@ -1,7 +1,6 @@
 import Foundation
 
 enum ExtractorScript {
-    /// يحقن في كل إطار: يجمع مصادر الفيديو، يلتقط fetch/XHR، ويكتشف إشارات DRM دون كسرها.
     static let source = """
     (function() {
       if (window.__v2installed) return;
@@ -14,22 +13,17 @@ enum ExtractorScript {
         if (u.endsWith('.m3u8') || m.includes('mpegurl')) return 'hls';
         if (u.endsWith('.mpd') || m.includes('dash')) return 'dash';
         if (u.endsWith('.webm') || m.includes('webm')) return 'webm';
-        if (u.match(/\\.(mp4|m4v|mov)$/) || m.includes('mp4')) return 'mp4';
+        if (u.endsWith('.mkv')) return 'mkv';
+        if (u.endsWith('.avi')) return 'avi';
+        if (u.endsWith('.mov')) return 'mov';
+        if (u.endsWith('.m4v')) return 'm4v';
+        if (u.endsWith('.3gp') || u.endsWith('.3gpp')) return '3gp';
+        if (u.endsWith('.ts') || u.endsWith('.m4s')) return 'ts';
+        if (u.endsWith('.mp3') || m.includes('mpeg') && m.includes('audio')) return 'mp3';
+        if (u.endsWith('.aac') || m.includes('aac')) return 'aac';
+        if (u.endsWith('.wav')) return 'wav';
+        if (u.match(/\\.(mp4)$/) || m.includes('mp4') || m.includes('video')) return 'mp4';
         return 'other';
-      }
-
-      function drmFromPage() {
-        try {
-          if (navigator.requestMediaKeySystemAccess) {
-            /* وجود EME لا يعني أن الفيديو الحالي محمي، نعلّم لاحقاً من الأحداث */
-          }
-        } catch (e) {}
-        const html = document.documentElement ? document.documentElement.innerHTML : '';
-        const low = html.toLowerCase();
-        if (low.includes('fairplay') || low.includes('com.apple.fps')) return 'fairplay';
-        if (low.includes('widevine') || low.includes('com.widevine.alpha')) return 'widevine';
-        if (low.includes('playready')) return 'playready';
-        return 'none';
       }
 
       function emit(item) {
@@ -54,14 +48,19 @@ enum ExtractorScript {
         document.querySelectorAll('video, audio, source').forEach(function(el) {
           const url = el.currentSrc || el.src || el.getAttribute('src');
           if (!url) return;
+          var dur = 0;
+          try { if (el.duration && isFinite(el.duration)) dur = el.duration; } catch (e) {}
           emit({
             url: url,
             title: document.title || 'فيديو',
             kind: kindFrom(url, el.getAttribute('type')),
             mime: el.getAttribute('type') || '',
             qualityLabel: (el.videoHeight ? el.videoHeight + 'p' : ''),
+            width: el.videoWidth || 0,
+            height: el.videoHeight || 0,
+            duration: dur,
             drm: 'none',
-            extractionMethod: 'html5-element'
+            extractionMethod: el.tagName === 'AUDIO' ? 'html5-audio' : 'html5-element'
           });
         });
       }
@@ -92,17 +91,17 @@ enum ExtractorScript {
       function consider(url, method) {
         if (!url || typeof url !== 'string') return;
         const u = url.toLowerCase();
-        const hit = /\\.(m3u8|mp4|m4v|mov|webm|mpd|ts|m4s)(\\?|$)/.test(u)
+        const hit = /\\.(m3u8|mp4|m4v|mov|webm|mpd|mkv|avi|3gp|3gpp|mp3|aac|wav|ogg)(\\?|$)/.test(u)
           || u.includes('m3u8') || u.includes('mime=video') || u.includes('videourl');
         if (!hit) return;
-        let kind = kindFrom(url, '');
-        if (u.includes('.m3u8')) kind = 'hls';
+        if (/\\.(ts|m4s)(\\?|$)/.test(u) && !u.includes('.m3u8')) return;
         emit({
           url: url,
           title: document.title || 'فيديو',
-          kind: kind,
+          kind: kindFrom(url, ''),
           mime: '',
           qualityLabel: '',
+          duration: 0,
           drm: 'none',
           extractionMethod: method
         });
@@ -134,13 +133,6 @@ enum ExtractorScript {
       scanVideos();
       scanPerformance();
       setInterval(function() { scanVideos(); scanPerformance(); }, 2500);
-
-      const pageDRM = drmFromPage();
-      if (pageDRM !== 'none') {
-        try {
-          webkit.messageHandlers.video2.postMessage({ type: 'drm', drm: pageDRM, page: location.href, title: document.title || '' });
-        } catch (e) {}
-      }
     })();
     true;
     """

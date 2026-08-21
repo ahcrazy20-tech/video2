@@ -1,111 +1,2035 @@
 [
-  {"trigger":{"url-filter":".*","resource-type":["popup"]},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"doubleclick\\.net"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"googlesyndication\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"googleadservices\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"googletagservices\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"googletagmanager\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adservice\\.google"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"pagead2\\.googlesyndication"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adsystem\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"amazon-adsystem\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"ads-twitter\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"ads\\.facebook\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"an\\.facebook\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"connect\\.facebook\\.net.*fbevents"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"scorecardresearch\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"outbrain\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"taboola\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"revcontent\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"mgid\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"popads\\.net"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"popads\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"popcash\\.net"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"propellerads\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"propellerads\\.net"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adsterra\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"exoclick\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"exosrv\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"juicyads\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"trafficjunky\\.net"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adtng\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"tsyndicate\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"ad-maven\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adcolony\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"applovin\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"unityads\\.unity3d\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"moatads\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adsrvr\\.org"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adnxs\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adform\\.net"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adsafeprotected\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"advertising\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adtechus\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adtech\\.de"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"smartadserver\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"openx\\.net"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"rubiconproject\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"pubmatic\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"casalemedia\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"criteo\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"criteo\\.net"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"hotjar\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"fullstory\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"branch\\.io"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"appsflyer\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adjust\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"kochava\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"ads\\.yahoo\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"ads\\.linkedin\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"ads\\.tiktok\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"ads-api\\.twitter\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"media\\.net"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"yieldmo\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"inmobi\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"chartboost\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"vungle\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"ironsrc\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"supersonicads\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"startappexchange\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"startappservice\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"zedo\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"admob\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"2mdn\\.net"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adgrx\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"bidswitch\\.net"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"contextweb\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"spotxchange\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"teads\\.tv"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"yieldlab\\.net"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"s0\\.2mdn\\.net"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"pagead\\.l\\.google\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adssettings\\.google\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"securepubads\\.g\\.doubleclick\\.net"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"tpc\\.googlesyndication\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"partner\\.googleadservices\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"static\\.adsafeprotected\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"pixel\\.adsafeprotected\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adserver"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"/ads\\?"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"/adserve"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"/ad-code"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"/adsense"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"/pagead"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"prebid"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"adsbygoogle"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"popunder"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"clickadu"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"hilltopads"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"trafficstars"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"ad-delivery\\.net"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"onetag-sys\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"creativecdn\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"liadm\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"3lift\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"sharethrough\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"indexww\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"sonobi\\.com"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":"smaato\\.net"},"action":{"type":"block"}},
-  {"trigger":{"if-domain":["ads.google.com","ad.doubleclick.net"],"url-filter":".*"},"action":{"type":"block"}},
-  {"trigger":{"url-filter":".*","if-domain":["taboola.com","outbrain.com","mgid.com"]},"action":{"type":"block"}}
+{
+"trigger": {
+"url-filter": "\\\\/advert"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adsbygoogle"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "pagead"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "gpt\\\\.js"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "popunder"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "popads"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "clickadu"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "hilltopads"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "trafficstars"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "exoclick"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ima3\\\\.js"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "sponsor.js"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ads\\\\.js"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adserver"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "onesignal"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "2mdn\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "33across\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "3lift\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "aax\\\\.amazon-adsystem\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ad-delivery\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ad-maven\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ad-stir\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ad\\\\.doubleclick\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adblade\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adcash\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adcolony\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adexchangeclear\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adexchangecloud\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adexchangesamurai\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adform\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adfox\\\\.ru"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adgrx\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adingo\\\\.jp"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adition\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "admob\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adnami\\\\.io"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adnxs\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adrecover\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adroll\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ads-twitter\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ads\\\\.adfox\\\\.ru"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ads\\\\.exoclick\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ads\\\\.linkedin\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ads\\\\.pubmatic\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ads\\\\.reddit\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ads\\\\.tiktok\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ads\\\\.trafficjunky\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ads\\\\.vk\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ads\\\\.yahoo\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adsafeprotected\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adscale\\\\.de"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adserver\\\\.adtechus\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adserver\\\\.juicyads\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adserver\\\\.snapads\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adserver\\\\.unityads\\\\.unity3d\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adserverplus\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adservice\\\\.google\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adservice\\\\.google\\\\.com\\\\.eg"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adservice\\\\.google\\\\.com\\\\.sa"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adsnative\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adsrvr\\\\.org"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adssettings\\\\.google\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adsterra\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adsupply\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adtng\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adtrafficquality\\\\.google"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adtrue\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "advertising\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "advertising\\\\.yandex\\\\.ru"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "advertserve\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adyoulike\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "adzerk\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "alb\\\\.reddit\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "amazon-adsystem\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "an\\\\.facebook\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "an\\\\.yandex\\\\.ru"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "aniview\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "appier\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "applovin\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "bidder\\\\.criteo\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "bidr\\\\.io"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "bidswitch\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "bing\\\\.com/ads"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "bluekai\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "buysellads\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "buysellads\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "c\\\\.amazon-adsystem\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "c1\\\\.popads\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "carbonads\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "carbonads\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "casalemedia\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "cdn\\\\.connatix\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "cdn\\\\.doubleverify\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "cdn\\\\.popcash\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "cdn\\\\.taboola\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "cdn\\\\.teads\\\\.tv"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "cds\\\\.taboola\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "chartboost\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "clickadu\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "clickaine\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "cm\\\\.g\\\\.doubleclick\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "connatix\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "content\\\\.ad"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "contextweb\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "creativecdn\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "criteo\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "criteo\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "crwdcntrl\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "d\\\\.adroll\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "demdex\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "dianomi\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "doubleclick\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "doubleverify\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ep2\\\\.adtrafficquality\\\\.google"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "eqads\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ethicalads\\\\.io"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "everesttech\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "exoclick\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "exosrv\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "exponential\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "eyereturn\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "fastclick\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "fastlane\\\\.rubiconproject\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "flashtalking\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "freewheel\\\\.tv"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "fundingchoicesmessages\\\\.google\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "fwmrm\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "go\\\\.sonobi\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "googleads\\\\.g\\\\.doubleclick\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "googleadservices\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "googlesyndication\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "googletagservices\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "hilltopads\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "htlb\\\\.casalemedia\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "iasds01\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ib\\\\.3lift\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ib\\\\.adnxs\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ima\\\\.googlesyndication\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "indexexchange\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "indexww\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "inmobi\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "insight\\\\.adsrvr\\\\.org"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "intergient\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ironsrc\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "juicyads\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "kochava\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "krxd\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "liadm\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "lijit\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "liveintent\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "magican\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "magicanads\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "mc\\\\.yandex\\\\.ru"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "media\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "mediawallahscript\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "mgid\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "microad\\\\.jp"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "moatads\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "msn\\\\.com/ads"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "mzstatic\\\\.com/ads"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "nativo\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "ntv\\\\.io"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "omtrdc\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "onclickalgo\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "onclickmega\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "onclicksuper\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "onetag-sys\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "openx\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "openx\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "outbrain\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "outbrainimg\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "pagead\\\\.l\\\\.google\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "pagead2\\\\.googlesyndication\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "partner\\\\.googleadservices\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "permutive\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "pixel\\\\.adsafeprotected\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "pixel\\\\.quantserve\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "popads\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "popads\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "popcash\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "popin\\\\.cc"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "popmyads\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "postrelease\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "propeller-tracking\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "propellerads\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "pubmatic\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "pushance\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "pushwoosh\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "quantserve\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "rambler\\\\.ru/ads"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "revcontent\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "rhythmone\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "rlcdn\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "rtb\\\\.openx\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "rubiconproject\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "s\\\\.amazon-adsystem\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "s0\\\\.2mdn\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "sb\\\\.scorecardresearch\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "sc-static\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "scorecardresearch\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "search\\\\.spotxchange\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "secure\\\\.adnxs\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "securepubads\\\\.g\\\\.doubleclick\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "servedby-buysellads\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "servenobid\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "servicer\\\\.mgid\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "serving-sys\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "sharethrough\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "smaato\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "smartadserver\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "smartclip\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "snapads\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "sonobi\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "sovrn\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "spotx\\\\.tv"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "spotxchange\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "stackadapt\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "startappexchange\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "startappservice\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "static\\\\.ads-twitter\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "static\\\\.adsafeprotected\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "stats\\\\.g\\\\.doubleclick\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "stickyadstv\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "streamrail\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "supersonicads\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "syndication\\\\.adsterra\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "taboola\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "tapad\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "teads\\\\.tv"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "thetradedesk\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "tpc\\\\.googlesyndication\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "trafficjunky\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "trafficstars\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "trc\\\\.taboola\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "trends\\\\.revcontent\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "tribalfusion\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "triplelift\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "tsyndicate\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "unityads\\\\.unity3d\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "unruly\\\\.co"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "videohub\\\\.tv"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "vungle\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "wap\\\\.ad-maven\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "widgets\\\\.outbrain\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "www\\\\.googleadservices\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "www\\\\.googletagservices\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "yahoo\\\\.com/ad"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "yandex\\\\.ru/ads"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "yieldlab\\\\.net"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "yieldmo\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "z\\\\.moatads\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "zedo\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": "zemanta\\\\.com"
+},
+"action": {
+"type": "block"
+}
+},
+{
+"trigger": {
+"url-filter": ".*"
+},
+"action": {
+"type": "css-display-none",
+"selector": "iframe[id*='google_ads'], iframe[src*='doubleclick'], ins.adsbygoogle, .adsbygoogle, [id*='taboola'], [class*='taboola'], .OUTBRAIN, [id*='outbrain'], [class*='sponsored-box'], .trc_rbox, [class*='popup-ad'], [id*='ad-overlay'], [class*='ad-overlay'], [class*='video-ads'], .ytp-ad-module, .videoAdUi, [class*='ima-ad'], #player-ads"
+}
+}
 ]

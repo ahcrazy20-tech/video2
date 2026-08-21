@@ -2,18 +2,19 @@ import SwiftUI
 
 struct DownloadsView: View {
     @EnvironmentObject var downloads: DownloadManager
+    @EnvironmentObject var lang: LanguageStore
 
     var body: some View {
         NavigationStack {
             List {
                 if downloads.jobs.isEmpty {
-                    Text("لا توجد مهام تحميل بعد.")
+                    Text(lang.t("dl.empty"))
                         .foregroundStyle(.secondary)
                 }
                 ForEach(downloads.jobs) { job in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(job.media.title).font(.headline)
-                        Text(statusAR(job)).font(.caption).foregroundStyle(color(job.state))
+                        Text(status(job)).font(.caption).foregroundStyle(color(job.state))
                         if job.state == .running {
                             ProgressView(value: job.progress)
                                 .tint(V2Theme.mint)
@@ -26,18 +27,18 @@ struct DownloadsView: View {
                     .padding(.vertical, 4)
                 }
             }
-            .navigationTitle("التحميلات")
+            .navigationTitle(lang.t("tab.downloads"))
         }
     }
 
-    private func statusAR(_ job: DownloadJob) -> String {
+    private func status(_ job: DownloadJob) -> String {
         switch job.state {
-        case .queued: return "في الانتظار"
-        case .running: return "جارٍ التحميل \(Int(job.progress * 100))٪"
-        case .paused: return "متوقف"
-        case .failed: return "فشل"
-        case .completed: return "اكتمل — في المكتبة"
-        case .blockedDRM: return "محظور بسبب DRM"
+        case .queued: return lang.t("dl.queued")
+        case .running: return "\(lang.t("dl.running")) \(Int(job.progress * 100))%"
+        case .paused: return lang.t("dl.paused")
+        case .failed: return lang.t("dl.failed")
+        case .completed: return lang.t("dl.done")
+        case .blockedDRM: return lang.t("dl.drm")
         }
     }
 
