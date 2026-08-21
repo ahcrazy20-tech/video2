@@ -15,6 +15,9 @@ struct RootView: View {
             TranslateView()
                 .tabItem { Label(lang.t("tab.translate"), systemImage: "captions.bubble.fill") }
                 .tag(2)
+            FormatConversionView()
+                .tabItem { Label("تحويل الصيغ", systemImage: "arrow.triangle.2.circlepath") }
+                .tag(5)
             DownloadsView()
                 .tabItem { Label(lang.t("tab.downloads"), systemImage: "arrow.down.circle.fill") }
                 .tag(3)

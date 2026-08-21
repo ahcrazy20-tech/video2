@@ -7,12 +7,14 @@ struct LibraryView: View {
     @EnvironmentObject var library: LibraryStore
     @EnvironmentObject var lang: LanguageStore
     @EnvironmentObject var translations: TranslationManager
+    @EnvironmentObject var converter: FormatConverter
     @State private var query = ""
     @State private var playing: SavedVideo?
     @State private var renameTarget: SavedVideo?
     @State private var renameText = ""
     @State private var thumbTick = 0
     @State private var translateVideo: SavedVideo?
+    @State private var convertVideo: SavedVideo?
 
     var filtered: [SavedVideo] {
         let q = query.trimmingCharacters(in: .whitespaces)
@@ -70,6 +72,11 @@ struct LibraryView: View {
             .sheet(item: $translateVideo) { v in
                 NewTranslationView(preselected: v)
                     .environmentObject(translations)
+                    .environmentObject(library)
+            }
+            .sheet(item: $convertVideo) { v in
+                ConvertPickerView(initialVideo: v)
+                    .environmentObject(converter)
                     .environmentObject(library)
             }
             .onReceive(NotificationCenter.default.publisher(for: .v2ThumbReady)) { _ in

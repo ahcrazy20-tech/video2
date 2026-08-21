@@ -8,6 +8,7 @@ struct Video2App: App {
     @StateObject private var browser = BrowserModel()
     @StateObject private var lang = LanguageStore()
     @StateObject private var translations = TranslationManager()
+    @StateObject private var converter = FormatConverter()
 
     init() {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
@@ -23,12 +24,15 @@ struct Video2App: App {
                 .environmentObject(browser)
                 .environmentObject(lang)
                 .environmentObject(translations)
+                .environmentObject(converter)
                 .preferredColorScheme(.dark)
                 .onAppear {
                     downloads.attach(library: library)
                     translations.attach(library: library)
+                    converter.attach(library: library)
                     library.load()
                     translations.load()
+                    converter.load()
                 }
         }
     }

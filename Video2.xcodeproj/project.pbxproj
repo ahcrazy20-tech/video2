@@ -38,6 +38,8 @@
 		A10000000000000100000036 /* TranslationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000036 /* TranslationManager.swift */; };
 		A10000000000000100000037 /* TranslateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000037 /* TranslateView.swift */; };
 		A10000000000000100000038 /* SubtitleOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000038 /* SubtitleOverlay.swift */; };
+		A10000000000000100000039 /* FormatConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000039 /* FormatConverter.swift */; };
+		A10000000000000100000040 /* FormatConversionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000040 /* FormatConversionView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -147,6 +149,7 @@
 				B10000000000000100000034 /* STTService.swift */,
 				B10000000000000100000035 /* TranslateService.swift */,
 				B10000000000000100000036 /* TranslationManager.swift */,
+				B10000000000000100000039 /* FormatConverter.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -164,6 +167,7 @@
 				B10000000000000100000038 /* SubtitleOverlay.swift */,
 				B1000000000000010000000D /* DownloadsView.swift */,
 				B1000000000000010000000E /* SettingsView.swift */,
+				B10000000000000100000040 /* FormatConversionView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -276,6 +280,8 @@
 				A10000000000000100000012 /* OfflinePlayerView.swift in Sources */,
 				A1000000000000010000000D /* DownloadsView.swift in Sources */,
 				A1000000000000010000000E /* SettingsView.swift in Sources */,
+				A10000000000000100000039 /* FormatConverter.swift in Sources */,
+				A10000000000000100000040 /* FormatConversionView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

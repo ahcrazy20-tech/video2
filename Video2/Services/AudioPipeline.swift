@@ -46,29 +46,71 @@ enum AudioPipeline {
     // MARK: تحويل HLS إلى MP4 مؤقت
 
     /// AVAssetReader لا يقرأ بث HLS حتى المحلي؛ نصدّره أولاً لملف مؤقت ثم نكمل.
-    /// ملاحظة: النسخة المتزامنة export(to:as:) متاحة iOS 18+ فقط — نستخدم الكلاسيكية.
+    /// نجرّب عدة presets بالترتيب: passthrough أولاً (بدون إعادة ترميز — الأسرع والأضمن)، ثم presets أخرى.
     static func exportHLSToTempMP4(_ url: URL) async throws -> URL {
         let asset = AVURLAsset(url: url)
-        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPreset960x540) else {
-            throw AudioPipelineError.exportFailed("تعذر إنشاء جلسة التصدير")
-        }
-        let out = FileManager.default.temporaryDirectory
-            .appendingPathComponent("v2-hls-\(UUID().uuidString).mp4")
-        try? FileManager.default.removeItem(at: out)
-        session.outputURL = out
-        session.outputFileType = .mp4
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            session.exportAsynchronously {
-                cont.resume()
+
+        // تحقق أن الفيديو يحتوي مسارات صالحة قبل محاولة التصدير
+        do {
+            let videoTracks = try await asset.loadTracks(withMediaType: .video)
+            let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+            guard !videoTracks.isEmpty else {
+                throw AudioPipelineError.exportFailed("الفيديو لا يحتوي مسار فيديو صالح")
             }
+            guard !audioTracks.isEmpty else {
+                throw AudioPipelineError.noAudioTrack
+            }
+        } catch let e as AudioPipelineError {
+            throw e
+        } catch {
+            throw AudioPipelineError.exportFailed("تعذر قراءة مسارات الفيديو: \(error.localizedDescription)")
         }
-        guard session.status == .completed else {
-            throw AudioPipelineError.exportFailed(session.error?.localizedDescription ?? "فشل غير معروف")
+
+        // نجرّب عدة presets بالترتيب: passthrough أولاً (الأسرع والأضمن)
+        let presets: [String] = [
+            AVAssetExportPresetPassthrough,
+            AVAssetExportPresetHighestQuality,
+            AVAssetExportPresetMediumQuality,
+            AVAssetExportPreset960x540
+        ]
+
+        let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: asset)
+
+        for preset in presets {
+            guard compatiblePresets.contains(preset) else { continue }
+
+            let out = FileManager.default.temporaryDirectory
+                .appendingPathComponent("v2-hls-\(UUID().uuidString).mp4")
+            try? FileManager.default.removeItem(at: out)
+
+            guard let session = AVAssetExportSession(asset: asset, presetName: preset) else { continue }
+
+            // اختر fileType المناسب
+            let supportedTypes = session.supportedFileTypes
+            guard supportedTypes.contains(.mp4) else { continue }
+
+            session.outputURL = out
+            session.outputFileType = .mp4
+
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                session.exportAsynchronously {
+                    cont.resume()
+                }
+            }
+
+            if session.status == .completed,
+               FileManager.default.fileExists(atPath: out.path) {
+                let fileSize = (try? out.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                if fileSize > 0 {
+                    return out
+                }
+            }
+            // فشل هذا preset، جرّب التالي
+            try? FileManager.default.removeItem(at: out)
         }
-        guard FileManager.default.fileExists(atPath: out.path) else {
-            throw AudioPipelineError.exportFailed("الملف الناتج فارغ")
-        }
-        return out
+
+        throw AudioPipelineError.exportFailed(
+            "تعذر تحويل HLS إلى MP4. جرّب تحميل الفيديو بصيغة MP4 مباشرة بدلاً من HLS.")
     }
 
     // MARK: الاستخراج والتقطيع
