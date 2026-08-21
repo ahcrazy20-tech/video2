@@ -7,22 +7,31 @@ struct SubtitleOverlay: View {
     let text: String
     let fontSize: Int
 
+    /// كل سطر في Text منفصل — يمنع تشقلب اتجاه النص عند خلط عربي/لاتيني (bidi)
+    private var lines: [String] {
+        text.components(separatedBy: "\n").filter { !$0.isEmpty }
+    }
+
     var body: some View {
-        Text(text)
-            .font(.system(size: CGFloat(fontSize), weight: .semibold))
-            .multilineTextAlignment(.center)
-            .lineSpacing(4)
-            .foregroundColor(.white)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color.black.opacity(0.62))
-            )
-            .shadow(radius: 4)
-            .padding(.horizontal, 24)
-            .allowsHitTesting(false)
-            .animation(.easeInOut(duration: 0.12), value: text)
+        VStack(spacing: 6) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.system(size: CGFloat(fontSize), weight: .semibold))
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(4)
+                    .foregroundColor(.white)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.black.opacity(0.62))
+        )
+        .shadow(radius: 4)
+        .padding(.horizontal, 24)
+        .allowsHitTesting(false)
+        .animation(.easeInOut(duration: 0.12), value: text)
     }
 }
 
