@@ -254,7 +254,7 @@ enum STTService {
             }
 
             pollTick("بدء التفريغ…")
-            let body: [String: Any] = [
+            var body: [String: Any] = [
                 "audio_url": uploadURL,
                 "speech_model": "universal",
                 "punctuate": true,
@@ -430,7 +430,7 @@ enum STTService {
                                        language: SubLang,
                                        apiKey: String) async throws -> STTResult {
         // 1) إنشاء مهمة
-        var body: [String: Any] = [
+        let body: [String: Any] = [
             "audio_url": audioURL.absoluteString,
             "language": language.bcp47 ?? language.rawValue,
             "model": "enhanced"
