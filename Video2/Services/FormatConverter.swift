@@ -188,8 +188,13 @@ final class FormatConverter: ObservableObject {
         let outURL = LibraryStore.documents.appendingPathComponent(outRel)
         guard FileManager.default.fileExists(atPath: outURL.path) else { return }
 
-        // حذف الملف القديم
-        try? FileManager.default.removeItem(at: video.localURL)
+        // حذف الملف القديم (أو المجلد بالكامل إذا كان HLS)
+        if video.kind == .hls {
+            let hlsFolder = video.localURL.deletingLastPathComponent()
+            try? FileManager.default.removeItem(at: hlsFolder)
+        } else {
+            try? FileManager.default.removeItem(at: video.localURL)
+        }
 
         // نقل الملف الجديد لمكان القديم
         let newKind = MediaKind.infer(url: outRel, mime: nil)
@@ -294,10 +299,10 @@ final class FormatConverter: ObservableObject {
         }
 
         let supportedTypes = session.supportedFileTypes
-        let fileType = job.outputFormat.avFileType
-        guard supportedTypes.contains(fileType) else {
-            // محاولة بديلة: إذا كان MP4 غير مدعوم، جرّب M4V
-            let altType: AVFileType = fileType == .mp4 ? .m4a : .mp4
+        var fileType = job.outputFormat.avFileType
+        if !supportedTypes.contains(fileType) {
+            // محاولة بديلة: إذا كان MP4 غير مدعوم، جرّب MOV والعكس
+            let altType: AVFileType = fileType == .mov ? .mp4 : .mov
             guard supportedTypes.contains(altType) else {
                 jobs[i].phase = .failed
                 jobs[i].errorMessage = ConversionError.presetNotSupported.localizedDescription
@@ -306,6 +311,7 @@ final class FormatConverter: ObservableObject {
                 if let tempHLSFile { try? FileManager.default.removeItem(at: tempHLSFile) }
                 return
             }
+            fileType = altType
         }
 
         // ملف الإخراج
