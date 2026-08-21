@@ -254,7 +254,7 @@ enum STTService {
             }
 
             pollTick("بدء التفريغ…")
-            var body: [String: Any] = [
+            let body: [String: Any] = [
                 "audio_url": uploadURL,
                 "speech_model": "universal",
                 "punctuate": true,

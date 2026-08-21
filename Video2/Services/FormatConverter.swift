@@ -4,7 +4,7 @@ import Combine
 
 // MARK: - صيغ الإخراج المدعومة
 
-enum OutputFormat: String, CaseIterable, Identifiable {
+enum OutputFormat: String, CaseIterable, Identifiable, Codable {
     case mp4, mov, m4v
 
     var id: String { rawValue }
@@ -188,12 +188,17 @@ final class FormatConverter: ObservableObject {
         let outURL = LibraryStore.documents.appendingPathComponent(outRel)
         guard FileManager.default.fileExists(atPath: outURL.path) else { return }
 
-        // حذف الملف القديم
-        try? FileManager.default.removeItem(at: video.localURL)
+        // حذف الملف القديم (أو المجلد بالكامل إذا كان HLS)
+        if video.kind == .hls {
+            let hlsFolder = video.localURL.deletingLastPathComponent()
+            try? FileManager.default.removeItem(at: hlsFolder)
+        } else {
+            try? FileManager.default.removeItem(at: video.localURL)
+        }
 
         // نقل الملف الجديد لمكان القديم
         let newKind = MediaKind.infer(url: outRel, mime: nil)
-        let destURL = video.localURL.deletingPathExtension().appendingPathExtension(format.fileExtension)
+        let destURL = video.localURL.deletingPathExtension().appendingPathExtension(job.outputFormat.fileExtension)
         do {
             try FileManager.default.moveItem(at: outURL, to: destURL)
         } catch {
@@ -201,7 +206,7 @@ final class FormatConverter: ObservableObject {
             try? FileManager.default.removeItem(at: outURL)
         }
 
-        let bytes = (try? destURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
+        let bytes = (try? destURL.resourceValues(forKeys: Set([URL.ResourceKey.fileSizeKey])).fileSize).map { Int64($0) } ?? 0
         video.localRelativePath = destURL.v2RelativePath(from: LibraryStore.documents)
         video.kind = newKind
         video.fileSize = bytes
@@ -289,23 +294,24 @@ final class FormatConverter: ObservableObject {
             jobs[i].errorMessage = ConversionError.noExportSession.localizedDescription
             jobs[i].finishedAt = Date()
             saveIndex()
-            try? FileManager.default.removeItem(at: tempHLSFile)
+            if let tempHLSFile { try? FileManager.default.removeItem(at: tempHLSFile) }
             return
         }
 
         let supportedTypes = session.supportedFileTypes
-        let fileType = job.outputFormat.avFileType
-        guard supportedTypes.contains(fileType) else {
-            // محاولة بديلة: إذا كان MP4 غير مدعوم، جرّب M4V
-            let altType: AVFileType = fileType == .mp4 ? .m4a : .mp4
+        var fileType = job.outputFormat.avFileType
+        if !supportedTypes.contains(fileType) {
+            // محاولة بديلة: إذا كان MP4 غير مدعوم، جرّب MOV والعكس
+            let altType: AVFileType = fileType == .mov ? .mp4 : .mov
             guard supportedTypes.contains(altType) else {
                 jobs[i].phase = .failed
                 jobs[i].errorMessage = ConversionError.presetNotSupported.localizedDescription
                 jobs[i].finishedAt = Date()
                 saveIndex()
-                try? FileManager.default.removeItem(at: tempHLSFile)
+                if let tempHLSFile { try? FileManager.default.removeItem(at: tempHLSFile) }
                 return
             }
+            fileType = altType
         }
 
         // ملف الإخراج
@@ -342,11 +348,11 @@ final class FormatConverter: ObservableObject {
         progressTask.cancel()
 
         // تنظيف ملف HLS المؤقت
-        try? FileManager.default.removeItem(at: tempHLSFile)
+        if let tempHLSFile { try? FileManager.default.removeItem(at: tempHLSFile) }
 
         if session.status == .completed,
            FileManager.default.fileExists(atPath: outputURL.path) {
-            let bytes = (try? outputURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
+            let bytes = (try? outputURL.resourceValues(forKeys: Set([URL.ResourceKey.fileSizeKey])).fileSize).map { Int64($0) } ?? 0
             let relPath = outputURL.v2RelativePath(from: LibraryStore.documents)
 
             guard let idx = jobs.firstIndex(where: { $0.id == jobID }) else { return }
