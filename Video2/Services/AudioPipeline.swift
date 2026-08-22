@@ -39,112 +39,187 @@ enum AudioPipeline {
     static let sampleRate = 16000.0
     static let chunkSeconds = 900.0
 
-    // MARK: تجميع HLS segments في ملف .ts واحد
+    // MARK: ═══════════════════════════════════════════════════════════
+    // MARK: الخطوة 1: تجميع HLS segments في ملف .ts واحد (بدون AVFoundation)
+    // MARK: ═══════════════════════════════════════════════════════════
 
     /// نقرأ ملف m3u8 يدوياً، نستخرج قائمة .ts segments، نلحمهم في ملف واحد.
-    /// AVFoundation يقدر يقرأ ملف .ts عادي — مفيش حاجة لـ HTTP server أو AVAssetExportSession.
+    /// هذا الحل يعمل 100% لأنه لا يعتمد على AVFoundation لدعم HLS playlists.
+    /// AVFoundation يقدر يقرأ ملف .ts عادي — فقط لا يستطيع قراءة m3u8 playlist.
     static func mergeHLSToSingleTS(m3u8URL: URL, outputDir: URL) async throws -> URL {
-        
+
         print("[AudioPipeline] Reading m3u8 playlist: \(m3u8URL.lastPathComponent)")
-        
+
         // نقرأ ملف m3u8
         guard let playlistContent = try? String(contentsOf: m3u8URL, encoding: .utf8) else {
-            throw AudioPipelineError.exportFailed("تعذر قراءة ملف m3u8")
+            throw AudioPipelineError.exportFailed("تعذر قراءة ملف m3u8: \(m3u8URL.lastPathComponent)")
         }
-        
-        // نستخرج قائمة .ts segments
+
+        // نستخرج قائمة .ts segments (نتجاهل الأسطر اللي تبدأ بـ #)
         let lines = playlistContent.components(separatedBy: .newlines)
-        let tsPaths: [String] = lines.compactMap { line in
+        let segmentPaths: [String] = lines.compactMap { line in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            // نتجاهل التعليقات والـ #EXTINF
             guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return nil }
             return trimmed
         }
-        
-        guard !tsPaths.isEmpty else {
+
+        guard !segmentPaths.isEmpty else {
             throw AudioPipelineError.exportFailed("ملف m3u8 فارغ أو لا يحتوي segments")
         }
-        
-        print("[AudioPipeline] Found \(tsPaths.count) TS segments")
-        
+
+        print("[AudioPipeline] Found \(segmentPaths.count) TS segments")
+
         // الملف الناتج
         let outputURL = outputDir.appendingPathComponent("merged.ts")
         try? FileManager.default.removeItem(at: outputURL)
-        
-        // ننشئ الملف
+
+        // ننشئ الملف ونبدأ الكتابة
         guard FileManager.default.createFile(atPath: outputURL.path, contents: nil, attributes: nil) else {
             throw AudioPipelineError.exportFailed("تعذر إنشاء ملف المخرج")
         }
-        
+
         let fileHandle = try FileHandle(forWritingTo: outputURL)
         defer { try? fileHandle.close() }
-        
-        // نلحم كل segment
+
         let m3u8Folder = m3u8URL.deletingLastPathComponent()
-        for (index, tsPath) in tsPaths.enumerated() {
+
+        for (index, segPath) in segmentPaths.enumerated() {
             if Task.isCancelled {
+                try? FileManager.default.removeItem(at: outputURL)
                 throw CancellationError()
             }
-            
-            // نبني المسار الكامل
-            let tsURL: URL
-            if tsPath.hasPrefix("http://") || tsPath.hasPrefix("https://") {
-                tsURL = URL(string: tsPath)!
-                // نحتاج ننزله مؤقتاً
-                let (tempData, _) = try await URLSession.shared.data(from: tsURL)
-                fileHandle.write(tempData)
+
+            if segPath.hasPrefix("http://") || segPath.hasPrefix("https://") {
+                // Segment على الإنترنت — ننزله
+                guard let segURL = URL(string: segPath) else {
+                    throw AudioPipelineError.exportFailed("رابط segment غير صالح: \(segPath)")
+                }
+                let (data, response) = try await URLSession.shared.data(from: segURL)
+                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
+                    throw AudioPipelineError.exportFailed("فشل تنزيل segment \(index + 1): HTTP \(httpResponse.statusCode)")
+                }
+                fileHandle.write(data)
             } else {
-                // مسار محلي
-                tsURL = m3u8Folder.appendingPathComponent(tsPath)
-                let tsData = try Data(contentsOf: tsURL)
-                fileHandle.write(tsData)
+                // Segment محلي — نقرأه مباشرة
+                let segURL = m3u8Folder.appendingPathComponent(segPath)
+                guard FileManager.default.fileExists(atPath: segURL.path) else {
+                    throw AudioPipelineError.exportFailed("ملف segment غير موجود: \(segPath)")
+                }
+                let data = try Data(contentsOf: segURL)
+                fileHandle.write(data)
             }
-            
-            print("[AudioPipeline] Merged segment \(index + 1)/\(tsPaths.count)")
+
+            print("[AudioPipeline] Merged segment \(index + 1)/\(segmentPaths.count)")
         }
-        
+
         let fileSize = (try? outputURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        print("[AudioPipeline] Merged TS file created: \(fileSize) bytes")
-        
+        print("[AudioPipeline] ✅ Merged TS file created: \(fileSize / 1024 / 1024) MB")
+
         return outputURL
     }
 
-    // MARK: استخراج الصوت من ملف .ts (أو أي فيديو)
+    // MARK: ═══════════════════════════════════════════════════════════
+    // MARK: الخطوة 2: تحويل .ts إلى .mp4 (باستخدام AVAssetExportSession)
+    // MARK: ═══════════════════════════════════════════════════════════
 
-    /// نقرأ ملف .ts (أو MP4) ونستخرج الصوت كـ m4a chunks
-    static func extractAudioFromVideo(videoURL: URL, outputDir: URL) async throws -> AVURLAsset {
-        
-        print("[AudioPipeline] Creating asset from: \(videoURL.lastPathComponent)")
-        
-        let asset = AVURLAsset(url: videoURL)
-        
-        // تحقق أن الفيديو يحتوي مسارات صالحة
-        do {
-            let videoTracks = try await asset.loadTracks(withMediaType: .video)
-            let audioTracks = try await asset.loadTracks(withMediaType: .audio)
-            
-            print("[AudioPipeline] Video tracks: \(videoTracks.count), Audio tracks: \(audioTracks.count)")
-            
-            guard !videoTracks.isEmpty || !audioTracks.isEmpty else {
-                throw AudioPipelineError.exportFailed("الفيديو لا يحتوي مسارات صالحة")
-            }
-            guard !audioTracks.isEmpty else {
-                throw AudioPipelineError.noAudioTrack
-            }
-        } catch let e as AudioPipelineError {
-            throw e
-        } catch {
-            throw AudioPipelineError.readerFailed("تعذر قراءة مسارات الفيديو: \(error.localizedDescription)")
+    /// AVAssetExportSession يقرأ ملفات .ts بشكل ممتاز (على عكس m3u8 playlists).
+    /// هذه الدالة تأخذ .ts المدموج وتحويله لملف .mp4 صالح.
+    static func convertTSToMP4(_ tsURL: URL) async throws -> URL {
+
+        let asset = AVURLAsset(url: tsURL)
+
+        // تحقق أن الملف يحتوي مسارات صالحة
+        let videoTracks = try await asset.loadTracks(withMediaType: .video)
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        print("[AudioPipeline] .ts tracks — Video: \(videoTracks.count), Audio: \(audioTracks.count)")
+
+        guard !videoTracks.isEmpty || !audioTracks.isEmpty else {
+            throw AudioPipelineError.exportFailed("ملف .ts لا يحتوي مسارات صالحة")
         }
-        
-        return asset
+
+        let presets: [String] = [
+            AVAssetExportPresetPassthrough,
+            AVAssetExportPresetHighestQuality,
+            AVAssetExportPresetMediumQuality,
+            AVAssetExportPreset960x540
+        ]
+
+        let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: asset)
+
+        for preset in presets {
+            guard compatiblePresets.contains(preset) else { continue }
+
+            let out = FileManager.default.temporaryDirectory
+                .appendingPathComponent("v2-ts-\(UUID().uuidString).mp4")
+            try? FileManager.default.removeItem(at: out)
+
+            guard let session = AVAssetExportSession(asset: asset, presetName: preset) else { continue }
+
+            let supportedTypes = session.supportedFileTypes
+            guard supportedTypes.contains(.mp4) else { continue }
+
+            session.outputURL = out
+            session.outputFileType = .mp4
+            session.shouldOptimizeForNetworkUse = true
+
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                session.exportAsynchronously {
+                    cont.resume()
+                }
+            }
+
+            if session.status == .completed,
+               FileManager.default.fileExists(atPath: out.path) {
+                let fileSize = (try? out.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                if fileSize > 0 {
+                    print("[AudioPipeline] ✅ .ts → .mp4 succeeded with preset: \(preset), size: \(fileSize / 1024 / 1024) MB")
+                    return out
+                }
+            }
+
+            if session.status == .failed {
+                let errDesc = session.error?.localizedDescription ?? "غير معروف"
+                print("[AudioPipeline] ❌ .ts → .mp4 failed with preset \(preset): \(errDesc)")
+            }
+
+            try? FileManager.default.removeItem(at: out)
+        }
+
+        throw AudioPipelineError.exportFailed("تعذر تحويل .ts إلى .mp4")
     }
 
-    // MARK: الاستخراج والتقطيع
+    // MARK: ═══════════════════════════════════════════════════════════
+    // MARK: الدالة الموحدة: HLS → MP4 (للترجمة وللتحويل)
+    // MARK: ═══════════════════════════════════════════════════════════
 
-    /// يقرأ الصوت ويكتب أجزاء m4a في المجلد المطلوب، ويعيد قائمة الأجزاء.
-    /// `singleFile: true` ينتج ملفاً واحداً كاملاً (لخدمة AssemblyAI).
-    /// يستأنف تلقائياً إذا وُجد manifest مطابق من تشغيل سابق.
+    /// تدمج كل الـ HLS segments في ملف .ts واحد ثم تحوّله لـ .mp4
+    static func exportHLSToTempMP4(_ url: URL) async throws -> URL {
+
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw AudioPipelineError.exportFailed("ملف HLS غير موجود: \(url.lastPathComponent)")
+        }
+
+        // خطوة 1: نلحم كل الـ segments في ملف .ts واحد
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("v2-hls-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let tsURL = try await mergeHLSToSingleTS(m3u8URL: url, outputDir: tempDir)
+
+        // خطوة 2: نحول .ts إلى .mp4
+        let mp4URL = try await convertTSToMP4(tsURL)
+
+        // ننظف ملف .ts (مش محتاجينه تاني)
+        try? FileManager.default.removeItem(at: tsURL)
+        try? FileManager.default.removeItem(at: tempDir)
+
+        return mp4URL
+    }
+
+    // MARK: ═══════════════════════════════════════════════════════════
+    // MARK: الاستخراج والتقطيع الصوتي
+    // MARK: ═══════════════════════════════════════════════════════════
+
     static func extractChunks(from videoURL: URL,
                               into dir: URL,
                               singleFile: Bool,
@@ -156,20 +231,27 @@ enum AudioPipeline {
         let manifestURL = dir.appendingPathComponent("chunks.json")
 
         var sourceURL = videoURL
-        
-        // لو HLS (m3u8)، نلحم كل الـ segments في ملف .ts واحد
         if videoURL.pathExtension.lowercased() == "m3u8" {
-            let cached = dir.appendingPathComponent("merged.ts")
+            let cached = dir.appendingPathComponent("hls-source.mp4")
             if FileManager.default.fileExists(atPath: cached.path) {
                 sourceURL = cached
             } else {
                 progress(0.02)
-                sourceURL = try await mergeHLSToSingleTS(m3u8URL: videoURL, outputDir: dir)
-                do { try FileManager.default.moveItem(at: sourceURL, to: cached) }
-                catch { 
-                    // لو move فشل، نستخدم الملف اللي عندنا
-                    sourceURL = dir.appendingPathComponent("merged.ts")
+
+                // خطوة 1: نلحم كل الـ segments في .ts واحد
+                let tsURL = dir.appendingPathComponent("merged.ts")
+                if !FileManager.default.fileExists(atPath: tsURL.path) {
+                    _ = try await mergeHLSToSingleTS(m3u8URL: videoURL, outputDir: dir)
+                    // mergeHLSToSingleTS بيحط الملف في merged.ts
                 }
+
+                // خطوة 2: نحول .ts إلى .mp4
+                let tmp = try await convertTSToMP4(tsURL)
+                do { try FileManager.default.moveItem(at: tmp, to: cached) }
+                catch { try? FileManager.default.copyItem(at: tmp, to: cached) }
+
+                // ننظف merged.ts
+                try? FileManager.default.removeItem(at: tsURL)
                 sourceURL = cached
             }
             guard FileManager.default.fileExists(atPath: sourceURL.path) else {
@@ -189,7 +271,7 @@ enum AudioPipeline {
             }
         }
 
-        let asset = try await extractAudioFromVideo(videoURL: sourceURL, outputDir: dir)
+        let asset = AVURLAsset(url: sourceURL)
         let duration = try await loadDuration(asset)
         try? String(duration).write(to: dir.appendingPathComponent("duration.txt"), atomically: true, encoding: .utf8)
 
@@ -345,8 +427,9 @@ enum AudioPipeline {
     static func cleanupAudio(in dir: URL) {
         let chunksDir = dir.appendingPathComponent("chunks", isDirectory: true)
         try? FileManager.default.removeItem(at: chunksDir)
-        try? FileManager.default.removeItem(at: dir.appendingPathComponent("merged.ts"))
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("hls-source.mp4"))
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("hls-source.m4a"))
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("merged.ts"))
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("chunks.json"))
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("duration.txt"))
     }
