@@ -40,6 +40,7 @@
 		A10000000000000100000038 /* SubtitleOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000038 /* SubtitleOverlay.swift */; };
 		A10000000000000100000039 /* FormatConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000039 /* FormatConverter.swift */; };
 		A10000000000000100000040 /* FormatConversionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000040 /* FormatConversionView.swift */; };
+		A10000000000000100000041 /* AppLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000041 /* AppLock.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -79,6 +80,7 @@
 		B10000000000000100000038 /* SubtitleOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleOverlay.swift; sourceTree = "<group>"; };
 	B10000000000000100000039 /* FormatConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FormatConverter.swift; sourceTree = "<group>"; };
 		B10000000000000100000040 /* FormatConversionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FormatConversionView.swift; sourceTree = "<group>"; };
+		B10000000000000100000041 /* AppLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLock.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -152,6 +154,7 @@
 				B10000000000000100000035 /* TranslateService.swift */,
 				B10000000000000100000036 /* TranslationManager.swift */,
 				B10000000000000100000039 /* FormatConverter.swift */,
+				B10000000000000100000041 /* AppLock.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -284,6 +287,7 @@
 				A1000000000000010000000E /* SettingsView.swift in Sources */,
 				A10000000000000100000039 /* FormatConverter.swift in Sources */,
 				A10000000000000100000040 /* FormatConversionView.swift in Sources */,
+				A10000000000000100000041 /* AppLock.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
