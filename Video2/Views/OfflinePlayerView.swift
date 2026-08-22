@@ -11,6 +11,9 @@ final class OfflinePlayerModel: ObservableObject {
     private var timeObs: Any?
     private var endObs: NSObjectProtocol?
 
+    // Reference to language store for translated toast messages
+    weak var lang: LanguageStore?
+
     @Published var isPlaying = false
     @Published var current: Double = 0
     @Published var duration: Double = 0
@@ -43,8 +46,9 @@ final class OfflinePlayerModel: ObservableObject {
     private var statusObs: NSKeyValueObservation?
     let pip: AVPictureInPictureController?
 
-    init(video: SavedVideo) {
+    init(video: SavedVideo, lang: LanguageStore? = nil) {
         self.video = video
+        self.lang = lang
         let p = AVPlayer()
         p.actionAtItemEnd = .pause
         player = p
@@ -62,6 +66,10 @@ final class OfflinePlayerModel: ObservableObject {
 
     var playerLayer: AVPlayerLayer { layer }
 
+    func t(_ key: String) -> String {
+        lang?.t(key) ?? key
+    }
+
     func start() {
         UIApplication.shared.isIdleTimerDisabled = true
         loadSubtitles()
@@ -73,7 +81,7 @@ final class OfflinePlayerModel: ObservableObject {
                 DispatchQueue.main.async {
                     guard let self else { return }
                     if item.status == .failed {
-                        self.flash(item.error?.localizedDescription ?? "فشل تشغيل الملف")
+                        self.flash(item.error?.localizedDescription ?? self.t("pl.fail"))
                         self.isPlaying = false
                     } else if item.status == .readyToPlay {
                         if self.video.lastPosition > 1 {
@@ -94,7 +102,7 @@ final class OfflinePlayerModel: ObservableObject {
                 }
             }
         } catch {
-            flash("تعذر تجهيز التشغيل")
+            flash(t("pl.prep"))
         }
         timeObs = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] t in
             guard let self else { return }
@@ -143,30 +151,30 @@ final class OfflinePlayerModel: ObservableObject {
 
     func skip(_ delta: Double) {
         seek(to: current + delta)
-        flash("\(delta > 0 ? "+" : "")\(Int(delta)) ث")
+        flash("\(delta > 0 ? "+" : "")\(Int(delta)) s")
     }
 
     func setRate(_ r: Float) {
         rate = r
         if isPlaying { player.rate = r }
-        flash(String(format: "السرعة ×%.2g", r))
+        flash(String(format: "\(t("pl.speed")) ×%.2g", r))
     }
 
     func toggleFill() {
         fill.toggle()
         layer.videoGravity = fill ? .resizeAspectFill : .resizeAspect
-        flash(fill ? "ملء الشاشة" : "ملاءمة")
+        flash(fill ? t("pl.fill") : t("pl.fit"))
     }
 
     func startSleep(_ minutes: Int) {
         sleepWork?.cancel()
         sleepMinutes = minutes
-        guard minutes > 0 else { flash("أُلغي النوم"); return }
-        flash("إيقاف بعد \(minutes) د")
+        guard minutes > 0 else { flash(t("pl.cancel.timer")); return }
+        flash(String(format: t("pl.sleep.in"), minutes))
         let w = DispatchWorkItem { [weak self] in
             self?.pause()
             self?.sleepMinutes = 0
-            self?.flash("تم الإيقاف")
+            self?.flash(self?.t("pl.sleep.done") ?? "Stopped")
         }
         sleepWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + Double(minutes * 60), execute: w)
@@ -238,7 +246,7 @@ final class OfflinePlayerModel: ObservableObject {
     }
 
     func fmt(_ s: Double) -> String {
-        guard s.isFinite else { return "٠:٠٠" }
+        guard s.isFinite else { return "0:00" }
         let n = Int(max(0, s))
         let h = n / 3600
         let m = (n % 3600) / 60
@@ -272,6 +280,7 @@ struct PlayerLayerView: UIViewRepresentable {
 struct OfflinePlayerView: View {
     let video: SavedVideo
     @EnvironmentObject var library: LibraryStore
+    @EnvironmentObject var lang: LanguageStore
     @Environment(\.dismiss) var dismiss
     @StateObject private var vm: OfflinePlayerModel
     @State private var dragStart: Double?
@@ -308,22 +317,28 @@ struct OfflinePlayerView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
-        .onAppear { vm.start() }
+        .onAppear {
+            // Connect the language store to the model after init
+            vm.lang = lang
+            vm.start()
+        }
         .onDisappear {
             library.updatePosition(id: video.id, position: vm.current, duration: vm.duration)
             vm.stop()
         }
-        .confirmationDialog("السرعة", isPresented: $showSpeed, titleVisibility: .visible) {
-            ForEach([0.5, 0.75, 1, 1.25, 1.5, 2], id: \.self) { r in
-                Button(r == 1 ? "عادي" : "×\(r)") { vm.setRate(Float(r)) }
+        .confirmationDialog(lang.t("pl.speed"), isPresented: $showSpeed, titleVisibility: .visible) {
+            ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in
+                Button(r == 1.0 ? lang.t("pl.normal") : "×\(r)") { vm.setRate(Float(r)) }
             }
+            Button(lang.t("nav.cancel"), role: .cancel) {}
         }
-        .confirmationDialog("إيقاف تلقائي", isPresented: $showSleep, titleVisibility: .visible) {
-            Button("١٥ دقيقة") { vm.startSleep(15) }
-            Button("٣٠ دقيقة") { vm.startSleep(30) }
-            Button("٤٥ دقيقة") { vm.startSleep(45) }
-            Button("٦٠ دقيقة") { vm.startSleep(60) }
-            Button("إلغاء المؤقت") { vm.startSleep(0) }
+        .confirmationDialog(lang.t("pl.sleep"), isPresented: $showSleep, titleVisibility: .visible) {
+            Button("15 \(min)") { vm.startSleep(15) }
+            Button("30 \(min)") { vm.startSleep(30) }
+            Button("45 \(min)") { vm.startSleep(45) }
+            Button("60 \(min)") { vm.startSleep(60) }
+            Button(lang.t("pl.sleep.off")) { vm.startSleep(0) }
+            Button(lang.t("nav.cancel"), role: .cancel) {}
         }
     }
 
@@ -427,22 +442,22 @@ struct OfflinePlayerView: View {
                     }
                     HStack {
                         Button { showSpeed = true } label: {
-                            Text(vm.rate == 1 ? "سرعة" : String(format: "×%.2g", vm.rate)).font(.caption.bold())
+                            Text(vm.rate == 1 ? lang.t("pl.speed.label") : String(format: "×%.2g", vm.rate)).font(.caption.bold())
                         }
                         Spacer()
                         if vm.hasSubtitles {
                             Menu {
-                                Picker("وضع الترجمة", selection: subModeBinding) {
+                                Picker(lang.t("pl.sub.mode"), selection: subModeBinding) {
                                     ForEach(vm.availableModes) { m in
                                         Label(m.titleAR, systemImage: m.icon).tag(m.rawValue)
                                     }
                                 }
                                 Divider()
-                                Picker("حجم الخط", selection: subFontSizeBinding) {
-                                    Text("صغير").tag(14)
-                                    Text("متوسط").tag(18)
-                                    Text("كبير").tag(23)
-                                    Text("كبير جداً").tag(28)
+                                Picker(lang.t("pl.sub.font"), selection: subFontSizeBinding) {
+                                    Text(lang.t("pl.sub.small")).tag(14)
+                                    Text(lang.t("pl.sub.medium")).tag(18)
+                                    Text(lang.t("pl.sub.large")).tag(23)
+                                    Text(lang.t("pl.sub.xlarge")).tag(28)
                                 }
                             } label: {
                                 Image(systemName: vm.subMode == .off ? "captions.bubble" : "captions.bubble.fill")
@@ -452,7 +467,7 @@ struct OfflinePlayerView: View {
                         }
                         Button {
                             vm.looping.toggle()
-                            vm.flash(vm.looping ? "تكرار تشغيل" : "بدون تكرار")
+                            vm.flash(vm.looping ? lang.t("pl.repeat.on") : lang.t("pl.repeat.off"))
                         } label: {
                             Image(systemName: vm.looping ? "repeat.1" : "repeat")
                         }
