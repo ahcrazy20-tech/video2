@@ -41,10 +41,9 @@ enum AudioPipeline {
 
     // MARK: تحويل HLS إلى MP4 مؤقت
 
-    /// AVAssetReader لا يقرأ بث HLS حتى المحلي؛ نصدّره أولاً لملف مؤقت ثم نكمل.
     static func exportHLSToTempMP4(_ url: URL) async throws -> URL {
 
-        // التحقق أن الملف موجود فعلياً قبل أي محاولة
+        // تحقق أن الملف موجود فعلياً قبل أي محاولة
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw AudioPipelineError.exportFailed("ملف HLS غير موجود: \(url.lastPathComponent)")
         }
@@ -59,7 +58,7 @@ enum AudioPipeline {
 
         let asset = AVURLAsset(url: url)
 
-        // محاولة تحميل المسارات عبر AVURLAsset — إذا نجح نتحقق من وجود صوت
+        // محاولة تحميل المسارات عبر الطريقة الأحدث والأكثر موثوقية
         var hasAudio = false
         var hasVideo = false
         do {
@@ -79,11 +78,6 @@ enum AudioPipeline {
             throw AudioPipelineError.noAudioTrack
         }
 
-        // لو تأكدنا إنه مفيش فيديو خالص، نرمي خطأ
-        if hasVideo == false && hasAudio == false {
-            // مش متأكدين — نكمل ونجرب
-        }
-
         let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: asset)
 
         for preset in presets {
@@ -95,7 +89,6 @@ enum AudioPipeline {
 
             guard let session = AVAssetExportSession(asset: asset, presetName: preset) else { continue }
 
-            // اختر fileType المناسب
             let supportedTypes = session.supportedFileTypes
             guard supportedTypes.contains(.mp4) else { continue }
 
@@ -117,14 +110,12 @@ enum AudioPipeline {
                 }
             }
 
-            // نطبع تفاصيل الخطأ لو أول محاولة (passthrough) فشلت
+            // طباعة تفاصيل الخطأ لأول محاولة فقط (debug)
             if preset == AVAssetExportPresetPassthrough, session.status == .failed {
                 let errDesc = session.error?.localizedDescription ?? "غير معروف"
                 print("[AudioPipeline] Passthrough export failed for HLS: \(errDesc)")
-                print("[AudioPipeline] HLS URL: \(url.path)")
-                // نتحقق إن الـ m3u8 playlist صحيح
                 if let content = try? String(contentsOf: url, encoding: .utf8) {
-                    print("[AudioPipeline] m3u8 preview: \(content.prefix(200))")
+                    print("[AudioPipeline] m3u8 preview: \(content.prefix(300))")
                 }
             }
 
