@@ -11,15 +11,25 @@ struct WebView: UIViewRepresentable {
         let wv = tab.webView
         wv.navigationDelegate = context.coordinator
         wv.uiDelegate = context.coordinator
+
+        // إزالة الـ handler القديم (لو موجود) قبل إضافة الجديد
         wv.configuration.userContentController.removeScriptMessageHandler(forName: "video2")
         wv.configuration.userContentController.add(context.coordinator, name: "video2")
+
         context.coordinator.bindProgress(wv)
+
+        // تحميل الصفحة الافتراضية لو مفيش URL
+        if wv.url == nil {
+            wv.load(URLRequest(url: URL(string: "https://www.google.com")!))
+        }
+
         return wv
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
         context.coordinator.tab = tab
         context.coordinator.model = model
+        // لا نحتاج نعمل أي حاجة هنا - الـ webView نفسه بيتعامل مع التحديثات
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
@@ -35,6 +45,11 @@ struct WebView: UIViewRepresentable {
         }
 
         func bindProgress(_ wv: WKWebView) {
+            // إزالة الـ observers القديمة أولاً
+            progressObs?.invalidate()
+            titleObs?.invalidate()
+            urlObs?.invalidate()
+
             progressObs = wv.observe(\.estimatedProgress) { [weak self] w, _ in
                 DispatchQueue.main.async { self?.tab.estimatedProgress = w.estimatedProgress }
             }
@@ -42,7 +57,7 @@ struct WebView: UIViewRepresentable {
                 DispatchQueue.main.async { self?.tab.title = w.title ?? "تبويب" }
             }
             urlObs = wv.observe(\.url) { [weak self] w, _ in
-                DispatchQueue.main.async { self?.tab.urlString = w.url?.absoluteString ?? self?.tab.urlString ?? "" }
+                DispatchQueue.main.async { self?.tab.urlString = w.url?.absoluteString ?? "" }
             }
         }
 
@@ -51,6 +66,11 @@ struct WebView: UIViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
+            // السماح بالـ navigation
+            decisionHandler(.allow)
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
             decisionHandler(.allow)
         }
 
@@ -67,6 +87,10 @@ struct WebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            tab.isLoading = false
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             tab.isLoading = false
         }
 
