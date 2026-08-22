@@ -147,7 +147,9 @@ final class BrowserModel: ObservableObject {
 enum BrowserAuth {
     @MainActor
     static func snapshot(webView: WKWebView, pageURL: String?, mediaURL: String) async -> DownloadAuth {
-        let cookies = await webView.configuration.websiteDataStore.httpCookieStore.cookies()
+        let cookies: [HTTPCookie] = await withCheckedContinuation { cont in
+            webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cont.resume(returning: $0) }
+        }
         let mediaHost = URL(string: mediaURL)?.host?.lowercased()
         let pageHost = URL(string: pageURL ?? "")?.host?.lowercased()
         let relevant = cookies.filter { c in
