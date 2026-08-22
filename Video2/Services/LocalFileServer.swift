@@ -42,7 +42,7 @@ final class LocalFileServer {
         return video.localURL
     }
 
-    private func bind(root: URL) throws {
+    func bind(root: URL) throws {
         self.root = root
         if listener != nil { return }
         var lastError: Error?
