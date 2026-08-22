@@ -444,7 +444,7 @@ enum STTService {
 
         // 2) رفع الملف الصوتي (PUT /v2/jobs/{id}/data) — بدل إرسال file:// URL
         let audioData = try Data(contentsOf: audioURL)
-        try await HTTP.withRetry(attempts: 3) {
+        _ = try await HTTP.withRetry(attempts: 3) {
             try await HTTP.request("PUT",
                                    "https://asr.api.speechmatics.com/v2/jobs/\(jobID)/data",
                                    headers: ["api-key": apiKey,
@@ -454,7 +454,7 @@ enum STTService {
         }
 
         // 3) بدء المعالجة
-        try await HTTP.withRetry(attempts: 2) {
+        _ = try await HTTP.withRetry(attempts: 2) {
             try await HTTP.request("PUT",
                                    "https://asr.api.speechmatics.com/v2/jobs/\(jobID)/start",
                                    headers: ["api-key": apiKey],

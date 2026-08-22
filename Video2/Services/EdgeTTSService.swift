@@ -96,7 +96,7 @@ final class SpeechNarrator: NSObject, ObservableObject, AVSpeechSynthesizerDeleg
         Task { @MainActor in self.isSpeaking = false }
     }
 
-    static func bcp47(_ code: String) -> String {
+    nonisolated static func bcp47(_ code: String) -> String {
         switch code.lowercased() {
         case "ar": return "ar-SA"
         case "en": return "en-US"
@@ -113,7 +113,7 @@ final class SpeechNarrator: NSObject, ObservableObject, AVSpeechSynthesizerDeleg
         }
     }
 
-    static func edgeVoice(for language: String) -> String {
+    nonisolated static func edgeVoice(for language: String) -> String {
         switch language.lowercased() {
         case "ar": return "ar-SA-ZariyahNeural"
         case "en": return "en-US-JennyNeural"

@@ -222,6 +222,9 @@ struct SavedVideo: Identifiable, Codable, Hashable {
     var lastPosition: Double
     var extractionMethod: String
 
+    /// المجلد الذي ينتمي إليه الفيديو في المكتبة (nil = بدون مجلد)
+    var folderID: UUID?
+
     /// مسارات ملفات الترجمة نسبةً إلى مجلد المستندات: "orig" / "target" / "bilingual"
     var subtitleFiles: [String: String]?
     /// كود لغة الترجمة الهدف (مثل "ar")
