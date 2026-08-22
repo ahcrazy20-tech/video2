@@ -121,10 +121,11 @@ final class HLSDownloader {
                 }
                 continue
             }
+            if Task.isCancelled { throw CancellationError() }
             let remote = URL(string: line, relativeTo: mediaURL)!.absoluteURL
             let name = String(format: "seg_%04d%@", segIndex, (remote.pathExtension.isEmpty ? ".ts" : ".\(remote.pathExtension)"))
             let local = destFolder.appendingPathComponent(name)
-            let (segData, _) = try await URLSession.shared.data(from: remote)
+            let segData = try await fetch(remote)
             try segData.write(to: local, options: .atomic)
             rewritten += name + "\n"
             segIndex += 1
@@ -150,11 +151,15 @@ final class HLSDownloader {
         let rest = line[start.upperBound...]
         guard let end = rest.firstIndex(of: "\"") else { return line }
         let uri = String(rest[..<end])
-        guard let remote = URL(string: uri, relativeTo: base)?.absoluteURL else { throw HLSError.badPlaylist }
-        let (data, response) = try await URLSession.shared.data(from: remote)
-        guard (response as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) ?? false else { throw HLSError.network }
+        guard let remote = URL(string: uri, relativeTo: base)?.absoluteURL else { return line }
+        guard let data = try? await fetch(remote) else {
+            // فشل جلب init segment (يحتاج cookies/ترويسات خاصة غالباً) — لا نُسقط التحميل كلّه.
+            // نُبقي الـ URI كما هو حتى يُحفظ الفيديو بدل أن يفشل التحميل بأكمله.
+            print("[HLSDownloader] ⚠️ init segment fetch failed — leaving EXT-X-MAP URI as-is (download continues)")
+            return line
+        }
         let name = "init\(remote.pathExtension.isEmpty ? ".mp4" : ".\(remote.pathExtension)")"
-        try data.write(to: folder.appendingPathComponent(name), options: .atomic)
+        try? data.write(to: folder.appendingPathComponent(name), options: .atomic)
         return line.replacingOccurrences(of: uri, with: name)
     }
 
@@ -168,9 +173,40 @@ final class HLSDownloader {
             throw HLSError.drmProtected(.fairplay)
         }
         guard let keyURL = URL(string: uriStr, relativeTo: base)?.absoluteURL else { return line }
-        let (keyData, _) = try await URLSession.shared.data(from: keyURL)
+        guard let keyData = try? await fetch(keyURL) else {
+            // تعذّر جلب المفتاح (قد يحتاج ترويسات/دخول) — لا نُسقط التحميل؛ نُبقي الـ URI
+            // بعيداً حتى يُحفظ الفيديو (قد لا يُشغَّل أوفلاين لكن التحميل يكتمل).
+            print("[HLSDownloader] ⚠️ AES key fetch failed — leaving URI as-is")
+            return line
+        }
         let keyName = "key.bin"
-        try keyData.write(to: folder.appendingPathComponent(keyName), options: .atomic)
+        try? keyData.write(to: folder.appendingPathComponent(keyName), options: .atomic)
         return line.replacingOccurrences(of: uriStr, with: keyName)
+    }
+
+    /// جلب بيانات من شبكة مع مهلة لكل طلب + إعادة محاولة (حتى لا يُعلّق تحميل
+    /// سلسلة كبيرة بسبب segment علّق، ومع احترام الإلغاء).
+    private func fetch(_ url: URL, attempts: Int = 3, timeout: TimeInterval = 30) async throws -> Data {
+        var lastError: Error = URLError(.unknown)
+        for _ in 0..<max(1, attempts) {
+            if Task.isCancelled { throw CancellationError() }
+            do {
+                var req = URLRequest(url: url)
+                req.timeoutInterval = timeout
+                req.cachePolicy = .reloadIgnoringLocalCacheData
+                let (data, response) = try await URLSession.shared.data(for: req)
+                if let hr = response as? HTTPURLResponse, !(200..<299).contains(hr.statusCode) {
+                    lastError = URLError(.badServerResponse)
+                    try await Task.sleep(nanoseconds: 400_000_000)
+                    continue
+                }
+                return data
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                lastError = error
+                try await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
+        throw lastError
     }
 }

@@ -12,17 +12,39 @@ struct DownloadsView: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(downloads.jobs) { job in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(job.media.title).font(.headline)
-                        Text(status(job)).font(.caption).foregroundStyle(color(job.state))
-                        if job.state == .running {
-                            ProgressView(value: job.progress)
-                                .tint(V2Theme.mint)
+                    HStack(alignment: .top, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(job.media.title).font(.headline)
+                            Text(status(job)).font(.caption).foregroundStyle(color(job.state))
+                            if job.state == .running {
+                                ProgressView(value: job.progress)
+                                    .tint(V2Theme.mint)
+                            }
+                            if let err = job.errorMessage {
+                                Text(err).font(.caption2).foregroundStyle(V2Theme.gold)
+                            }
+                            Text(job.media.extractionMethod).font(.caption2).foregroundStyle(.secondary)
                         }
-                        if let err = job.errorMessage {
-                            Text(err).font(.caption2).foregroundStyle(V2Theme.gold)
+                        Spacer()
+                        if job.state.isBusy {
+                            Button {
+                                downloads.cancel(jobID: job.id)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("إيقاف التحميل")
+                        } else {
+                            Button(role: .destructive) {
+                                downloads.remove(jobID: job.id)
+                            } label: {
+                                Image(systemName: "trash")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("حذف عنصر من قائمة التحميلات")
                         }
-                        Text(job.media.extractionMethod).font(.caption2).foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 4)
                 }
