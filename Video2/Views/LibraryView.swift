@@ -98,7 +98,7 @@ struct LibraryView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .environment(\.layoutDirection, .leftToRight)
-                    Text("اكتب الاسم الجديد ثم اضغط حفظ — خانة الكتابة بالاتجاه الإنجليزي حتى لا تتقلب الكلمات.")
+                   Text(lang.t("lib.rename.hint"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
