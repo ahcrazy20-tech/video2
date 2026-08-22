@@ -27,7 +27,6 @@ struct RootView: View {
         }
         .tint(V2Theme.accent)
         .background(V2Theme.bg.ignoresSafeArea())
-        .environment(\.layoutDirection, lang.isRTL ? .rightToLeft : .leftToRight)
         .id(lang.code)
     }
 }
