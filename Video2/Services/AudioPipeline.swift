@@ -39,13 +39,20 @@ enum AudioPipeline {
     static let sampleRate = 16000.0
     static let chunkSeconds = 900.0
 
-    // MARK: تحويل HLS إلى MP4 مؤقت
+    // MARK: تحويل HLS إلى MP4 مؤقت (نسخة محسّنة)
 
+    /// AVAssetExportSession مش بيعمل مع HLS المحلي أحياناً.
+    /// الحل: نستخدم AVAssetReader على الـ m3u8 مباشرة بعد التأكد من صحة الـ playlist.
     static func exportHLSToTempMP4(_ url: URL) async throws -> URL {
 
         // تحقق أن الملف موجود فعلياً قبل أي محاولة
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw AudioPipelineError.exportFailed("ملف HLS غير موجود: \(url.lastPathComponent)")
+        }
+
+        // نقرأ محتوى الـ m3u8 ونطبع معلومات للـ debug
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            throw AudioPipelineError.exportFailed("لا يمكن قراءة ملف m3u8")
         }
 
         // نحاول عدة presets بالترتيب: passthrough أولاً (الأسرع والأضمن)
@@ -58,21 +65,22 @@ enum AudioPipeline {
 
         let asset = AVURLAsset(url: url)
 
-        // محاولة تحميل المسارات عبر الطريقة الأحدث والأكثر موثوقية
-         var hasAudio = false
+        // نحاول نحمّل الـ tracks بالطريقة الأحدث
+        var hasAudio = false
         var hasVideo = false
         do {
             let tracks = try await asset.load(.tracks)
             for track in tracks {
-                // mediaType property عادي مش async في iOS 16
                 let mediaType = track.mediaType
                 if mediaType == .video { hasVideo = true }
                 if mediaType == .audio { hasAudio = true }
             }
+            print("[AudioPipeline] HLS tracks loaded: video=\(hasVideo), audio=\(hasAudio), count=\(tracks.count)")
         } catch {
-            // لو load(.tracks) فشل، نكمل ونجرب الـ export ونشوف لو ينجح
-            // بعض ملفات HLS المحلية تفشل في load لكن تنجح في export
+            print("[AudioPipeline] load(.tracks) failed: \(error.localizedDescription)")
+            // نكمل ونجرب — بعض الـ HLS المحلية تفشل في load لكن تنجح في export
         }
+
         // إذا تأكدنا إنه مفيش صوت، نرمي خطأ فوراً
         if hasVideo && !hasAudio {
             throw AudioPipelineError.noAudioTrack
@@ -106,25 +114,169 @@ enum AudioPipeline {
                FileManager.default.fileExists(atPath: out.path) {
                 let fileSize = (try? out.resourceValues(forKeys: Set([URLResourceKey.fileSizeKey])).fileSize) ?? 0
                 if fileSize > 0 {
+                    print("[AudioPipeline] HLS export succeeded with preset: \(preset), size: \(fileSize)")
                     return out
                 }
             }
 
-            // طباعة تفاصيل الخطأ لأول محاولة فقط (debug)
+            // طباعة تفاصيل الخطأ لأول محاولة فقط
             if preset == AVAssetExportPresetPassthrough, session.status == .failed {
                 let errDesc = session.error?.localizedDescription ?? "غير معروف"
-                print("[AudioPipeline] Passthrough export failed for HLS: \(errDesc)")
-                if let content = try? String(contentsOf: url, encoding: .utf8) {
-                    print("[AudioPipeline] m3u8 preview: \(content.prefix(300))")
-                }
+                print("[AudioPipeline] Passthrough export failed: \(errDesc)")
+                print("[AudioPipeline] m3u8 content length: \(content.count) chars")
+                print("[AudioPipeline] m3u8 preview: \(String(content.prefix(300)))")
             }
 
-            // فشل هذا preset، جرّب التالي
             try? FileManager.default.removeItem(at: out)
         }
 
-        throw AudioPipelineError.exportFailed(
-            "تعذر تحويل HLS إلى MP4. تأكد أن ملف m3u8 وملفات الأجزاء (.ts) موجودة في نفس المجلد. جرّب تحميل الفيديو بصيغة MP4 مباشرة بدلاً من HLS.")
+        // إذا كل presets فشلت، نلجأ للطريقة البديلة: استخراج الصوت من كل segment مباشرة
+        print("[AudioPipeline] All export presets failed, trying segment-based audio extraction...")
+        return try await extractAudioFromHLSSegments(url: url)
+    }
+
+    // MARK: استخراج الصوت من HLS segments مباشرة
+
+    /// الطريقة الأقوى: نقرأ كل .ts segment، نستخرج الـ audio منه، وندمجهم في m4a واحد
+    private static func extractAudioFromHLSSegments(url: URL) async throws -> URL {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            throw AudioPipelineError.exportFailed("لا يمكن قراءة ملف m3u8")
+        }
+
+        let m3u8Dir = url.deletingLastPathComponent()
+        let lines = content.components(separatedBy: .newlines)
+
+        // نستخرج أسماء الـ segments (كل سطر مش تعليق = segment)
+        var segmentFiles: [URL] = []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            // لو المسار relative، نضيفه لمجلد الـ m3u8
+            let segURL: URL
+            if trimmed.hasPrefix("/") || trimmed.contains("://") {
+                if let u = URL(string: trimmed) { segURL = u } else { continue }
+            } else {
+                segURL = m3u8Dir.appendingPathComponent(trimmed)
+            }
+            if FileManager.default.fileExists(atPath: segURL.path) {
+                segmentFiles.append(segURL)
+            } else {
+                print("[AudioPipeline] Segment not found: \(segURL.path)")
+            }
+        }
+
+        guard !segmentFiles.isEmpty else {
+            throw AudioPipelineError.exportFailed("لا توجد ملفات segments (.ts) في مجلد HLS. تأكد أن المجلد يحتوي على الـ m3u8 وملفات الأجزاء.")
+        }
+
+        print("[AudioPipeline] Found \(segmentFiles.count) segment files")
+
+        // ملف الإخراج النهائي
+        let out = FileManager.default.temporaryDirectory
+            .appendingPathComponent("v2-hls-audio-\(UUID().uuidString).m4a")
+        try? FileManager.default.removeItem(at: out)
+
+        // نفتح أول segment ونبدأ writer
+        let writer = try AVAssetWriter(url: out, fileType: .m4a)
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderBitRateKey: 64000
+        ]
+        let writerInput = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
+        writerInput.expectsMediaDataInRealTime = false
+        writer.add(writerInput)
+        writer.startWriting()
+
+        var sessionStarted = false
+        var totalTime: Double = 0
+
+        for (segIndex, segURL) in segmentFiles.enumerated() {
+            let asset = AVURLAsset(url: segURL)
+
+            let audioTracks: [AVAssetTrack]
+            do {
+                audioTracks = try await asset.loadTracks(withMediaType: .audio)
+            } catch {
+                print("[AudioPipeline] Segment \(segIndex) has no audio tracks: \(error.localizedDescription)")
+                continue
+            }
+
+            guard let audioTrack = audioTracks.first else { continue }
+
+            let reader: AVAssetReader
+            do {
+                reader = try AVAssetReader(asset: asset)
+            } catch {
+                print("[AudioPipeline] Cannot create reader for segment \(segIndex): \(error.localizedDescription)")
+                continue
+            }
+
+            let pcmSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: sampleRate,
+                AVNumberOfChannelsKey: 1,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsNonInterleaved: false
+            ]
+            let readerOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: pcmSettings)
+            reader.add(readerOutput)
+
+            guard reader.startReading() else {
+                print("[AudioPipeline] Cannot start reading segment \(segIndex)")
+                continue
+            }
+
+            var segDuration: Double = 0
+
+            while let sample = readerOutput.copyNextSampleBuffer() {
+                if !sessionStarted {
+                    let t = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
+                    if t.isFinite {
+                        writer.startSession(atSourceTime: CMTime(seconds: t, preferredTimescale: 600))
+                    } else {
+                        writer.startSession(atSourceTime: .zero)
+                    }
+                    sessionStarted = true
+                }
+
+                guard writerInput.isReadyForMoreMediaData else {
+                    try await Task.sleep(nanoseconds: 5_000_000)
+                    if writerInput.isReadyForMoreMediaData == false {
+                        reader.cancelReading()
+                        break
+                    }
+                }
+
+                if writerInput.append(sample) {
+                    let pts = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
+                    if pts.isFinite && pts > segDuration { segDuration = pts }
+                }
+            }
+
+            reader.cancelReading()
+            totalTime += segDuration
+            print("[AudioPipeline] Segment \(segIndex) processed: \(String(format: "%.1f", segDuration))s")
+        }
+
+        writerInput.markAsFinished()
+        await writer.finishWriting()
+
+        guard writer.status == .completed else {
+            let err = writer.error?.localizedDescription ?? "مجهول"
+            throw AudioPipelineError.writerFailed("فشل دمج الصوت: \(err)")
+        }
+
+        let fileSize = (try? out.resourceValues(forKeys: Set([URLResourceKey.fileSizeKey])).fileSize) ?? 0
+        guard fileSize > 0 else {
+            throw AudioPipelineError.exportFailed("ملف الصوت الناتج فارغ")
+        }
+
+        print("[AudioPipeline] Segment-based extraction succeeded: \(fileSize) bytes, \(String(format: "%.1f", totalTime))s")
+        return out
     }
 
     // MARK: الاستخراج والتقطيع
@@ -325,6 +477,7 @@ enum AudioPipeline {
         let chunksDir = dir.appendingPathComponent("chunks", isDirectory: true)
         try? FileManager.default.removeItem(at: chunksDir)
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("hls-source.mp4"))
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("hls-source.m4a"))
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("chunks.json"))
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("duration.txt"))
     }
