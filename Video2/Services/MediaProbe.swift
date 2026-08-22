@@ -22,6 +22,15 @@ enum MediaProbe {
             }
         }
 
+        if m.kind == .hls, (m.variants ?? []).isEmpty {
+            if let vars = await hlsVariants(url) {
+                m.variants = vars
+                if (m.qualityLabel ?? "").isEmpty {
+                    m.qualityLabel = vars.first?.qualityLabel
+                }
+            }
+        }
+
         if m.duration == nil || m.duration == 0, m.kind.avPlayerSupported || m.kind == .hls {
             if let d = await assetDuration(url) {
                 m.duration = d
@@ -29,6 +38,20 @@ enum MediaProbe {
         }
         m.probed = true
         return m
+    }
+
+    private static func hlsVariants(_ url: URL) async -> [HLSStreamVariant]? {
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 10
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            guard let text = String(data: data, encoding: .utf8) else { return nil }
+            let vars = HLSInspector.variants(from: text, base: url)
+            return vars.isEmpty ? nil : vars
+        } catch {
+            return nil
+        }
     }
 
     private static func head(_ url: URL) async -> (length: Int64?, type: String?)? {

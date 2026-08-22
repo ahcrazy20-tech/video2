@@ -109,6 +109,61 @@ enum DRMKind: String, Codable {
     }
 }
 
+struct HLSStreamVariant: Identifiable, Hashable, Codable {
+    var url: String
+    var bandwidth: Int
+    var width: Int?
+    var height: Int?
+    var codecs: String?
+
+    var id: String { url }
+
+    var qualityLabel: String {
+        if let height, height > 0 { return "\(height)p" }
+        if bandwidth >= 1_000_000 {
+            return String(format: "%.1f Mbps", Double(bandwidth) / 1_000_000)
+        }
+        return "\(max(bandwidth, 0) / 1000) kbps"
+    }
+}
+
+struct DownloadAuth: Codable, Hashable {
+    var userAgent: String
+    var referer: String?
+    var cookie: String?
+
+    static let safariUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Mobile/15E148 Safari/604.1"
+
+    static var `default`: DownloadAuth {
+        DownloadAuth(userAgent: safariUA, referer: nil, cookie: nil)
+    }
+
+    func apply(to req: inout URLRequest) {
+        req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        if let referer, !referer.isEmpty {
+            req.setValue(referer, forHTTPHeaderField: "Referer")
+            if let u = URL(string: referer), let host = u.host {
+                let origin = "\(u.scheme ?? "https")://\(host)"
+                req.setValue(origin, forHTTPHeaderField: "Origin")
+            }
+        }
+        if let cookie, !cookie.isEmpty {
+            req.setValue(cookie, forHTTPHeaderField: "Cookie")
+        }
+    }
+}
+
+struct LibraryFolder: Identifiable, Codable, Hashable {
+    var id: UUID
+    var name: String
+    var createdAt: Date
+}
+
+struct LibraryIndex: Codable {
+    var videos: [SavedVideo]
+    var folders: [LibraryFolder]
+}
+
 struct DetectedMedia: Identifiable, Hashable, Codable {
     var id: String { url }
     var url: String
@@ -124,6 +179,7 @@ struct DetectedMedia: Identifiable, Hashable, Codable {
     var width: Int?
     var height: Int?
     var probed: Bool = false
+    var variants: [HLSStreamVariant]? = nil
 
     var canDownload: Bool {
         !drm.isProtected && !url.hasPrefix("blob:") && !url.hasPrefix("data:")
@@ -197,4 +253,8 @@ struct DownloadJob: Identifiable, Codable {
     var bytesWritten: Int64
     var errorMessage: String?
     var createdAt: Date
+    /// مسار الوجهة نسبةً إلى Documents حتى يمكن الاستئناف بعد الإغلاق
+    var destRelativePath: String? = nil
+    var preferredMaxHeight: Int? = nil
+    var auth: DownloadAuth? = nil
 }

@@ -2,6 +2,7 @@ import SwiftUI
 import AVKit
 import AVFoundation
 import CoreMedia
+import UniformTypeIdentifiers
 
 struct LibraryView: View {
     @EnvironmentObject var library: LibraryStore
@@ -16,17 +17,23 @@ struct LibraryView: View {
     @State private var translateVideo: SavedVideo?
     @State private var convertVideo: SavedVideo?
     @State private var showConverter = false
+    @State private var filter: LibraryFilter = .all
+    @State private var showImporter = false
+    @State private var showNewFolder = false
+    @State private var newFolderName = ""
+    @State private var importMessage: String?
 
     var filtered: [SavedVideo] {
+        let base = library.videos(in: filter)
         let q = query.trimmingCharacters(in: .whitespaces)
-        if q.isEmpty { return library.videos }
-        return library.videos.filter { $0.title.localizedCaseInsensitiveContains(q) }
+        if q.isEmpty { return base }
+        return base.filter { $0.title.localizedCaseInsensitiveContains(q) }
     }
 
     var body: some View {
         NavigationStack {
             Group {
-                if filtered.isEmpty {
+                if library.videos.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "film")
                             .font(.system(size: 48))
@@ -37,10 +44,18 @@ struct LibraryView: View {
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 28)
                     }
+                } else if filtered.isEmpty {
+                    VStack(spacing: 16) {
+                        folderBar
+                        Text(lang.t("lib.empty.filter"))
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 24)
+                    }
                 } else {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 18) {
-                            if query.isEmpty, !library.continueWatching.isEmpty {
+                            folderBar
+                            if query.isEmpty, filter == .all, !library.continueWatching.isEmpty {
                                 Text(lang.t("lib.continue")).font(.headline).padding(.horizontal, 16)
                                 ScrollView(.horizontal, showsIndicators: false) {
                                     HStack(spacing: 12) {
@@ -87,13 +102,47 @@ struct LibraryView: View {
                     .environmentObject(lang)
             }
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        showImporter = true
+                    } label: {
+                        Label(lang.t("lib.import"), systemImage: "square.and.arrow.down")
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         showConverter = true
                     } label: {
-                        Label("تحويل الصيغ", systemImage: "arrow.triangle.2.circlepath")
+                        Label(lang.t("lib.convert"), systemImage: "arrow.triangle.2.circlepath")
                     }
                 }
+            }
+            .fileImporter(
+                isPresented: $showImporter,
+                allowedContentTypes: [.movie, .video, .mpeg4Movie, .quickTimeMovie, .mpeg4Audio, .mp3, .audiovisualContent],
+                allowsMultipleSelection: true
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    let n = library.importFiles(urls)
+                    importMessage = String(format: lang.t("lib.import.done"), n)
+                case .failure:
+                    importMessage = lang.t("lib.import.fail")
+                }
+            }
+            .alert(lang.t("lib.folder.new"), isPresented: $showNewFolder) {
+                TextField(lang.t("lib.folder.name"), text: $newFolderName)
+                Button(lang.t("lib.save")) {
+                    _ = library.addFolder(named: newFolderName)
+                    newFolderName = ""
+                }
+                Button(lang.t("lib.cancel"), role: .cancel) { newFolderName = "" }
+            }
+            .alert(importMessage ?? "", isPresented: Binding(
+                get: { importMessage != nil },
+                set: { if !$0 { importMessage = nil } }
+            )) {
+                Button(lang.t("nav.done"), role: .cancel) {}
             }
             .onReceive(NotificationCenter.default.publisher(for: .v2ThumbReady)) { _ in
                 thumbTick += 1
@@ -186,6 +235,14 @@ struct LibraryView: View {
                         Label("تصدير SRT", systemImage: "square.and.arrow.up")
                     }
                 }
+            }
+            Menu {
+                Button(lang.t("lib.folder.none")) { library.setFolder(v, nil) }
+                ForEach(library.folders) { folder in
+                    Button(folder.name) { library.setFolder(v, folder.id) }
+                }
+            } label: {
+                Label(lang.t("lib.folder.move"), systemImage: "folder")
             }
             Button(lang.t("lib.rename")) {
                 renameTarget = v

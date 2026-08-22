@@ -41,6 +41,8 @@
 		A10000000000000100000039 /* FormatConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000039 /* FormatConverter.swift */; };
 		A10000000000000100000040 /* FormatConversionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000040 /* FormatConversionView.swift */; };
 		A10000000000000100000041 /* AppLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000041 /* AppLock.swift */; };
+		A10000000000000100000042 /* EdgeTTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000042 /* EdgeTTSService.swift */; };
+		A10000000000000100000043 /* StorageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000043 /* StorageManager.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -81,6 +83,8 @@
 	B10000000000000100000039 /* FormatConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FormatConverter.swift; sourceTree = "<group>"; };
 		B10000000000000100000040 /* FormatConversionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FormatConversionView.swift; sourceTree = "<group>"; };
 		B10000000000000100000041 /* AppLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLock.swift; sourceTree = "<group>"; };
+		B10000000000000100000042 /* EdgeTTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeTTSService.swift; sourceTree = "<group>"; };
+		B10000000000000100000043 /* StorageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -155,6 +159,8 @@
 				B10000000000000100000036 /* TranslationManager.swift */,
 				B10000000000000100000039 /* FormatConverter.swift */,
 				B10000000000000100000041 /* AppLock.swift */,
+				B10000000000000100000042 /* EdgeTTSService.swift */,
+				B10000000000000100000043 /* StorageManager.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -288,6 +294,8 @@
 				A10000000000000100000039 /* FormatConverter.swift in Sources */,
 				A10000000000000100000040 /* FormatConversionView.swift in Sources */,
 				A10000000000000100000041 /* AppLock.swift in Sources */,
+				A10000000000000100000042 /* EdgeTTSService.swift in Sources */,
+				A10000000000000100000043 /* StorageManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

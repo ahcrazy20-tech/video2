@@ -3,6 +3,7 @@ import AVFoundation
 
 @main
 struct Video2App: App {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var library = LibraryStore()
     @StateObject private var downloads = DownloadManager()
     @StateObject private var browser = BrowserModel()
@@ -35,6 +36,13 @@ struct Video2App: App {
                     library.load()
                     translations.load()
                     converter.load()
+                    downloads.load()
+                }
+                .onChange(of: scenePhase) { phase in
+                    if phase != .active {
+                        downloads.saveIndex()
+                        library.saveIndex()
+                    }
                 }
         }
     }
