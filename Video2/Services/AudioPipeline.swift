@@ -243,12 +243,9 @@ enum AudioPipeline {
                     sessionStarted = true
                 }
 
-                guard writerInput.isReadyForMoreMediaData else {
+                // انتظر حتى writerInput يكون جاهز
+                while !writerInput.isReadyForMoreMediaData {
                     try await Task.sleep(nanoseconds: 5_000_000)
-                    if writerInput.isReadyForMoreMediaData == false {
-                        reader.cancelReading()
-                        break
-                    }
                 }
 
                 if writerInput.append(sample) {
@@ -256,7 +253,6 @@ enum AudioPipeline {
                     if pts.isFinite && pts > segDuration { segDuration = pts }
                 }
             }
-
             reader.cancelReading()
             totalTime += segDuration
             print("[AudioPipeline] Segment \(segIndex) processed: \(String(format: "%.1f", segDuration))s")
