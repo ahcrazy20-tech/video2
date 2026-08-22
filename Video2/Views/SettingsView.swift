@@ -87,6 +87,10 @@ struct SettingsView: View {
                               placeholder: "cc-...",
                               keyID: "cloudconvert",
                               hint: "تحويل HLS إلى MP4 عبر الإنترنت — 25 تحويل مجاني يومياً (خيار احتياطي).")
+                    APIKeyRow(title: "مفتاح ffmpeg-api.com",
+                              placeholder: "من لوحة التحكم",
+                              keyID: "ffmpegapi",
+                              hint: "مزوّد سحابي احتياطي ثانٍ لتحويل HLS إلى MP4 (يُنفَّذ تلقائياً لو نفدت حصة CloudConvert). من https://ffmpeg-api.com")
                 } header: {
                     Text("مفاتيح ترجمة الفيديو")
                 } footer: {
@@ -320,6 +324,9 @@ enum KeyTester {
                case "cloudconvert":
             url = "https://api.cloudconvert.com/v2/user"
             headers = ["Authorization": "Bearer \(key)"]
+        case "ffmpegapi":
+            url = "https://api.ffmpeg-api.com/"
+            headers = ["Authorization": "Basic \(key)"]
         default:
             return "⚠️ مزود غير معروف"
         }

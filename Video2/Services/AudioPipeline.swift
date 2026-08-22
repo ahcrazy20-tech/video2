@@ -70,6 +70,23 @@ enum AudioPipeline {
     private static var hasCloudConvertKey: Bool {
         cloudConvertKey() != nil
     }
+
+    /// يجلب مفتاح ffmpeg-api.com من Keychain (أولوية) أو Info.plist — مزود سحابي
+    /// احتياطي إضافي لتحويل HLS إلى MP4 عندما تنفد حصة CloudConvert المجانية.
+    private static func ffmpegApiKey() -> String? {
+        print("[AudioPipeline] ═══ Checking ffmpeg-api key...")
+        if let key = KeychainStore.get("ffmpegapi"), !key.isEmpty {
+            print("[AudioPipeline] ✅ Found ffmpeg-api key in Keychain")
+            return key
+        }
+        if let key = Bundle.main.infoDictionary?["FFMPEG_API_KEY"] as? String,
+           !key.isEmpty, !key.contains("ضع") {
+            print("[AudioPipeline] ✅ Found ffmpeg-api key in Info.plist")
+            return key
+        }
+        print("[AudioPipeline] ❌ No ffmpeg-api key")
+        return nil
+    }
     
     /// دمج .ts segments في ملف واحد
     private static func mergeTS(segments: [String], baseFolder: URL) async throws -> URL {
@@ -449,6 +466,69 @@ enum AudioPipeline {
         throw AudioPipelineError.exportFailed("CloudConvert: انتهت مهلة الانتظار")
     }
 
+    /// تحويل ملف وسائط محلي (TS أو MP4 مدمج) إلى MP4 عبر ffmpeg-api.com — مزود سحابي
+    /// احتياطي يعمل كمستقل عن CloudConvert. يتطلّب مفتاحاً من https://ffmpeg-api.com
+    private static func convertWithFFmpegAPI(fileURL: URL, apiKey: String) async throws -> URL {
+        print("[ffmpeg-api] ═══════════════════════════════════════════")
+        print("[ffmpeg-api] Starting file → MP4")
+        print("[ffmpeg-api] File: \(fileURL.lastPathComponent) (\((try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) bytes)")
+
+        let base = "https://api.ffmpeg-api.com"
+        let auth = ["Authorization": "Basic \(apiKey)"]
+
+        // 1) احصل على رابط رفع
+        let fileBody = try JSONSerialization.data(withJSONObject: ["file_name": fileURL.lastPathComponent])
+        let (fileData, _) = try await HTTP.request("POST", "\(base)/file", headers: auth, body: fileBody, timeout: 60)
+        let fileJson = HTTP.json(from: fileData)
+        guard let fileObj = fileJson["file"] as? [String: Any],
+              let filePath = fileObj["file_path"] as? String,
+              let uploadObj = fileJson["upload"] as? [String: Any],
+              let uploadURL = uploadObj["url"] as? String else {
+            print("[ffmpeg-api] ❌ Unexpected file response: \(fileJson)")
+            throw AudioPipelineError.exportFailed("ffmpeg-api: استجابة غير متوقعة عند طلب رابط الرفع")
+        }
+        print("[ffmpeg-api] ✅ Got upload URL")
+
+        // 2) ارفع الملف (PUT — نقرأه من القرص مباشرةً بلا تحميله كاملًا في الذاكرة)
+        guard let uploadU = URL(string: uploadURL) else {
+            throw AudioPipelineError.exportFailed("ffmpeg-api: رابط رفع غير صالح")
+        }
+        var uploadReq = URLRequest(url: uploadU)
+        uploadReq.httpMethod = "PUT"
+        uploadReq.timeoutInterval = 3600
+        let (_, uploadResp) = try await URLSession.shared.upload(for: uploadReq, fromFile: fileURL)
+        if let uhr = uploadResp as? HTTPURLResponse, !(200..<300).contains(uhr.statusCode) {
+            throw AudioPipelineError.exportFailed("ffmpeg-api: فشل رفع الملف — HTTP \(uhr.statusCode)")
+        }
+        print("[ffmpeg-api] ✅ Uploaded")
+
+        // 3) ابدأ المعالجة — نعيد التغليف (copy) حتى بدون إعادة ترميز مكلفة
+        let taskBody = try JSONSerialization.data(withJSONObject: [
+            "task": [
+                "inputs": [["file_path": filePath]],
+                "outputs": [["file": "output.mp4", "options": ["-c:v", "copy", "-c:a", "copy", "-movflags", "+faststart"]]]
+            ]
+        ])
+        let (procData, _) = try await HTTP.request("POST", "\(base)/ffmpeg/process", headers: auth, body: taskBody, timeout: 300)
+        let procJson = HTTP.json(from: procData)
+        guard let results = procJson["result"] as? [[String: Any]],
+              let first = results.first,
+              let dlURL = first["download_url"] as? String else {
+            let err = procJson["error"] as? String ?? "unknown"
+            print("[ffmpeg-api] ❌ Process failed: \(err)")
+            throw AudioPipelineError.exportFailed("ffmpeg-api: فشل التحويل — \(err)")
+        }
+        print("[ffmpeg-api] ✅ Processing done")
+
+        // 4) نزّل النتيجة
+        let (dlData, _) = try await HTTP.request("GET", dlURL, headers: [:], timeout: 600)
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("ffmpeg-api-\(UUID().uuidString).mp4")
+        try dlData.write(to: out)
+        let sz = (try? out.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        print("[ffmpeg-api] ✅ Downloaded \(sz / 1024 / 1024) MB")
+        return out
+    }
+
     // MARK: ═══════════════════════════════════════════════════════════
     // MARK: تحويل HLS إلى MP4 — 3 طرق
     // ═════════════════════════════════════════════════════════════════
@@ -523,8 +603,10 @@ enum AudioPipeline {
             }
         }
 
-        // MPEG-TS (أو HLS مشفّر): AVFoundation لا يقرأه محلياً — نعتمد على CloudConvert (ffmpeg).
-        var cloudError: String?
+        // MPEG-TS (أو HLS مشفّر): AVFoundation لا يقرأه محلياً — نعتمد على خدمة
+        // ffmpeg سحابية. نجرّب CloudConvert أولاً ثم ffmpeg-api.com كمزوّد احتياطي.
+        var cloudErrors: [String] = []
+
         if hasCloudConvertKey {
             print("[AudioPipeline] ═══ Trying CloudConvert API (MPEG-TS)...")
             do {
@@ -532,12 +614,29 @@ enum AudioPipeline {
                 print("[AudioPipeline] ✅ CloudConvert succeeded!")
                 return result
             } catch {
-                cloudError = error.localizedDescription
-                print("[AudioPipeline] ⚠️ CloudConvert failed: \(cloudError ?? "")")
+                cloudErrors.append("CloudConvert: \(error.localizedDescription)")
+                print("[AudioPipeline] ⚠️ CloudConvert failed: \(error.localizedDescription)")
             }
         } else {
-            cloudError = nil
+            cloudErrors.append("CloudConvert: لا يوجد مفتاح (المفتاح محفوظ في الإعدادات)")
             print("[AudioPipeline] ⚠️ CloudConvert not available (no API key) — TS يحتاج ffmpeg")
+        }
+
+        if let ffmpegKey = ffmpegApiKey() {
+            print("[AudioPipeline] ═══ Trying ffmpeg-api.com (backup)...")
+            do {
+                let merged = try await mergeTS(segments: segmentPaths, baseFolder: m3u8Folder)
+                defer { try? FileManager.default.removeItem(at: merged) }
+                let result = try await convertWithFFmpegAPI(fileURL: merged, apiKey: ffmpegKey)
+                print("[AudioPipeline] ✅ ffmpeg-api succeeded!")
+                return result
+            } catch {
+                cloudErrors.append("ffmpeg-api: \(error.localizedDescription)")
+                print("[AudioPipeline] ⚠️ ffmpeg-api failed: \(error.localizedDescription)")
+            }
+        } else {
+            cloudErrors.append("ffmpeg-api: لا يوجد مفتاح")
+            print("[AudioPipeline] ⚠️ ffmpeg-api not available (no API key)")
         }
 
         // المحاولة الأخيرة محلياً: ندمج TS ونحاول قراءته (غالباً يفشل لأن AVFoundation
@@ -557,13 +656,13 @@ enum AudioPipeline {
         if isEncrypted {
             throw AudioPipelineError.exportFailed("هذا البث HLS مشفّر بـ AES-128 ولا يمكن فكّه محلياً بدون مفتاح فكّ التشفير — جرّب رابطاً غير مشفّر.")
         }
-        if !hasCloudConvertKey {
-            throw AudioPipelineError.exportFailed("تحويل هذا البث (MPEG-TS) يحتاج ffmpeg عبر خدمة CloudConvert — احفظ مفتاح CloudConvert من الإعدادات ثم أعد المحاولة.")
+        if !hasCloudConvertKey && ffmpegApiKey() == nil {
+            throw AudioPipelineError.exportFailed("تحويل هذا البث (MPEG-TS) يحتاج ffmpeg عبر خدمة سحابية — احفظ مفتاح CloudConvert (أو ffmpeg-api) من الإعدادات ثم أعد المحاولة.")
         }
-        if let cloudError {
-            throw AudioPipelineError.exportFailed("تعذّر التحويل عبر CloudConvert: \(cloudError)")
+        if !cloudErrors.isEmpty {
+            throw AudioPipelineError.exportFailed("تعذّر التحويل عبر خدمات السحابة:\n" + cloudErrors.joined(separator: "\n"))
         }
-        throw AudioPipelineError.exportFailed("تعذّر تحويل HLS إلى MP4: لم يتمكن AvFoundation من قراءة الملف المحلي ولا CloudConvert من إتمام مهمة التحويل.")
+        throw AudioPipelineError.exportFailed("تعذّر تحويل HLS إلى MP4: لا توجد خدمة تحويل متاحة.")
     }
 
     // MARK: ── الطريقة 1 (fMP4/CMAF): دمج init.mp4 + m4s ثم إعادة تصدير ──
