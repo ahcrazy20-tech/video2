@@ -71,8 +71,13 @@ final class BrowserModel: ObservableObject {
 
     func close(_ id: UUID) {
         tabs.removeAll { $0.id == id }
-        if tabs.isEmpty { newTab() }
-        if selectedID == id { selectedID = tabs[0].id }
+        if tabs.isEmpty {
+            newTab()
+            return
+        }
+        if selectedID == id {
+            selectedID = tabs[0].id
+        }
     }
 
     func ingest(media: DetectedMedia, tab: BrowserTab) {
