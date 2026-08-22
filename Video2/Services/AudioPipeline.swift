@@ -236,17 +236,25 @@ enum AudioPipeline {
         createReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
         createReq.timeoutInterval = 60
         
+        // نحدّد صيغة الإدخال صراحةً — ملف الـ .ts المدمج يحتاج demuxer `mpegts`
+        // حتى يتعامل معه ffmpeg بشكل صحيح وليس كـ ملف عام غير معروف.
+        let inputIsTS = merged.pathExtension.lowercased() == "ts"
+        var convertTask: [String: Any] = [
+            "operation": "convert",
+            "input": ["import"],
+            "output_format": "mp4",
+            "engine": "ffmpeg",
+            "audio_codec": "aac",
+            "video_codec": "h264"
+        ]
+        if inputIsTS {
+            convertTask["input_format"] = "mpegts"
+        }
+
         let jobBody: [String: Any] = [
             "tasks": [
                 "import": ["operation": "import/upload"],
-                "convert": [
-                    "operation": "convert",
-                    "input": ["import"],
-                    "output_format": "mp4",
-                    "engine": "ffmpeg",
-                    "audio_codec": "aac",
-                    "video_codec": "h264"
-                ],
+                "convert": convertTask,
                 "export": ["operation": "export/url", "input": ["convert"], "multiple": false]
             ],
             "tag": "video2-hls"
@@ -451,6 +459,21 @@ enum AudioPipeline {
     // MARK: تحويل HLS إلى MP4 — 3 طرق
     // ═════════════════════════════════════════════════════════════════
 
+    /// يقتطع URI المُهيّئ (EXT-X-MAP) من قائمة m3u8 — ضروري لـ fMP4/CMAF.
+    private static func hlsInitURI(from content: String) -> String? {
+        for line in content.components(separatedBy: .newlines) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.hasPrefix("#EXT-X-MAP:") else { continue }
+            if let start = t.range(of: "URI=\"") {
+                let rest = t[start.upperBound...]
+                if let end = rest.firstIndex(of: "\"") {
+                    return String(rest[..<end])
+                }
+            }
+        }
+        return nil
+    }
+
     static func exportHLSToTempMP4(_ url: URL) async throws -> URL {
         print("[AudioPipeline] ═══════════════════════════════════════")
         print("[AudioPipeline] Starting HLS → MP4 conversion")
@@ -464,71 +487,199 @@ enum AudioPipeline {
         print("[AudioPipeline] ✅ File exists")
         print("[AudioPipeline] m3u8: \(url.lastPathComponent)")
 
-        // الطريقة 1: CloudConvert API (لو متاح)
-        // نلحم الـ segments في ملف TS واحد ثم نرفعه — فلا نفرّغ playlist ناقص للخدمة.
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            throw AudioPipelineError.exportFailed("تعذر قراءة m3u8")
+        }
+        
+        let lines = content.components(separatedBy: .newlines)
+        let segmentPaths: [String] = lines.compactMap { l in
+            let t = l.trimmingCharacters(in: .whitespaces)
+            return t.isEmpty || t.hasPrefix("#") ? nil : t
+        }
+        guard !segmentPaths.isEmpty else {
+            throw AudioPipelineError.exportFailed("ملف m3u8 فارغ")
+        }
+
+        let m3u8Folder = url.deletingLastPathComponent()
+        let upper = content.uppercased()
+        let isEncrypted = upper.contains("EXT-X-KEY:METHOD=AES-128") ||
+            upper.contains("EXT-X-KEY:METHOD=SAMPLE-AES") ||
+            upper.contains("EXT-X-KEY:METHOD=SAMPLE-AES-CTR")
+
+        // يحدّد نوع الحاوية: fMP4/CMAF (init.mp4 + m4s) أم MPEG-TS (.ts).
+        // AVFoundation لا يستطيع قراءة .ts محلياً، بينما يقرأ fMP4 بسهولة.
+        let isFMP4 = hlsInitURI(from: content) != nil ||
+            segmentPaths.contains { $0.lowercased().hasSuffix(".m4s") } ||
+            segmentPaths.contains { $0.lowercased().hasSuffix(".mp4") }
+
+        // HLS مشفّر AES-128: لا يمكن فكّه محلياً بدون المفتاح — نعتمد على CloudConvert
+        // قدر الإمكان، ونحرّر err واضح بدل "ALL METHODS FAILED".
+        if isEncrypted {
+            print("[AudioPipeline] ⚠️ Detected AES-128-encrypted HLS")
+        }
+
+        if isFMP4 && !isEncrypted {
+            print("[AudioPipeline] ═══ Detected fMP4/CMAF HLS → embedding (method 1)...")
+            do {
+                let result = try await tryFMP4Method(segments: segmentPaths, initURI: hlsInitURI(from: content), folder: m3u8Folder)
+                print("[AudioPipeline] ✅ fMP4 embed succeeded!")
+                return result
+            } catch {
+                print("[AudioPipeline] ⚠️ fMP4 embed failed: \(error.localizedDescription) — falling through")
+            }
+        }
+
+        // MPEG-TS (أو HLS مشفّر): AVFoundation لا يقرأه محلياً — نعتمد على CloudConvert (ffmpeg).
         if hasCloudConvertKey {
-            print("[AudioPipeline] ═══ Trying CloudConvert API (method 1)...")
+            print("[AudioPipeline] ═══ Trying CloudConvert API (MPEG-TS)...")
             do {
                 let result = try await convertWithCloudConvert(m3u8URL: url)
                 print("[AudioPipeline] ✅ CloudConvert succeeded!")
                 return result
             } catch {
                 print("[AudioPipeline] ⚠️ CloudConvert failed: \(error.localizedDescription)")
-                print("[AudioPipeline] Falling back to native methods...")
             }
         } else {
-            print("[AudioPipeline] ⚠️ CloudConvert not available (no API key)")
+            print("[AudioPipeline] ⚠️ CloudConvert not available (no API key) — TS يحتاج ffmpeg")
         }
 
-        // نقرأ playlist
-        print("[AudioPipeline] ═══ Reading m3u8 playlist...")
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
-            print("[AudioPipeline] ❌ Failed to read m3u8")
-            throw AudioPipelineError.exportFailed("تعذر قراءة m3u8")
-        }
-        
-        print("[AudioPipeline] ✅ Read m3u8 (\(content.count) chars)")
-        
-        let lines = content.components(separatedBy: .newlines)
-        print("[AudioPipeline] Total lines: \(lines.count)")
-        
-        let segmentPaths: [String] = lines.compactMap { l in
-            let t = l.trimmingCharacters(in: .whitespaces)
-            return t.isEmpty || t.hasPrefix("#") ? nil : t
-        }
-        
-        print("[AudioPipeline] Found \(segmentPaths.count) segments")
-        
-        guard !segmentPaths.isEmpty else {
-            print("[AudioPipeline] ❌ No segments found")
-            throw AudioPipelineError.exportFailed("ملف m3u8 فارغ")
-        }
-        
-        let m3u8Folder = url.deletingLastPathComponent()
-        print("[AudioPipeline] Base folder: \(m3u8Folder.path)")
-
-        // الطريقة 2: AVMutableComposition
-        print("[AudioPipeline] ═══ Trying AVMutableComposition (method 2)...")
+        // المحاولة الأخيرة محلياً: ندمج TS ونحاول قراءته (غالباً يفشل لأن AVFoundation
+        // لا يقرأ .ts، لكن نجرّب قبل الإقلاع).
+        print("[AudioPipeline] ═══ Trying native merge (method 2)...")
         do {
-            let result = try await tryCompositionMethod(segments: segmentPaths, folder: m3u8Folder)
-            print("[AudioPipeline] ✅ Composition succeeded!")
+            let merged = try await mergeTS(segments: segmentPaths, baseFolder: m3u8Folder)
+            defer { try? FileManager.default.removeItem(at: merged) }
+            let result = try await transcodeFileToMP4(merged)
+            print("[AudioPipeline] ✅ Native merge succeeded!")
             return result
         } catch {
-            print("[AudioPipeline] ⚠️ Composition failed: \(error.localizedDescription)")
-        }
-
-        // الطريقة 3: segment-by-segment
-        print("[AudioPipeline] ═══ Trying segment-by-segment (method 3)...")
-        do {
-            let result = try await trySegmentBySegmentMethod(segments: segmentPaths, folder: m3u8Folder)
-            print("[AudioPipeline] ✅ Segment-by-segment succeeded!")
-            return result
-        } catch {
-            print("[AudioPipeline] ⚠️ Segment-by-segment failed: \(error.localizedDescription)")
+            print("[AudioPipeline] ⚠️ Native merge failed: \(error.localizedDescription)")
         }
 
         print("[AudioPipeline] ❌ ALL METHODS FAILED")
-        throw AudioPipelineError.exportFailed("كل طرق التحويل فشلت")
+        if isEncrypted {
+            throw AudioPipelineError.exportFailed("هذا البث HLS مشفّر بـ AES-128 ولا يمكن فكّه محلياً بدون مفتاح فكّ التشفير — جرّب رابطاً غير مشفّر.")
+        }
+        throw AudioPipelineError.exportFailed("تحويل HLS إلى MP4 تعذّر: MPEG-TS يتطلب مفتاح CloudConvert (أو مصدر فيديو MP4 قابل للقراءة).")
+    }
+
+    // MARK: ── الطريقة 1 (fMP4/CMAF): دمج init.mp4 + m4s ثم إعادة تصدير ──
+
+    /// HLS من نوع fMP4/CMAF: نلحم `init.mp4` (moov) مع كل `segment*.m4s` (moof+mdat)
+    /// في ملف MP4 واحد (معطَّل التجزئة) ثم نمرّره على AVAssetExportSession.
+    /// هذا يتجاوز مشكلة أن AVFoundation يرفض قراءة قائمة `.m3u8` المحلية مباشرةً.
+    private static func tryFMP4Method(segments: [String], initURI: String?, folder: URL) async throws -> URL {
+        print("[AudioPipeline] ═══ fMP4/CMAF: concatenating init.mp4 + segments...")
+
+        var initURL: URL?
+        if let initURI = initURI {
+            let candidate: URL = initURI.hasPrefix("/")
+                ? URL(fileURLWithPath: initURI)
+                : folder.appendingPathComponent(initURI)
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                initURL = candidate
+            }
+        }
+        if initURL == nil {
+            let fallback = folder.appendingPathComponent("init.mp4")
+            if FileManager.default.fileExists(atPath: fallback.path) {
+                initURL = fallback
+            }
+        }
+
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("v2-fmp4-\(UUID().uuidString).mp4")
+        guard FileManager.default.createFile(atPath: out.path, contents: nil) else {
+            throw AudioPipelineError.exportFailed("تعذر إنشاء ملف مؤقت")
+        }
+        let fh = try FileHandle(forWritingTo: out)
+        defer { try? fh.close() }
+
+        var totalBytes = 0
+        if let initURL = initURL, let data = try? Data(contentsOf: initURL) {
+            fh.write(data)
+            totalBytes += data.count
+            print("[AudioPipeline] ✅ Init: \(initURL.lastPathComponent) (\(data.count / 1024) KB)")
+        } else {
+            print("[AudioPipeline] ⚠️ No init.mp4 found — writing segments only")
+        }
+
+        var added = 0
+        for seg in segments {
+            let segURL: URL = seg.hasPrefix("/")
+                ? URL(fileURLWithPath: seg)
+                : folder.appendingPathComponent(seg)
+            guard FileManager.default.fileExists(atPath: segURL.path) else {
+                print("[AudioPipeline]   ❌ Not found: \(segURL.lastPathComponent)")
+                continue
+            }
+            guard let data = try? Data(contentsOf: segURL) else { continue }
+            fh.write(data)
+            totalBytes += data.count
+            added += 1
+            print("[AudioPipeline]   ✅ \(segURL.lastPathComponent) (\(data.count / 1024) KB)")
+        }
+
+        try? fh.close()
+        guard added > 0, totalBytes > 0 else {
+            try? FileManager.default.removeItem(at: out)
+            throw AudioPipelineError.exportFailed("لم يتم لحم أي segment")
+        }
+        print("[AudioPipeline] ✅ Concatenated \(added) segments (\(totalBytes / 1024 / 1024) MB)")
+
+        // أي وظيفة تصدير/فكّ التجزئة، مع حذف الملف الملمّح بعد انتهاء التصدير.
+        do {
+            let result = try await transcodeFileToMP4(out)
+            try? FileManager.default.removeItem(at: out)
+            return result
+        } catch {
+            try? FileManager.default.removeItem(at: out)
+            throw error
+        }
+    }
+
+    /// يمرّر ملف وسائط (يفضَّل MP4 ملمّح أو مدمج) عبر AVAssetExportSession
+    /// ليخرج MP4 نظيفاً — يجرّب Passthrough أولاً ثم إعادة ترميز عالية الجودة.
+    private static func transcodeFileToMP4(_ input: URL) async throws -> URL {
+        let asset = AVURLAsset(url: input)
+
+        let duration = (try? await asset.load(.duration)) ?? .zero
+        guard CMTimeGetSeconds(duration) > 0 else {
+            throw AudioPipelineError.exportFailed("تعذر قراءة مدة الملف")
+        }
+
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("v2-tx-\(UUID().uuidString).mp4")
+        try? FileManager.default.removeItem(at: out)
+
+        let presets = [AVAssetExportPresetPassthrough, AVAssetExportPresetHighestQuality,
+                       AVAssetExportPresetMediumQuality, AVAssetExportPresetLowQuality]
+
+        for preset in presets {
+            let compatible = AVAssetExportSession.exportPresets(compatibleWith: asset)
+            guard compatible.contains(preset) else { continue }
+            guard let session = AVAssetExportSession(asset: asset, presetName: preset) else { continue }
+            guard session.supportedFileTypes.contains(.mp4) else { continue }
+
+            try? FileManager.default.removeItem(at: out)
+            session.outputURL = out
+            session.outputFileType = .mp4
+            session.shouldOptimizeForNetworkUse = true
+
+            print("[AudioPipeline] Exporting with preset: \(preset)")
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                session.exportAsynchronously { c.resume() }
+            }
+
+            if session.status == .completed {
+                let sz = (try? out.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                if sz > 0 {
+                    print("[AudioPipeline] ✅ Export succeeded (\(sz / 1024 / 1024) MB) preset=\(preset)")
+                    return out
+                }
+            }
+            print("[AudioPipeline] ❌ Export failed: \(session.error?.localizedDescription ?? "unknown")")
+        }
+
+        throw AudioPipelineError.exportFailed("فشل التصدير إلى MP4")
     }
 
     // MARK: ── الطريقة 2: AVMutableComposition ──

@@ -15,6 +15,7 @@ struct LibraryView: View {
     @State private var thumbTick = 0
     @State private var translateVideo: SavedVideo?
     @State private var convertVideo: SavedVideo?
+    @State private var showConverter = false
 
     var filtered: [SavedVideo] {
         let q = query.trimmingCharacters(in: .whitespaces)
@@ -78,6 +79,21 @@ struct LibraryView: View {
                 ConvertPickerView(initialVideo: v)
                     .environmentObject(converter)
                     .environmentObject(library)
+            }
+            .fullScreenCover(isPresented: $showConverter) {
+                FormatConversionView()
+                    .environmentObject(converter)
+                    .environmentObject(library)
+                    .environmentObject(lang)
+            }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showConverter = true
+                    } label: {
+                        Label("تحويل الصيغ", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .v2ThumbReady)) { _ in
                 thumbTick += 1

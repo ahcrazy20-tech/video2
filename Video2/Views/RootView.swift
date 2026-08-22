@@ -9,6 +9,8 @@ struct RootView: View {
         ZStack {
             // تبويب واحد فقط (بلا تداخل) — إصلاح في العدد السابق الذي سبّب قفزة
             // التبويبات لمتصفح Safari عند الضغط على "More".
+            // 5 تبويبات فقط — نظام iOS يُظهر تبويب "More" تلقائياً إذا تجاوزت 5،
+            // وهو ما سبّب أن يفتح المتصفّح عند الضغط عليه.
             TabView(selection: $tab) {
                 BrowserView()
                     .tabItem { Label(lang.t("tab.browser"), systemImage: "safari.fill") }
@@ -19,9 +21,6 @@ struct RootView: View {
                 TranslateView()
                     .tabItem { Label(lang.t("tab.translate"), systemImage: "captions.bubble.fill") }
                     .tag(2)
-                FormatConversionView()
-                    .tabItem { Label("تحويل الصيغ", systemImage: "arrow.triangle.2.circlepath") }
-                    .tag(5)
                 DownloadsView()
                     .tabItem { Label(lang.t("tab.downloads"), systemImage: "arrow.down.circle.fill") }
                     .tag(3)
