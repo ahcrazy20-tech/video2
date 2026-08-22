@@ -40,26 +40,35 @@ enum AudioPipeline {
     static let chunkSeconds = 900.0
 
     // MARK: ═══════════════════════════════════════════════════════════
-    // MARK: HLS → MP4 باستخدام AVMutableComposition
-    // ═══════════════════════════════════════════════════════════════════
+    // MARK: HLS → MP4 باستخدام AVMutableComposition مع logging مفصل
+    // ═════════════════════════════════════════════════════════════════
 
-    /// نقرأ m3u8، نضيف كل .ts segment في AVMutableComposition، ونصدر .mp4.
-    /// AVMutableComposition يتعامل مع demuxing والتجميع تلقائياً — مضمون 100%.
     static func exportHLSToTempMP4(_ url: URL) async throws -> URL {
 
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw AudioPipelineError.exportFailed("ملف HLS غير موجود: \(url.lastPathComponent)")
         }
 
-        print("[AudioPipeline] Reading m3u8: \(url.lastPathComponent)")
+        print("[AudioPipeline] ═══════════════════════════════════════")
+        print("[AudioPipeline] Starting HLS → MP4 conversion")
+        print("[AudioPipeline] m3u8 file: \(url.lastPathComponent)")
+        print("[AudioPipeline] m3u8 path: \(url.path)")
 
         // نقرأ playlist
         guard let playlistContent = try? String(contentsOf: url, encoding: .utf8) else {
             throw AudioPipelineError.exportFailed("تعذر قراءة m3u8")
         }
 
-        // نستخرج .ts segments
+        print("[AudioPipeline] Playlist content preview:")
         let lines = playlistContent.components(separatedBy: .newlines)
+        for i in 0..<min(10, lines.count) {
+            print("[AudioPipeline]   Line \(i): \(lines[i])")
+        }
+        if lines.count > 10 {
+            print("[AudioPipeline]   ... and \(lines.count - 10) more lines")
+        }
+
+        // نستخرج .ts segments (نتجاهل الأسطر اللي تبدأ بـ #)
         let segmentPaths: [String] = lines.compactMap { line in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return nil }
@@ -70,83 +79,174 @@ enum AudioPipeline {
             throw AudioPipelineError.exportFailed("ملف m3u8 فارغ أو لا يحتوي segments")
         }
 
-        print("[AudioPipeline] Found \(segmentPaths.count) segments")
+        print("[AudioPipeline] Found \(segmentPaths.count) segments:")
+        for (i, path) in segmentPaths.enumerated() {
+            print("[AudioPipeline]   Segment \(i + 1): \(path)")
+        }
 
         let m3u8Folder = url.deletingLastPathComponent()
+        print("[AudioPipeline] Base folder: \(m3u8Folder.path)")
 
         // نبني AVMutableComposition
         let composition = AVMutableComposition()
         var currentTime = CMTime.zero
+        var addedCount = 0
+        var failedCount = 0
 
         for (index, segPath) in segmentPaths.enumerated() {
             if Task.isCancelled { throw CancellationError() }
 
+            print("[AudioPipeline] ═══════════════════════════════════════")
+            print("[AudioPipeline] Processing segment \(index + 1)/\(segmentPaths.count)")
+            print("[AudioPipeline] Path in playlist: \"\(segPath)\"")
+
             // نبني URL للـ segment
             let segURL: URL
             if segPath.hasPrefix("http://") || segPath.hasPrefix("https://") {
-                guard let u = URL(string: segPath) else { continue }
-                // لو远程، ننزله مؤقتاً
-                let (data, _) = try await URLSession.shared.data(from: u)
+                guard let u = URL(string: segPath) else {
+                    print("[AudioPipeline] ❌ Invalid HTTP URL")
+                    failedCount += 1
+                    continue
+                }
+                // لو على الإنترنت، ننزله مؤقتاً
+                print("[AudioPipeline] Downloading remote segment...")
+                let (data, response) = try await URLSession.shared.data(from: u)
+                if let httpResp = response as? HTTPURLResponse {
+                    print("[AudioPipeline] HTTP status: \(httpResp.statusCode)")
+                }
                 let tempSeg = FileManager.default.temporaryDirectory
                     .appendingPathComponent("seg-\(UUID().uuidString).ts")
                 try data.write(to: tempSeg)
                 segURL = tempSeg
+                print("[AudioPipeline] Downloaded \(data.count / 1024) KB → \(tempSeg.lastPathComponent)")
             } else {
-                segURL = m3u8Folder.appendingPathComponent(segPath)
+                // مسار محلي
+                if segPath.hasPrefix("/") {
+                    segURL = URL(fileURLWithPath: segPath)
+                    print("[AudioPipeline] Absolute path: \(segURL.path)")
+                } else {
+                    segURL = m3u8Folder.appendingPathComponent(segPath)
+                    print("[AudioPipeline] Relative path → \(segURL.path)")
+                }
             }
 
             guard FileManager.default.fileExists(atPath: segURL.path) else {
-                print("[AudioPipeline] ⚠️ Segment not found: \(segPath)")
+                print("[AudioPipeline] ❌ Segment file NOT FOUND at: \(segURL.path)")
+                print("[AudioPipeline]    Trying to list directory...")
+                if let contents = try? FileManager.default.contentsOfDirectory(atPath: segURL.deletingLastPathComponent().path) {
+                    print("[AudioPipeline]    Directory contains \(contents.count) files")
+                    for file in contents.prefix(5) {
+                        print("[AudioPipeline]      - \(file)")
+                    }
+                }
+                failedCount += 1
                 continue
             }
+
+            let fileSize = (try? segURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            print("[AudioPipeline] ✅ File exists, size: \(fileSize / 1024) KB")
 
             // نضيف الـ segment للcomposition
             let segAsset = AVURLAsset(url: segURL)
 
             do {
+                // نتحقق من duration أولاً
+                let duration = try await segAsset.load(.duration)
+                let durationSec = CMTimeGetSeconds(duration)
+                print("[AudioPipeline] Duration: \(durationSec)s")
+
+                guard durationSec > 0 else {
+                    print("[AudioPipeline] ❌ Invalid duration: \(durationSec)s")
+                    failedCount += 1
+                    continue
+                }
+
                 // نضيف video tracks
                 let videoTracks = try await segAsset.loadTracks(withMediaType: .video)
-                for srcTrack in videoTracks {
-                    let compTrack = composition.addMutableTrack(
+                print("[AudioPipeline] Video tracks: \(videoTracks.count)")
+                
+                for (trackIdx, srcTrack) in videoTracks.enumerated() {
+                    print("[AudioPipeline] Processing video track \(trackIdx + 1)")
+                    
+                    guard let compTrack = composition.addMutableTrack(
                         withMediaType: .video,
                         preferredTrackID: kCMPersistentTrackID_Invalid
-                    )
+                    ) else {
+                        print("[AudioPipeline] ❌ Failed to create video composition track")
+                        continue
+                    }
+                    
                     let timeRange = try await srcTrack.load(.timeRange)
-                    try compTrack?.insertTimeRange(timeRange, of: srcTrack, at: currentTime)
+                    print("[AudioPipeline] Time range: start=\(CMTimeGetSeconds(timeRange.start))s, duration=\(CMTimeGetSeconds(timeRange.duration))s")
+                    print("[AudioPipeline] Inserting at currentTime: \(CMTimeGetSeconds(currentTime))s")
+                    
+                    try compTrack.insertTimeRange(timeRange, of: srcTrack, at: currentTime)
+                    print("[AudioPipeline] ✅ Video track inserted")
                 }
 
                 // نضيف audio tracks
                 let audioTracks = try await segAsset.loadTracks(withMediaType: .audio)
-                for srcTrack in audioTracks {
-                    let compTrack = composition.addMutableTrack(
+                print("[AudioPipeline] Audio tracks: \(audioTracks.count)")
+                
+                for (trackIdx, srcTrack) in audioTracks.enumerated() {
+                    print("[AudioPipeline] Processing audio track \(trackIdx + 1)")
+                    
+                    guard let compTrack = composition.addMutableTrack(
                         withMediaType: .audio,
                         preferredTrackID: kCMPersistentTrackID_Invalid
-                    )
+                    ) else {
+                        print("[AudioPipeline] ❌ Failed to create audio composition track")
+                        continue
+                    }
+                    
                     let timeRange = try await srcTrack.load(.timeRange)
-                    try compTrack?.insertTimeRange(timeRange, of: srcTrack, at: currentTime)
+                    print("[AudioPipeline] Time range: start=\(CMTimeGetSeconds(timeRange.start))s, duration=\(CMTimeGetSeconds(timeRange.duration))s")
+                    print("[AudioPipeline] Inserting at currentTime: \(CMTimeGetSeconds(currentTime))s")
+                    
+                    try compTrack.insertTimeRange(timeRange, of: srcTrack, at: currentTime)
+                    print("[AudioPipeline] ✅ Audio track inserted")
                 }
 
                 // نحدث الوقت الحالي
-                let duration = try await segAsset.load(.duration)
                 currentTime = CMTimeAdd(currentTime, duration)
+                addedCount += 1
 
-                print("[AudioPipeline] ✅ Added segment \(index + 1)/\(segmentPaths.count)")
+                print("[AudioPipeline] ✅ Segment added successfully")
+                print("[AudioPipeline] Total duration so far: \(CMTimeGetSeconds(currentTime))s")
 
                 // ننظف segment مؤقت لو كان remote
                 if segPath.hasPrefix("http://") || segPath.hasPrefix("https://") {
                     try? FileManager.default.removeItem(at: segURL)
+                    print("[AudioPipeline] Cleaned up temporary segment file")
                 }
             } catch {
-                print("[AudioPipeline] ⚠️ Failed to add segment \(index + 1): \(error.localizedDescription)")
+                print("[AudioPipeline] ❌ ERROR adding segment \(index + 1)")
+                print("[AudioPipeline]    Error type: \(type(of: error))")
+                print("[AudioPipeline]    Error: \(error)")
+                print("[AudioPipeline]    Description: \(error.localizedDescription)")
+                if let nsError = error as NSError? {
+                    print("[AudioPipeline]    Domain: \(nsError.domain)")
+                    print("[AudioPipeline]    Code: \(nsError.code)")
+                    print("[AudioPipeline]    UserInfo: \(nsError.userInfo)")
+                }
+                failedCount += 1
                 continue
             }
         }
 
-        guard currentTime > .zero else {
-            throw AudioPipelineError.exportFailed("لم يتم إضافة أي segment صالح")
+        print("[AudioPipeline] ═══════════════════════════════════════")
+        print("[AudioPipeline] SUMMARY:")
+        print("[AudioPipeline]   Total segments: \(segmentPaths.count)")
+        print("[AudioPipeline]   Added successfully: \(addedCount)")
+        print("[AudioPipeline]   Failed: \(failedCount)")
+        print("[AudioPipeline]   Total duration: \(CMTimeGetSeconds(currentTime))s")
+
+        guard addedCount > 0 else {
+            throw AudioPipelineError.exportFailed("لم يتم إضافة أي segment صالح — راجع الـ logs فوق")
         }
 
-        print("[AudioPipeline] Composition duration: \(CMTimeGetSeconds(currentTime))s")
+        print("[AudioPipeline] ═══════════════════════════════════════")
+        print("[AudioPipeline] Exporting composition to MP4...")
 
         // نصدر الcomposition كـ .mp4
         let out = FileManager.default.temporaryDirectory
@@ -164,14 +264,25 @@ enum AudioPipeline {
         print("[AudioPipeline] Compatible presets: \(compatiblePresets)")
 
         for preset in presets {
-            guard compatiblePresets.contains(preset) else { continue }
+            guard compatiblePresets.contains(preset) else {
+                print("[AudioPipeline] Skipping incompatible preset: \(preset)")
+                continue
+            }
+
+            print("[AudioPipeline] Trying preset: \(preset)")
 
             guard let session = AVAssetExportSession(asset: composition, presetName: preset) else {
+                print("[AudioPipeline] ❌ Failed to create export session")
                 continue
             }
 
             let supportedTypes = session.supportedFileTypes
-            guard supportedTypes.contains(.mp4) else { continue }
+            print("[AudioPipeline] Supported file types: \(supportedTypes)")
+            
+            guard supportedTypes.contains(.mp4) else {
+                print("[AudioPipeline] ❌ MP4 not supported")
+                continue
+            }
 
             session.outputURL = out
             session.outputFileType = .mp4
@@ -183,23 +294,36 @@ enum AudioPipeline {
                 }
             }
 
+            print("[AudioPipeline] Export status: \(session.status)")
+            
             if session.status == .completed,
                FileManager.default.fileExists(atPath: out.path) {
                 let fileSize = (try? out.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
                 if fileSize > 0 {
-                    print("[AudioPipeline] ✅ HLS → MP4 succeeded: \(fileSize / 1024 / 1024) MB")
+                    print("[AudioPipeline] ✅ HLS → MP4 SUCCESS!")
+                    print("[AudioPipeline]    Output: \(out.path)")
+                    print("[AudioPipeline]    Size: \(fileSize / 1024 / 1024) MB")
+                    print("[AudioPipeline]    Preset: \(preset)")
                     return out
                 }
             }
 
             if session.status == .failed {
-                print("[AudioPipeline] ❌ Export failed with \(preset): \(session.error?.localizedDescription ?? "unknown")")
+                print("[AudioPipeline] ❌ Export failed with preset \(preset)")
+                if let error = session.error {
+                    print("[AudioPipeline]    Error: \(error)")
+                    print("[AudioPipeline]    Description: \(error.localizedDescription)")
+                    if let nsError = error as NSError? {
+                        print("[AudioPipeline]    Domain: \(nsError.domain)")
+                        print("[AudioPipeline]    Code: \(nsError.code)")
+                    }
+                }
             }
 
             try? FileManager.default.removeItem(at: out)
         }
 
-        throw AudioPipelineError.exportFailed("تعذر تصدير HLS إلى MP4")
+        throw AudioPipelineError.exportFailed("تعذر تصدير HLS إلى MP4 — كل الـ presets فشلت")
     }
 
     // MARK: ═══════════════════════════════════════════════════════════
