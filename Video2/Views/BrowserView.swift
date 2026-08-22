@@ -16,11 +16,13 @@ struct BrowserView: View {
                 if browser.current.isLoading {
                     ProgressView(value: browser.current.estimatedProgress)
                         .tint(V2Theme.gold)
+                        .allowsHitTesting(false)
                 }
                 if browser.showDRMBanner {
                     drmBanner
                 }
                 WebView(tab: browser.current, model: browser)
+                    .id(browser.selectedID) // <-- إصلاح أساسي: يعيد بناء WebView عند تبديل التاب
                     .ignoresSafeArea(edges: .bottom)
             }
             .background(V2Theme.bg)
@@ -29,6 +31,8 @@ struct BrowserView: View {
             .sheet(isPresented: $showTabs) { TabsSheet() }
             .alert(lang.t("paste.title"), isPresented: $showManual) {
                 TextField("https://...", text: $manualURL)
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
                 Button(lang.t("paste.download")) {
                     downloads.enqueueManual(urlString: manualURL, title: browser.current.title, page: browser.current.urlString)
                     manualURL = ""
@@ -39,27 +43,48 @@ struct BrowserView: View {
             }
             .onAppear { address = browser.current.urlString }
             .onChange(of: browser.selectedID) { _ in address = browser.current.urlString }
+            .onChange(of: browser.current.urlString) { newURL in
+                // تحديث الـ address bar لما الـ URL يتغير من الـ webView
+                if newURL != address {
+                    address = newURL
+                }
+            }
         }
     }
 
     private var addressBar: some View {
         HStack(spacing: 8) {
-            Button { browser.current.webView.goBack() } label: {
-                Image(systemName: "chevron.forward")
-            }
-            Button { browser.current.webView.goForward() } label: {
+            Button {
+                if browser.current.webView.canGoBack {
+                    browser.current.webView.goBack()
+                }
+            } label: {
                 Image(systemName: "chevron.backward")
             }
+            .disabled(!browser.current.webView.canGoBack)
+
+            Button {
+                if browser.current.webView.canGoForward {
+                    browser.current.webView.goForward()
+                }
+            } label: {
+                Image(systemName: "chevron.forward")
+            }
+            .disabled(!browser.current.webView.canGoForward)
+
             HStack {
                 Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
                 TextField(lang.t("addr.placeholder"), text: $address)
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
                     .submitLabel(.go)
-                    .onSubmit { browser.current.load(address) }
+                    .onSubmit {
+                        browser.current.load(address)
+                    }
             }
             .padding(10)
             .background(V2Theme.card, in: Capsule())
+
             Button {
                 browser.showDetector = true
             } label: {
@@ -96,6 +121,7 @@ struct BrowserView: View {
         }
         .padding(12)
         .background(Color.orange.opacity(0.18))
+        .transition(.opacity)
     }
 }
 
@@ -209,11 +235,13 @@ struct TabsSheet: View {
                         }
                     }
                     .swipeActions {
-                        Button(role: .destructive) { browser.close(tab.id) } label: { Text(lang.t("tabs.close")) }
+                        Button(role: .destructive) {
+                            browser.close(tab.id)
+                        } label: { Text(lang.t("tabs.close")) }
                     }
                 }
             }
-            .navigationTitle("التبويبات")
+            .navigationTitle(lang.t("tabs.title"))
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
