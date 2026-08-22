@@ -99,6 +99,9 @@ final class HLSDownloader {
         let lines = mediaPlaylist.components(separatedBy: .newlines)
         var segIndex = 0
         let total = max(segs.count, 1)
+        // نحدّ التقدّم إلى ~5 مرات/ثانية — دفعُ تحديث بعد كل segment يُغرق الـ main
+        // actor عشرات المرات في الثانية فيجمّد التطبيق أثناء تنزيل HLS طويل.
+        var lastProgress = Date.distantPast
 
         for raw in lines {
             let line = raw.trimmingCharacters(in: .whitespaces)
@@ -125,7 +128,11 @@ final class HLSDownloader {
             try segData.write(to: local, options: .atomic)
             rewritten += name + "\n"
             segIndex += 1
-            progress(Double(segIndex) / Double(total))
+            let now = Date()
+            if segIndex == total || now.timeIntervalSince(lastProgress) >= 0.2 {
+                lastProgress = now
+                progress(Double(segIndex) / Double(total))
+            }
         }
 
         if !rewritten.contains("#EXTM3U") { rewritten = "#EXTM3U\n" + rewritten }
