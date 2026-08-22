@@ -59,12 +59,13 @@ enum AudioPipeline {
         let asset = AVURLAsset(url: url)
 
         // محاولة تحميل المسارات عبر الطريقة الأحدث والأكثر موثوقية
-        var hasAudio = false
+         var hasAudio = false
         var hasVideo = false
         do {
             let tracks = try await asset.load(.tracks)
             for track in tracks {
-                let mediaType = try await track.load(.mediaType)
+                // mediaType property عادي مش async في iOS 16
+                let mediaType = track.mediaType
                 if mediaType == .video { hasVideo = true }
                 if mediaType == .audio { hasAudio = true }
             }
@@ -72,7 +73,6 @@ enum AudioPipeline {
             // لو load(.tracks) فشل، نكمل ونجرب الـ export ونشوف لو ينجح
             // بعض ملفات HLS المحلية تفشل في load لكن تنجح في export
         }
-
         // إذا تأكدنا إنه مفيش صوت، نرمي خطأ فوراً
         if hasVideo && !hasAudio {
             throw AudioPipelineError.noAudioTrack
