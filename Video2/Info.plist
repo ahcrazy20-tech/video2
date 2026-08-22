@@ -45,5 +45,7 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>CLOUDCONVERT_API_KEY</key>
+	<string>ضع_الـAPI_Key_هنا</string>
 </dict>
 </plist>
