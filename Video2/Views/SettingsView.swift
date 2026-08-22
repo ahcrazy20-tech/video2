@@ -68,6 +68,10 @@ struct SettingsView: View {
                               placeholder: "مفتاح Speechmatics API",
                               keyID: "speechmatics",
                               hint: "تفريغ صوتي — 480 دقيقة مجانية شهرياً لدقة عالية بأكثر من 55 لغة.")
+                     APIKeyRow(title: "مفتاح CloudConvert",
+                              placeholder: "cc-...",
+                              keyID: "cloudconvert",
+                              hint: "تحويل HLS إلى MP4 عبر الإنترنت — 25 تحويل مجاني يومياً (خيار احتياطي).")
                 } header: {
                     Text("مفاتيح ترجمة الفيديو")
                 } footer: {
@@ -293,6 +297,9 @@ enum KeyTester {
         case "speechmatics":
             url = "https://asr.api.speechmatics.com/v2/user"
             headers = ["api-key": key]
+               case "cloudconvert":
+            url = "https://api.cloudconvert.com/v2/user"
+            headers = ["Authorization": "Bearer \(key)"]
         default:
             return "⚠️ مزود غير معروف"
         }
