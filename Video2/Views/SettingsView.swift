@@ -2,6 +2,9 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var lang: LanguageStore
+     @EnvironmentObject var appLock: AppLock
+    @State private var newPassword = ""
+    @State private var passwordMessage: String?
     @State private var adblock = AdBlock.isEnabled
     @State private var mode = AdBlock.mode
 
@@ -13,6 +16,18 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                 Section("حماية التطبيق") {
+                    SecureField("كلمة سر جديدة (4 أحرف على الأقل)", text: $newPassword)
+                    Button(appLock.hasPassword ? "تغيير كلمة السر" : "تفعيل كلمة السر") {
+                        passwordMessage = appLock.setPassword(newPassword) ? "تم حفظ كلمة السر" : "كلمة السر قصيرة جداً"
+                        if passwordMessage == "تم حفظ كلمة السر" { newPassword = "" }
+                    }.disabled(newPassword.count < 4)
+                    if appLock.hasPassword {
+                        Button("قفل التطبيق الآن") { appLock.lock() }
+                        Button("إلغاء كلمة السر", role: .destructive) { appLock.removePassword() }
+                    }
+                    if let passwordMessage { Text(passwordMessage).font(.caption).foregroundStyle(.secondary) }
+                }
                 Section(lang.t("set.lang")) {
                     Picker(lang.t("set.lang"), selection: $lang.code) {
                         Text(lang.t("set.lang.ar")).tag("ar")
