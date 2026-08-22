@@ -44,9 +44,15 @@ final class CloudConvertService {
     
     // MARK: - API Key
     
-    /// يجلب API key من Info.plist
+    /// يجلب API key من Keychain (الأولوية) ثم Info.plist
     static func apiKey() -> String? {
-        return Bundle.main.infoDictionary?["CLOUDCONVERT_API_KEY"] as? String
+        if let key = KeychainStore.get("cloudconvert"), !key.isEmpty {
+            return key
+        }
+        if let key = Bundle.main.infoDictionary?["CLOUDCONVERT_API_KEY"] as? String {
+            return key.isEmpty || key.contains("ضع") ? nil : key
+        }
+        return nil
     }
     
     /// يتحقق من توفر API key
@@ -87,7 +93,7 @@ final class CloudConvertService {
         
         // 3. رفع الملف
         progress(0.15)
-        try await uploadFile(fileURL: inputFile, uploadURL: uploadInfo.url)
+        try await uploadFile(fileURL: inputFile, uploadURL: uploadInfo.url, formParams: uploadInfo.params)
         print("[CloudConvert] ✅ File uploaded")
         
         // 4. انتظار التحويل
@@ -225,6 +231,7 @@ final class CloudConvertService {
     private struct UploadInfo {
         let url: URL
         let taskID: String
+        let params: [String: Any]
     }
     
     private func getUploadURL(apiKey: String, jobID: String) async throws -> UploadInfo {
@@ -245,20 +252,22 @@ final class CloudConvertService {
             throw CloudConvertError.invalidResponse
         }
         
+        // في CloudConvert v2 بيانات الرفع تظهر في result.form (وليس params.upload_url)
         guard let uploadTask = tasksData.first(where: { $0["operation"] as? String == "import/upload" }),
               let taskID = uploadTask["id"] as? String,
-              let params = uploadTask["params"] as? [String: Any],
-              let urlStr = params["upload_url"] as? String,
+              let form = (uploadTask["result"] as? [String: Any])?["form"] as? [String: Any],
+              let urlStr = form["url"] as? String,
               let uploadURL = URL(string: urlStr) else {
             throw CloudConvertError.invalidResponse
         }
         
-        return UploadInfo(url: uploadURL, taskID: taskID)
+        let formParams = (form["parameters"] as? [String: Any]) ?? [:]
+        return UploadInfo(url: uploadURL, taskID: taskID, params: formParams)
     }
     
     // MARK: - Helper: رفع الملف
     
-    private func uploadFile(fileURL: URL, uploadURL: URL) async throws {
+    private func uploadFile(fileURL: URL, uploadURL: URL, formParams: [String: Any]) async throws {
         let fileData = try Data(contentsOf: fileURL)
         let boundary = "Boundary-\(UUID().uuidString)"
         
@@ -268,6 +277,11 @@ final class CloudConvertService {
         request.timeoutInterval = 600
         
         var body = Data()
+        for (k, v) in formParams {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(k)\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(v)\r\n".data(using: .utf8)!)
+        }
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileURL.lastPathComponent)\"\r\n".data(using: .utf8)!)
         body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)

@@ -239,9 +239,17 @@ enum AudioPipeline {
         let jobBody: [String: Any] = [
             "tasks": [
                 "import": ["operation": "import/upload"],
-                "convert": ["operation": "convert", "input": ["import"], "output_format": "mp4", "engine": "ffmpeg"],
+                "convert": [
+                    "operation": "convert",
+                    "input": ["import"],
+                    "output_format": "mp4",
+                    "engine": "ffmpeg",
+                    "audio_codec": "aac",
+                    "video_codec": "h264"
+                ],
                 "export": ["operation": "export/url", "input": ["convert"], "multiple": false]
-            ]
+            ],
+            "tag": "video2-hls"
         ]
         createReq.httpBody = try JSONSerialization.data(withJSONObject: jobBody)
         
@@ -280,68 +288,50 @@ enum AudioPipeline {
         
         print("[CloudConvert] ✅ Job created: \(jobID)")
         
-        // الحصول على upload URL
+        // الحصول على upload URL — في CloudConvert v2 بيانات الرفع تظهر في result.form (وليس params.upload_url)
         print("[CloudConvert] Getting upload URL...")
         let jobURL = URL(string: "https://api.cloudconvert.com/v2/jobs/\(jobID)")!
-        var jobReq = URLRequest(url: jobURL)
-        jobReq.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        let (jobData2, jobResp2) = try await URLSession.shared.data(for: jobReq)
         
-        guard let hr2 = jobResp2 as? HTTPURLResponse, (200...299).contains(hr2.statusCode) else {
-            print("[CloudConvert] ❌ Failed to get job details")
-            throw AudioPipelineError.exportFailed("CloudConvert: فشل الحصول على تفاصيل job")
+        func fetchJob() async throws -> [String: Any] {
+            var req = URLRequest(url: jobURL)
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            guard let hr = resp as? HTTPURLResponse, (200...299).contains(hr.statusCode) else {
+                throw AudioPipelineError.exportFailed("CloudConvert: فشل الحصول على تفاصيل job")
+            }
+            guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw AudioPipelineError.exportFailed("CloudConvert: استجابة غير صالحة")
+            }
+            return j
         }
         
-        guard let j = try? JSONSerialization.jsonObject(with: jobData2) as? [String: Any] else {
-            print("[CloudConvert] ❌ Failed to parse job JSON")
-            throw AudioPipelineError.exportFailed("CloudConvert: استجابة غير صالحة")
+        // أحياناً تستغرق بيانات الرفع لحظة حتى تُجهّز — ننتظر حتى تظهر result.form
+        var formURL: URL?
+        var formParams: [String: Any] = [:]
+        let uploadWait = Date()
+        while formURL == nil, Date().timeIntervalSince(uploadWait) < 30 {
+            let j = try await fetchJob()
+            guard let rel = j["relationships"] as? [String: Any],
+                  let tasks = rel["tasks"] as? [String: Any],
+                  let tData = tasks["data"] as? [[String: Any]],
+                  let up = tData.first(where: { $0["operation"] as? String == "import/upload" }),
+                  let form = (up["result"] as? [String: Any])?["form"] as? [String: Any],
+                  let us = form["url"] as? String,
+                  let u = URL(string: us) else {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+                continue
+            }
+            formURL = u
+            formParams = (form["parameters"] as? [String: Any]) ?? [:]
+            print("[CloudConvert] ✅ Upload URL ready")
         }
         
-        guard let rel = j["relationships"] as? [String: Any] else {
-            print("[CloudConvert] ❌ No 'relationships' in response")
+        guard let uploadURL = formURL else {
+            print("[CloudConvert] ❌ Upload form not ready")
             throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
         }
         
-        guard let tasks = rel["tasks"] as? [String: Any] else {
-            print("[CloudConvert] ❌ No 'tasks' in relationships")
-            throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
-        }
-        
-        guard let tData = tasks["data"] as? [[String: Any]] else {
-            print("[CloudConvert] ❌ No 'data' in tasks")
-            throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
-        }
-        
-        guard let up = tData.first(where: { $0["operation"] as? String == "import/upload" }) else {
-            print("[CloudConvert] ❌ No import/upload task found")
-            print("[CloudConvert] Tasks: \(tData.map { $0["operation"] as? String ?? "unknown" })")
-            throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
-        }
-        
-        guard let tid = up["id"] as? String else {
-            print("[CloudConvert] ❌ No 'id' in upload task")
-            throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
-        }
-        
-        guard let p = up["params"] as? [String: Any] else {
-            print("[CloudConvert] ❌ No 'params' in upload task")
-            throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
-        }
-        
-        guard let us = p["upload_url"] as? String else {
-            print("[CloudConvert] ❌ No 'upload_url' in params")
-            print("[CloudConvert] Params: \(p)")
-            throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
-        }
-        
-        guard let uploadURL = URL(string: us) else {
-            print("[CloudConvert] ❌ Invalid upload URL: \(us)")
-            throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
-        }
-        
-        print("[CloudConvert] ✅ Upload URL ready")
-        
-        // رفع الملف
+        // رفع الملف — يجب إرسال خانات الـ form الموقّعة مع الملف في حقل file (وإلا 401 Invalid Signature)
         print("[CloudConvert] Uploading file (\(size / 1024 / 1024) MB)...")
         let fileData = try Data(contentsOf: merged)
         let boundary = "Boundary-\(UUID().uuidString)"
@@ -351,6 +341,11 @@ enum AudioPipeline {
         uploadReq.timeoutInterval = 600
         
         var body = Data()
+        for (k, v) in formParams {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(k)\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(v)\r\n".data(using: .utf8)!)
+        }
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(merged.lastPathComponent)\"\r\n".data(using: .utf8)!)
         body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
@@ -540,6 +535,10 @@ enum AudioPipeline {
     private static func tryCompositionMethod(segments: [String], folder: URL) async throws -> URL {
         print("[AudioPipeline] Creating AVMutableComposition...")
         let composition = AVMutableComposition()
+        // نستخدم مساراً واحداً لكل نوع (فيديو / صوت) بدلاً من إنشاء مسار لكل segment
+        // — إنشاء مسار جديد لكل segment يجعل التصدير يفشل.
+        var videoTrack: AVMutableCompositionTrack?
+        var audioTrack: AVMutableCompositionTrack?
         var currentTime = CMTime.zero
         var addedCount = 0
 
@@ -578,26 +577,24 @@ enum AudioPipeline {
                 print("[AudioPipeline]   Video tracks: \(videoTracks.count)")
                 
                 for srcTrack in videoTracks {
-                    guard let ct = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else { 
-                        print("[AudioPipeline]   ❌ Failed to add video track")
-                        continue 
+                    if videoTrack == nil {
+                        videoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+                        print("[AudioPipeline]   ✅ Created video track")
                     }
                     let tr = try await srcTrack.load(.timeRange)
-                    try ct.insertTimeRange(tr, of: srcTrack, at: currentTime)
-                    print("[AudioPipeline]   ✅ Added video track")
+                    try videoTrack?.insertTimeRange(tr, of: srcTrack, at: currentTime)
                 }
                 
                 let audioTracks = try await segAsset.loadTracks(withMediaType: .audio)
                 print("[AudioPipeline]   Audio tracks: \(audioTracks.count)")
                 
                 for srcTrack in audioTracks {
-                    guard let ct = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { 
-                        print("[AudioPipeline]   ❌ Failed to add audio track")
-                        continue 
+                    if audioTrack == nil {
+                        audioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+                        print("[AudioPipeline]   ✅ Created audio track")
                     }
                     let tr = try await srcTrack.load(.timeRange)
-                    try ct.insertTimeRange(tr, of: srcTrack, at: currentTime)
-                    print("[AudioPipeline]   ✅ Added audio track")
+                    try audioTrack?.insertTimeRange(tr, of: srcTrack, at: currentTime)
                 }
                 
                 currentTime = CMTimeAdd(currentTime, duration)
