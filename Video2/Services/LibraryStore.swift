@@ -21,9 +21,9 @@ final class LibraryStore: ObservableObject {
     }
 
     func saveIndex() {
-        let data = try? JSONEncoder().encode(videos)
-        try? data?.write(to: Self.indexURL, options: .atomic)
-    }
+    guard let data = try? JSONEncoder().encode(videos) else { return }
+    try? data.write(to: Self.indexURL, options: .atomic)
+}
 
     func add(_ video: SavedVideo) {
         videos.insert(video, at: 0)
