@@ -45,13 +45,25 @@ enum AudioPipeline {
     
     /// يجلب مفتاح CloudConvert من Keychain (أولوية) أو Info.plist
     private static func cloudConvertKey() -> String? {
+        print("[AudioPipeline] ═══ Checking CloudConvert key...")
+        
         // أولاً من Keychain
         if let key = KeychainStore.get("cloudconvert"), !key.isEmpty {
+            print("[AudioPipeline] ✅ Found CloudConvert key in Keychain")
             return key
         }
+        print("[AudioPipeline] ❌ No CloudConvert key in Keychain")
+        
         // ثانياً من Info.plist (fallback)
-        guard let key = Bundle.main.infoDictionary?["CLOUDCONVERT_API_KEY"] as? String else { return nil }
-        return key.isEmpty || key.contains("ضع") ? nil : key
+        if let key = Bundle.main.infoDictionary?["CLOUDCONVERT_API_KEY"] as? String {
+            if !key.isEmpty && !key.contains("ضع") {
+                print("[AudioPipeline] ✅ Found CloudConvert key in Info.plist")
+                return key
+            }
+        }
+        print("[AudioPipeline] ❌ No CloudConvert key in Info.plist")
+        
+        return nil
     }
     
     /// يتحقق من توفر مفتاح CloudConvert
@@ -61,55 +73,162 @@ enum AudioPipeline {
     
     /// دمج .ts segments في ملف واحد
     private static func mergeTS(segments: [String], baseFolder: URL) async throws -> URL {
+        print("[AudioPipeline] ═══ Merging TS segments...")
+        print("[AudioPipeline] Base folder: \(baseFolder.path)")
+        print("[AudioPipeline] Segments count: \(segments.count)")
+        
         let out = FileManager.default.temporaryDirectory.appendingPathComponent("merge-\(UUID().uuidString).ts")
+        
         guard FileManager.default.createFile(atPath: out.path, contents: nil) else {
+            print("[AudioPipeline] ❌ Failed to create merge file at: \(out.path)")
             throw AudioPipelineError.exportFailed("تعذر إنشاء ملف مؤقت")
         }
+        print("[AudioPipeline] ✅ Created merge file: \(out.path)")
+        
         let fh = try FileHandle(forWritingTo: out)
         defer { try? fh.close() }
-        for segPath in segments {
-            if Task.isCancelled { try? FileManager.default.removeItem(at: out); throw CancellationError() }
-            if segPath.hasPrefix("/") {
-                let data = try Data(contentsOf: URL(fileURLWithPath: segPath))
-                fh.write(data)
-            } else if segPath.hasPrefix("http://") || segPath.hasPrefix("https://") {
-                if let u = URL(string: segPath) { let (d, _) = try await URLSession.shared.data(from: u); fh.write(d) }
-            } else {
-                let segURL = baseFolder.appendingPathComponent(segPath)
-                guard FileManager.default.fileExists(atPath: segURL.path) else { continue }
+        
+        var totalBytes = 0
+        
+        for (index, segPath) in segments.enumerated() {
+            print("[AudioPipeline] Processing segment \(index + 1)/\(segments.count): \(segPath)")
+            
+            if Task.isCancelled { 
+                print("[AudioPipeline] ❌ Task cancelled")
+                try? FileManager.default.removeItem(at: out)
+                throw CancellationError() 
+            }
+            
+            do {
+                var segURL: URL
+                
+                if segPath.hasPrefix("/") {
+                    segURL = URL(fileURLWithPath: segPath)
+                    print("[AudioPipeline]   Absolute path")
+                } else if segPath.hasPrefix("http://") || segPath.hasPrefix("https://") {
+                    guard let u = URL(string: segPath) else {
+                        print("[AudioPipeline]   ❌ Invalid URL: \(segPath)")
+                        continue
+                    }
+                    segURL = u
+                    print("[AudioPipeline]   HTTP URL - downloading...")
+                    let (data, response) = try await URLSession.shared.data(from: segURL)
+                    if let httpResponse = response as? HTTPURLResponse {
+                        print("[AudioPipeline]   HTTP status: \(httpResponse.statusCode)")
+                        guard (200...299).contains(httpResponse.statusCode) else {
+                            print("[AudioPipeline]   ❌ HTTP error: \(httpResponse.statusCode)")
+                            continue
+                        }
+                    }
+                    fh.write(data)
+                    totalBytes += data.count
+                    print("[AudioPipeline]   ✅ Downloaded \(data.count / 1024) KB")
+                    continue
+                } else {
+                    segURL = baseFolder.appendingPathComponent(segPath)
+                    print("[AudioPipeline]   Relative path → \(segURL.path)")
+                }
+                
+                // تحقق إن الملف موجود
+                guard FileManager.default.fileExists(atPath: segURL.path) else {
+                    print("[AudioPipeline]   ❌ File not found: \(segURL.path)")
+                    
+                    // حاول نشوف الملفات الموجودة
+                    let dirPath = segURL.deletingLastPathComponent()
+                    if let contents = try? FileManager.default.contentsOfDirectory(atPath: dirPath.path) {
+                        print("[AudioPipeline]   Available files in \(dirPath.lastPathComponent):")
+                        for file in contents.prefix(5) {
+                            print("[AudioPipeline]     - \(file)")
+                        }
+                        if contents.count > 5 {
+                            print("[AudioPipeline]     ... and \(contents.count - 5) more")
+                        }
+                    }
+                    continue
+                }
+                
+                // اقرأ البيانات
                 let data = try Data(contentsOf: segURL)
+                print("[AudioPipeline]   Read \(data.count / 1024) KB")
                 fh.write(data)
+                totalBytes += data.count
+                print("[AudioPipeline]   ✅ Written")
+                
+            } catch {
+                print("[AudioPipeline]   ❌ Error: \(error.localizedDescription)")
+                continue
             }
         }
+        
+        let finalSize = (try? out.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        print("[AudioPipeline] ✅ Merge complete: \(totalBytes / 1024 / 1024) MB (final size: \(finalSize / 1024 / 1024) MB)")
+        
+        guard totalBytes > 0 else {
+            try? FileManager.default.removeItem(at: out)
+            throw AudioPipelineError.exportFailed("لم يتم دمج أي بيانات من segments")
+        }
+        
         return out
     }
     
     /// تحويل HLS عبر CloudConvert
     private static func convertWithCloudConvert(m3u8URL: URL) async throws -> URL {
-        guard let apiKey = cloudConvertKey() else {
-            throw AudioPipelineError.exportFailed("مفتاح CloudConvert غير موجود — أضفه من الإعدادات")
-        }
         print("[CloudConvert] ═══════════════════════════════════════")
         print("[CloudConvert] Starting HLS → MP4")
+        print("[CloudConvert] m3u8: \(m3u8URL.path)")
         
+        guard let apiKey = cloudConvertKey() else {
+            print("[CloudConvert] ❌ No API key found")
+            throw AudioPipelineError.exportFailed("مفتاح CloudConvert غير موجود — أضفه من الإعدادات")
+        }
+        print("[CloudConvert] ✅ API key found (length: \(apiKey.count))")
+        
+        // اقرأ m3u8
         guard let content = try? String(contentsOf: m3u8URL, encoding: .utf8) else {
+            print("[CloudConvert] ❌ Failed to read m3u8")
             throw AudioPipelineError.exportFailed("تعذر قراءة m3u8")
         }
+        print("[CloudConvert] ✅ Read m3u8 content (\(content.count) chars)")
+        
+        // استخرج segments
         let lines = content.components(separatedBy: .newlines)
+        print("[CloudConvert] Total lines in m3u8: \(lines.count)")
+        
         let segs: [String] = lines.compactMap { l in
             let t = l.trimmingCharacters(in: .whitespaces)
             return t.isEmpty || t.hasPrefix("#") ? nil : t
         }
-        guard !segs.isEmpty else { throw AudioPipelineError.exportFailed("m3u8 فارغ") }
+        
         print("[CloudConvert] Found \(segs.count) segments")
+        if segs.isEmpty {
+            print("[CloudConvert] ❌ No segments found")
+            print("[CloudConvert] First 10 lines:")
+            for (i, line) in lines.prefix(10).enumerated() {
+                print("[CloudConvert]   Line \(i): \(line)")
+            }
+            throw AudioPipelineError.exportFailed("m3u8 فارغ أو لا يحتوي segments")
+        }
+        
+        // اطبع أول 3 segments عشان نتأكد
+        print("[CloudConvert] First 3 segments:")
+        for (i, seg) in segs.prefix(3).enumerated() {
+            print("[CloudConvert]   \(i + 1). \(seg)")
+        }
         
         // دمج segments
+        print("[CloudConvert] Merging segments...")
         let merged = try await mergeTS(segments: segs, baseFolder: m3u8URL.deletingLastPathComponent())
         defer { try? FileManager.default.removeItem(at: merged) }
+        
         let size = (try? merged.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        print("[CloudConvert] Merged TS: \(size / 1024 / 1024) MB")
+        print("[CloudConvert] ✅ Merged TS: \(size / 1024 / 1024) MB")
+        
+        guard size > 0 else {
+            throw AudioPipelineError.exportFailed("ملف الدمج فارغ")
+        }
         
         // إنشاء job
+        print("[CloudConvert] Creating job...")
         let createURL = URL(string: "https://api.cloudconvert.com/v2/jobs")!
         var createReq = URLRequest(url: createURL)
         createReq.httpMethod = "POST"
@@ -127,35 +246,103 @@ enum AudioPipeline {
         createReq.httpBody = try JSONSerialization.data(withJSONObject: jobBody)
         
         let (createData, createResp) = try await URLSession.shared.data(for: createReq)
-        guard let hr = createResp as? HTTPURLResponse, (200...299).contains(hr.statusCode) else {
-            throw AudioPipelineError.exportFailed("CloudConvert: فشل إنشاء job")
-        }
-        guard let json = try? JSONSerialization.jsonObject(with: createData) as? [String: Any],
-              let jobData = json["data"] as? [String: Any],
-              let jobID = jobData["id"] as? String else {
+        
+        guard let hr = createResp as? HTTPURLResponse else {
+            print("[CloudConvert] ❌ Invalid response")
             throw AudioPipelineError.exportFailed("CloudConvert: استجابة غير صالحة")
         }
-        print("[CloudConvert] Job: \(jobID)")
+        
+        print("[CloudConvert] HTTP status: \(hr.statusCode)")
+        
+        guard (200...299).contains(hr.statusCode) else {
+            let errorBody = String(data: createData, encoding: .utf8) ?? "unknown"
+            print("[CloudConvert] ❌ HTTP error: \(hr.statusCode)")
+            print("[CloudConvert] Error body: \(errorBody)")
+            throw AudioPipelineError.exportFailed("CloudConvert: فشل إنشاء job — HTTP \(hr.statusCode)")
+        }
+        
+        guard let json = try? JSONSerialization.jsonObject(with: createData) as? [String: Any] else {
+            print("[CloudConvert] ❌ Failed to parse JSON")
+            throw AudioPipelineError.exportFailed("CloudConvert: استجابة غير صالحة")
+        }
+        
+        guard let jobData = json["data"] as? [String: Any] else {
+            print("[CloudConvert] ❌ No 'data' in response")
+            print("[CloudConvert] Response: \(json)")
+            throw AudioPipelineError.exportFailed("CloudConvert: استجابة غير صالحة")
+        }
+        
+        guard let jobID = jobData["id"] as? String else {
+            print("[CloudConvert] ❌ No 'id' in data")
+            print("[CloudConvert] Data: \(jobData)")
+            throw AudioPipelineError.exportFailed("CloudConvert: استجابة غير صالحة")
+        }
+        
+        print("[CloudConvert] ✅ Job created: \(jobID)")
         
         // الحصول على upload URL
+        print("[CloudConvert] Getting upload URL...")
         let jobURL = URL(string: "https://api.cloudconvert.com/v2/jobs/\(jobID)")!
         var jobReq = URLRequest(url: jobURL)
         jobReq.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        let (jobData2, _) = try await URLSession.shared.data(for: jobReq)
+        let (jobData2, jobResp2) = try await URLSession.shared.data(for: jobReq)
         
-        guard let j = try? JSONSerialization.jsonObject(with: jobData2) as? [String: Any],
-              let rel = j["relationships"] as? [String: Any],
-              let tasks = rel["tasks"] as? [String: Any],
-              let tData = tasks["data"] as? [[String: Any]],
-              let up = tData.first(where: { $0["operation"] as? String == "import/upload" }),
-              let tid = up["id"] as? String,
-              let p = up["params"] as? [String: Any],
-              let us = p["upload_url"] as? String, let uploadURL = URL(string: us) else {
+        guard let hr2 = jobResp2 as? HTTPURLResponse, (200...299).contains(hr2.statusCode) else {
+            print("[CloudConvert] ❌ Failed to get job details")
+            throw AudioPipelineError.exportFailed("CloudConvert: فشل الحصول على تفاصيل job")
+        }
+        
+        guard let j = try? JSONSerialization.jsonObject(with: jobData2) as? [String: Any] else {
+            print("[CloudConvert] ❌ Failed to parse job JSON")
+            throw AudioPipelineError.exportFailed("CloudConvert: استجابة غير صالحة")
+        }
+        
+        guard let rel = j["relationships"] as? [String: Any] else {
+            print("[CloudConvert] ❌ No 'relationships' in response")
             throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
         }
-        print("[CloudConvert] Upload URL ready")
+        
+        guard let tasks = rel["tasks"] as? [String: Any] else {
+            print("[CloudConvert] ❌ No 'tasks' in relationships")
+            throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
+        }
+        
+        guard let tData = tasks["data"] as? [[String: Any]] else {
+            print("[CloudConvert] ❌ No 'data' in tasks")
+            throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
+        }
+        
+        guard let up = tData.first(where: { $0["operation"] as? String == "import/upload" }) else {
+            print("[CloudConvert] ❌ No import/upload task found")
+            print("[CloudConvert] Tasks: \(tData.map { $0["operation"] as? String ?? "unknown" })")
+            throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
+        }
+        
+        guard let tid = up["id"] as? String else {
+            print("[CloudConvert] ❌ No 'id' in upload task")
+            throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
+        }
+        
+        guard let p = up["params"] as? [String: Any] else {
+            print("[CloudConvert] ❌ No 'params' in upload task")
+            throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
+        }
+        
+        guard let us = p["upload_url"] as? String else {
+            print("[CloudConvert] ❌ No 'upload_url' in params")
+            print("[CloudConvert] Params: \(p)")
+            throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
+        }
+        
+        guard let uploadURL = URL(string: us) else {
+            print("[CloudConvert] ❌ Invalid upload URL: \(us)")
+            throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
+        }
+        
+        print("[CloudConvert] ✅ Upload URL ready")
         
         // رفع الملف
+        print("[CloudConvert] Uploading file (\(size / 1024 / 1024) MB)...")
         let fileData = try Data(contentsOf: merged)
         let boundary = "Boundary-\(UUID().uuidString)"
         var uploadReq = URLRequest(url: uploadURL)
@@ -171,14 +358,28 @@ enum AudioPipeline {
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
         uploadReq.httpBody = body
         
+        print("[CloudConvert] Sending upload request...")
         let (_, uploadResp) = try await URLSession.shared.data(for: uploadReq)
-        guard let uhr = uploadResp as? HTTPURLResponse, (200...299).contains(uhr.statusCode) else {
+        
+        guard let uhr = uploadResp as? HTTPURLResponse else {
+            print("[CloudConvert] ❌ Invalid upload response")
             throw AudioPipelineError.exportFailed("CloudConvert: فشل رفع الملف")
         }
-        print("[CloudConvert] Uploaded ✅")
+        
+        print("[CloudConvert] Upload HTTP status: \(uhr.statusCode)")
+        
+        guard (200...299).contains(uhr.statusCode) else {
+            print("[CloudConvert] ❌ Upload failed: HTTP \(uhr.statusCode)")
+            throw AudioPipelineError.exportFailed("CloudConvert: فشل رفع الملف — HTTP \(uhr.statusCode)")
+        }
+        
+        print("[CloudConvert] ✅ Uploaded successfully")
         
         // انتظار التحويل
+        print("[CloudConvert] Waiting for conversion...")
         let start = Date()
+        var lastStatus = ""
+        
         while Date().timeIntervalSince(start) < 600 {
             var pollReq = URLRequest(url: jobURL)
             pollReq.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -187,38 +388,67 @@ enum AudioPipeline {
             if let pj = try? JSONSerialization.jsonObject(with: pollData) as? [String: Any],
                let pjd = pj["data"] as? [String: Any],
                let status = pjd["status"] as? String {
+                
+                if status != lastStatus {
+                    print("[CloudConvert] Status: \(status)")
+                    lastStatus = status
+                }
+                
                 if status == "finished" {
+                    print("[CloudConvert] ✅ Conversion finished")
+                    
                     if let rel = pj["relationships"] as? [String: Any],
                        let tasks = rel["tasks"] as? [String: Any],
                        let tData = tasks["data"] as? [[String: Any]] {
+                        
                         for t in tData {
                             if t["operation"] as? String == "export/url",
                                let r = t["result"] as? [String: Any],
                                let fs = r["files"] as? [[String: Any]],
                                let f = fs.first, let dlURL = f["url"] as? String {
+                                
+                                print("[CloudConvert] Download URL: \(dlURL)")
+                                
                                 // تنزيل النتيجة
                                 guard let url = URL(string: dlURL) else {
+                                    print("[CloudConvert] ❌ Invalid download URL")
                                     throw AudioPipelineError.exportFailed("CloudConvert: رابط تنزيل غير صالح")
                                 }
+                                
+                                print("[CloudConvert] Downloading result...")
                                 var dlReq = URLRequest(url: url)
                                 dlReq.timeoutInterval = 600
                                 let (dlData, _) = try await URLSession.shared.data(for: dlReq)
+                                
                                 let out = FileManager.default.temporaryDirectory
                                     .appendingPathComponent("cc-\(UUID().uuidString).mp4")
                                 try dlData.write(to: out)
-                                print("[CloudConvert] Downloaded ✅")
+                                
+                                let outSize = (try? out.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                                print("[CloudConvert] ✅ Downloaded: \(outSize / 1024 / 1024) MB")
                                 return out
                             }
                         }
                     }
+                    
+                    print("[CloudConvert] ❌ No export/url task with files found")
                     throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على رابط تنزيل")
                 }
+                
                 if status == "error" {
+                    print("[CloudConvert] ❌ Conversion failed with error")
+                    if let message = pjd["message"] as? String {
+                        print("[CloudConvert] Error message: \(message)")
+                        throw AudioPipelineError.exportFailed("CloudConvert: فشل التحويل — \(message)")
+                    }
                     throw AudioPipelineError.exportFailed("CloudConvert: فشل التحويل")
                 }
             }
+            
             try await Task.sleep(nanoseconds: 5_000_000_000)
         }
+        
+        print("[CloudConvert] ❌ Timeout after 10 minutes")
         throw AudioPipelineError.exportFailed("CloudConvert: انتهت مهلة الانتظار")
     }
 
@@ -227,46 +457,62 @@ enum AudioPipeline {
     // ═════════════════════════════════════════════════════════════════
 
     static func exportHLSToTempMP4(_ url: URL) async throws -> URL {
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            throw AudioPipelineError.exportFailed("ملف HLS غير موجود: \(url.lastPathComponent)")
-        }
-
         print("[AudioPipeline] ═══════════════════════════════════════")
         print("[AudioPipeline] Starting HLS → MP4 conversion")
+        print("[AudioPipeline] URL: \(url.path)")
+        
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            print("[AudioPipeline] ❌ File not found: \(url.path)")
+            throw AudioPipelineError.exportFailed("ملف HLS غير موجود: \(url.lastPathComponent)")
+        }
+        
+        print("[AudioPipeline] ✅ File exists")
         print("[AudioPipeline] m3u8: \(url.lastPathComponent)")
 
         // الطريقة 1: CloudConvert API (لو متاح)
         if hasCloudConvertKey {
-            print("[AudioPipeline] Trying CloudConvert API...")
+            print("[AudioPipeline] ═══ Trying CloudConvert API (method 1)...")
             do {
                 let result = try await convertWithCloudConvert(m3u8URL: url)
                 print("[AudioPipeline] ✅ CloudConvert succeeded!")
                 return result
             } catch {
                 print("[AudioPipeline] ⚠️ CloudConvert failed: \(error.localizedDescription)")
-                print("[AudioPipeline] Falling back to native...")
+                print("[AudioPipeline] Falling back to native methods...")
             }
         } else {
-            print("[AudioPipeline] CloudConvert not available (no API key)")
+            print("[AudioPipeline] ⚠️ CloudConvert not available (no API key)")
         }
 
         // نقرأ playlist
+        print("[AudioPipeline] ═══ Reading m3u8 playlist...")
         guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            print("[AudioPipeline] ❌ Failed to read m3u8")
             throw AudioPipelineError.exportFailed("تعذر قراءة m3u8")
         }
+        
+        print("[AudioPipeline] ✅ Read m3u8 (\(content.count) chars)")
+        
         let lines = content.components(separatedBy: .newlines)
+        print("[AudioPipeline] Total lines: \(lines.count)")
+        
         let segmentPaths: [String] = lines.compactMap { l in
             let t = l.trimmingCharacters(in: .whitespaces)
             return t.isEmpty || t.hasPrefix("#") ? nil : t
         }
+        
+        print("[AudioPipeline] Found \(segmentPaths.count) segments")
+        
         guard !segmentPaths.isEmpty else {
+            print("[AudioPipeline] ❌ No segments found")
             throw AudioPipelineError.exportFailed("ملف m3u8 فارغ")
         }
-        print("[AudioPipeline] Found \(segmentPaths.count) segments")
+        
         let m3u8Folder = url.deletingLastPathComponent()
+        print("[AudioPipeline] Base folder: \(m3u8Folder.path)")
 
         // الطريقة 2: AVMutableComposition
-        print("[AudioPipeline] Trying AVMutableComposition...")
+        print("[AudioPipeline] ═══ Trying AVMutableComposition (method 2)...")
         do {
             let result = try await tryCompositionMethod(segments: segmentPaths, folder: m3u8Folder)
             print("[AudioPipeline] ✅ Composition succeeded!")
@@ -276,7 +522,7 @@ enum AudioPipeline {
         }
 
         // الطريقة 3: segment-by-segment
-        print("[AudioPipeline] Trying segment-by-segment...")
+        print("[AudioPipeline] ═══ Trying segment-by-segment (method 3)...")
         do {
             let result = try await trySegmentBySegmentMethod(segments: segmentPaths, folder: m3u8Folder)
             print("[AudioPipeline] ✅ Segment-by-segment succeeded!")
@@ -285,77 +531,153 @@ enum AudioPipeline {
             print("[AudioPipeline] ⚠️ Segment-by-segment failed: \(error.localizedDescription)")
         }
 
+        print("[AudioPipeline] ❌ ALL METHODS FAILED")
         throw AudioPipelineError.exportFailed("كل طرق التحويل فشلت")
     }
 
     // MARK: ── الطريقة 2: AVMutableComposition ──
 
     private static func tryCompositionMethod(segments: [String], folder: URL) async throws -> URL {
+        print("[AudioPipeline] Creating AVMutableComposition...")
         let composition = AVMutableComposition()
         var currentTime = CMTime.zero
         var addedCount = 0
 
         for (index, segPath) in segments.enumerated() {
+            print("[AudioPipeline] Processing segment \(index + 1)/\(segments.count)")
+            
             if Task.isCancelled { throw CancellationError() }
+            
             let segURL: URL
-            if segPath.hasPrefix("/") { segURL = URL(fileURLWithPath: segPath) }
-            else { segURL = folder.appendingPathComponent(segPath) }
-            guard FileManager.default.fileExists(atPath: segURL.path) else {
-                print("[AudioPipeline] ⚠️ Segment \(index + 1) not found"); continue
+            if segPath.hasPrefix("/") { 
+                segURL = URL(fileURLWithPath: segPath) 
+            } else { 
+                segURL = folder.appendingPathComponent(segPath) 
             }
+            
+            guard FileManager.default.fileExists(atPath: segURL.path) else {
+                print("[AudioPipeline]   ❌ Not found: \(segURL.lastPathComponent)")
+                continue
+            }
+            
+            print("[AudioPipeline]   ✅ Found: \(segURL.lastPathComponent)")
+            
             let segAsset = AVURLAsset(url: segURL)
+            
             do {
                 let duration = try await segAsset.load(.duration)
-                guard CMTimeGetSeconds(duration) > 0 else { continue }
+                let durationSec = CMTimeGetSeconds(duration)
+                print("[AudioPipeline]   Duration: \(durationSec)s")
+                
+                guard durationSec > 0 else { 
+                    print("[AudioPipeline]   ❌ Invalid duration")
+                    continue 
+                }
 
-                for srcTrack in try await segAsset.loadTracks(withMediaType: .video) {
-                    guard let ct = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else { continue }
+                let videoTracks = try await segAsset.loadTracks(withMediaType: .video)
+                print("[AudioPipeline]   Video tracks: \(videoTracks.count)")
+                
+                for srcTrack in videoTracks {
+                    guard let ct = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else { 
+                        print("[AudioPipeline]   ❌ Failed to add video track")
+                        continue 
+                    }
                     let tr = try await srcTrack.load(.timeRange)
                     try ct.insertTimeRange(tr, of: srcTrack, at: currentTime)
+                    print("[AudioPipeline]   ✅ Added video track")
                 }
-                for srcTrack in try await segAsset.loadTracks(withMediaType: .audio) {
-                    guard let ct = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { continue }
+                
+                let audioTracks = try await segAsset.loadTracks(withMediaType: .audio)
+                print("[AudioPipeline]   Audio tracks: \(audioTracks.count)")
+                
+                for srcTrack in audioTracks {
+                    guard let ct = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { 
+                        print("[AudioPipeline]   ❌ Failed to add audio track")
+                        continue 
+                    }
                     let tr = try await srcTrack.load(.timeRange)
                     try ct.insertTimeRange(tr, of: srcTrack, at: currentTime)
+                    print("[AudioPipeline]   ✅ Added audio track")
                 }
+                
                 currentTime = CMTimeAdd(currentTime, duration)
                 addedCount += 1
-                print("[AudioPipeline] ✅ Segment \(index + 1)")
+                print("[AudioPipeline]   ✅ Segment added successfully")
+                
             } catch {
-                print("[AudioPipeline] ⚠️ Segment \(index + 1) failed: \(error.localizedDescription)")
+                print("[AudioPipeline]   ❌ Error: \(error.localizedDescription)")
                 continue
             }
         }
-        guard addedCount > 0 else { throw AudioPipelineError.exportFailed("لم يتم إضافة أي segment") }
+        
+        guard addedCount > 0 else { 
+            print("[AudioPipeline] ❌ No segments added")
+            throw AudioPipelineError.exportFailed("لم يتم إضافة أي segment") 
+        }
+        
+        print("[AudioPipeline] ✅ Composition created: \(addedCount) segments")
 
         let out = FileManager.default.temporaryDirectory.appendingPathComponent("v2-comp-\(UUID().uuidString).mp4")
         try? FileManager.default.removeItem(at: out)
+        
+        print("[AudioPipeline] Exporting composition...")
 
         for preset in [AVAssetExportPresetPassthrough, AVAssetExportPresetHighestQuality, AVAssetExportPresetMediumQuality] {
+            print("[AudioPipeline] Trying preset: \(preset)")
+            
             let compatible = AVAssetExportSession.exportPresets(compatibleWith: composition)
-            guard compatible.contains(preset),
-                  let session = AVAssetExportSession(asset: composition, presetName: preset),
-                  session.supportedFileTypes.contains(.mp4) else { continue }
+            
+            guard compatible.contains(preset) else { 
+                print("[AudioPipeline]   ❌ Not compatible")
+                continue 
+            }
+            
+            guard let session = AVAssetExportSession(asset: composition, presetName: preset) else { 
+                print("[AudioPipeline]   ❌ Failed to create session")
+                continue 
+            }
+            
+            guard session.supportedFileTypes.contains(.mp4) else { 
+                print("[AudioPipeline]   ❌ MP4 not supported")
+                continue 
+            }
+            
             session.outputURL = out
             session.outputFileType = .mp4
             session.shouldOptimizeForNetworkUse = true
+            
+            print("[AudioPipeline]   Exporting...")
+            
             await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
                 session.exportAsynchronously { c.resume() }
             }
-            if session.status == .completed, FileManager.default.fileExists(atPath: out.path) {
+            
+            if session.status == .completed {
                 let sz = (try? out.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                if sz > 0 { print("[AudioPipeline] ✅ Exported: \(sz / 1024 / 1024) MB"); return out }
+                if sz > 0 { 
+                    print("[AudioPipeline]   ✅ Export succeeded: \(sz / 1024 / 1024) MB")
+                    return out 
+                }
             }
+            
+            print("[AudioPipeline]   ❌ Export failed: \(session.error?.localizedDescription ?? "unknown")")
             try? FileManager.default.removeItem(at: out)
         }
+        
+        print("[AudioPipeline] ❌ All presets failed")
         throw AudioPipelineError.exportFailed("فشل تصدير composition")
     }
 
     // MARK: ── الطريقة 3: segment-by-segment ──
 
     private static func trySegmentBySegmentMethod(segments: [String], folder: URL) async throws -> URL {
+        print("[AudioPipeline] Creating segment-by-segment output...")
+        
         let out = FileManager.default.temporaryDirectory.appendingPathComponent("v2-seg-\(UUID().uuidString).m4a")
         try? FileManager.default.removeItem(at: out)
+        
+        print("[AudioPipeline] Output: \(out.lastPathComponent)")
+        
         let writer = try AVAssetWriter(url: out, fileType: .m4a)
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -365,26 +687,63 @@ enum AudioPipeline {
         ]
         let writerInput = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
         writerInput.expectsMediaDataInRealTime = false
-        guard writer.canAdd(writerInput) else { throw AudioPipelineError.writerFailed("لا يمكن إضافة writer input") }
+        
+        guard writer.canAdd(writerInput) else { 
+            print("[AudioPipeline] ❌ Cannot add writer input")
+            throw AudioPipelineError.writerFailed("لا يمكن إضافة writer input") 
+        }
+        
         writer.add(writerInput)
         writer.shouldOptimizeForNetworkUse = true
-        guard writer.startWriting() else { throw AudioPipelineError.writerFailed(writer.error?.localizedDescription ?? "فشل") }
+        
+        guard writer.startWriting() else { 
+            print("[AudioPipeline] ❌ Failed to start writing")
+            throw AudioPipelineError.writerFailed(writer.error?.localizedDescription ?? "فشل") 
+        }
+        
+        print("[AudioPipeline] ✅ Writer started")
 
         var currentTime = CMTime.zero
         var totalSamples = 0
 
         for (index, segPath) in segments.enumerated() {
-            if Task.isCancelled { try? FileManager.default.removeItem(at: out); throw CancellationError() }
+            print("[AudioPipeline] Reading segment \(index + 1)/\(segments.count)")
+            
+            if Task.isCancelled { 
+                try? FileManager.default.removeItem(at: out)
+                throw CancellationError() 
+            }
+            
             let segURL: URL
-            if segPath.hasPrefix("/") { segURL = URL(fileURLWithPath: segPath) }
-            else { segURL = folder.appendingPathComponent(segPath) }
-            guard FileManager.default.fileExists(atPath: segURL.path) else { continue }
+            if segPath.hasPrefix("/") { 
+                segURL = URL(fileURLWithPath: segPath) 
+            } else { 
+                segURL = folder.appendingPathComponent(segPath) 
+            }
+            
+            guard FileManager.default.fileExists(atPath: segURL.path) else { 
+                print("[AudioPipeline]   ❌ Not found")
+                continue 
+            }
+            
             let segAsset = AVURLAsset(url: segURL)
+            
             do {
                 let duration = try await segAsset.load(.duration)
-                guard CMTimeGetSeconds(duration) > 0 else { continue }
+                let durationSec = CMTimeGetSeconds(duration)
+                
+                guard durationSec > 0 else { 
+                    print("[AudioPipeline]   ❌ Invalid duration")
+                    continue 
+                }
+                
                 let audioTracks = try await segAsset.loadTracks(withMediaType: .audio)
-                guard let audioTrack = audioTracks.first else { continue }
+                guard let audioTrack = audioTracks.first else { 
+                    print("[AudioPipeline]   ❌ No audio track")
+                    continue 
+                }
+                
+                print("[AudioPipeline]   Creating reader...")
                 let reader = try AVAssetReader(asset: segAsset)
                 let pcmSettings: [String: Any] = [
                     AVFormatIDKey: kAudioFormatLinearPCM,
@@ -397,34 +756,61 @@ enum AudioPipeline {
                 ]
                 let readerOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: pcmSettings)
                 reader.add(readerOutput)
-                guard reader.startReading() else { print("[AudioPipeline] ⚠️ Segment \(index + 1) read failed"); continue }
-                writer.startSession(atSourceTime: currentTime)
-                var segSamples = 0
-                while let sb = readerOutput.copyNextSampleBuffer() {
-                    while !writerInput.isReadyForMoreMediaData { try await Task.sleep(nanoseconds: 5_000_000) }
-                    if !writerInput.append(sb) { break }
-                    segSamples += 1; totalSamples += 1
+                
+                guard reader.startReading() else { 
+                    print("[AudioPipeline]   ❌ Failed to start reading")
+                    continue 
                 }
-                if reader.status == .failed { continue }
+                
+                writer.startSession(atSourceTime: currentTime)
+                
+                var segSamples = 0
+                
+                while let sb = readerOutput.copyNextSampleBuffer() {
+                    while !writerInput.isReadyForMoreMediaData { 
+                        try await Task.sleep(nanoseconds: 5_000_000) 
+                    }
+                    
+                    if !writerInput.append(sb) { 
+                        print("[AudioPipeline]   ❌ Failed to append sample")
+                        break 
+                    }
+                    
+                    segSamples += 1
+                    totalSamples += 1
+                }
+                
+                if reader.status == .failed { 
+                    print("[AudioPipeline]   ❌ Reader failed")
+                    continue 
+                }
+                
                 let segDur = Double(segSamples) / sampleRate
                 currentTime = CMTimeAdd(currentTime, CMTime(seconds: segDur, preferredTimescale: Int32(sampleRate)))
-                print("[AudioPipeline] ✅ Segment \(index + 1): \(segSamples) samples")
+                print("[AudioPipeline]   ✅ \(segSamples) samples")
+                
             } catch {
-                print("[AudioPipeline] ⚠️ Segment \(index + 1): \(error.localizedDescription)")
+                print("[AudioPipeline]   ❌ Error: \(error.localizedDescription)")
                 continue
             }
         }
 
         guard totalSamples > 0 else {
+            print("[AudioPipeline] ❌ No samples read")
             try? FileManager.default.removeItem(at: out)
             throw AudioPipelineError.exportFailed("لم يتم قراءة أي عينات صوتية")
         }
+        
+        print("[AudioPipeline] Finishing writer...")
         writerInput.markAsFinished()
         await writer.finishWriting()
+        
         guard writer.status == .completed else {
+            print("[AudioPipeline] ❌ Writer failed")
             try? FileManager.default.removeItem(at: out)
             throw AudioPipelineError.writerFailed(writer.error?.localizedDescription ?? "فشل")
         }
+        
         let sz = (try? out.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         print("[AudioPipeline] ✅ Output: \(sz / 1024) KB")
         return out
