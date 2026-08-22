@@ -80,6 +80,10 @@ final class BrowserModel: ObservableObject {
         }
     }
 
+    func downloadAuth(tab: BrowserTab, mediaURL: String) async -> DownloadAuth {
+        await BrowserAuth.snapshot(webView: tab.webView, pageURL: tab.urlString, mediaURL: mediaURL)
+    }
+
     func ingest(media: DetectedMedia, tab: BrowserTab) {
         if let i = tab.detected.firstIndex(where: { $0.url == media.url }) {
             var old = tab.detected[i]
@@ -88,7 +92,16 @@ final class BrowserModel: ObservableObject {
             if old.height == nil { old.height = media.height }
             if old.width == nil { old.width = media.width }
             if (old.qualityLabel ?? "").isEmpty { old.qualityLabel = media.qualityLabel }
+            if (old.variants ?? []).isEmpty { old.variants = media.variants }
             tab.detected[i] = old
+            if old.kind == .hls, (old.variants ?? []).isEmpty {
+                Task { @MainActor in
+                    let enriched = await MediaProbe.enrich(old)
+                    if let j = tab.detected.firstIndex(where: { $0.url == enriched.url }) {
+                        tab.detected[j] = enriched
+                    }
+                }
+            }
             return
         }
         if media.isFragment { return }
@@ -128,5 +141,25 @@ final class BrowserModel: ObservableObject {
                 tab.detected[i].drm = kind
             }
         }
+    }
+}
+
+enum BrowserAuth {
+    static func snapshot(webView: WKWebView, pageURL: String?, mediaURL: String) async -> DownloadAuth {
+        let cookies: [HTTPCookie] = await withCheckedContinuation { cont in
+            webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cont.resume(returning: $0) }
+        }
+        let mediaHost = URL(string: mediaURL)?.host?.lowercased()
+        let pageHost = URL(string: pageURL ?? "")?.host?.lowercased()
+        let relevant = cookies.filter { c in
+            let d = c.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+            if let h = mediaHost, h.contains(d) || d.contains(h) { return true }
+            if let h = pageHost, h.contains(d) || d.contains(h) { return true }
+            return false
+        }
+        let header = relevant.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+        let ua = (webView.customUserAgent?.isEmpty == false) ? webView.customUserAgent! : DownloadAuth.safariUA
+        let ref = (pageURL?.isEmpty == false) ? pageURL : nil
+        return DownloadAuth(userAgent: ua, referer: ref, cookie: header.isEmpty ? nil : header)
     }
 }

@@ -25,6 +25,7 @@ final class OfflinePlayerModel: ObservableObject {
     @Published var toast: String?
     @Published var sleepMinutes: Int = 0
     @Published var subtitleText: String = ""
+    @Published var autoSpeak = false
 
     // الترجمة
     var origCues: [SubCue] = []
@@ -44,6 +45,8 @@ final class OfflinePlayerModel: ObservableObject {
     private var hideWork: DispatchWorkItem?
     private var sleepWork: DispatchWorkItem?
     private var statusObs: NSKeyValueObservation?
+    private var lastSpoken = ""
+    private var lastNowPlayingAt = Date.distantPast
     let pip: AVPictureInPictureController?
 
     init(video: SavedVideo, lang: LanguageStore? = nil) {
@@ -72,6 +75,7 @@ final class OfflinePlayerModel: ObservableObject {
 
     func start() {
         UIApplication.shared.isIdleTimerDisabled = true
+        setupRemoteCommands()
         loadSubtitles()
         do {
             let url = try LocalFileServer.shared.playbackURL(for: video)
@@ -113,6 +117,7 @@ final class OfflinePlayerModel: ObservableObject {
             } else if let known = self.video.duration, known > 0 {
                 self.duration = known
             }
+            self.publishNowPlaying(force: false)
         }
         play()
         scheduleHide()
@@ -124,6 +129,8 @@ final class OfflinePlayerModel: ObservableObject {
         if let endObs { NotificationCenter.default.removeObserver(endObs) }
         player.pause()
         sleepWork?.cancel()
+        SpeechNarrator.shared.stop()
+        teardownRemoteCommands()
     }
 
     func play() {
@@ -131,12 +138,15 @@ final class OfflinePlayerModel: ObservableObject {
         player.play()
         isPlaying = true
         scheduleHide()
+        publishNowPlaying(force: true)
     }
 
     func pause() {
         player.pause()
         isPlaying = false
         showChrome = true
+        SpeechNarrator.shared.stop()
+        publishNowPlaying(force: true)
     }
 
     func toggle() {
@@ -230,6 +240,119 @@ final class OfflinePlayerModel: ObservableObject {
         let text = SubtitleOverlayRenderer.text(original: origCues, translated: trCues,
                                                 mode: subMode, time: t)
         if text != subtitleText { subtitleText = text ?? "" }
+        if autoSpeak {
+            let spoken = (text ?? "").replacingOccurrences(of: "\n", with: " ")
+            if !spoken.isEmpty, spoken != lastSpoken {
+                lastSpoken = spoken
+                let langCode = video.subtitleTargetLang ?? "ar"
+                SpeechNarrator.shared.speak(spoken, language: langCode)
+            }
+        }
+    }
+
+    func toggleAutoSpeak() {
+        autoSpeak.toggle()
+        if !autoSpeak {
+            SpeechNarrator.shared.stop()
+            flash(t("pl.tts.off"))
+        } else {
+            lastSpoken = ""
+            updateSubtitle(at: current)
+            flash(t("pl.tts.on"))
+        }
+    }
+
+    func searchHits(query: String) -> [SubtitleHit] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 1 else { return [] }
+        var hits: [SubtitleHit] = []
+        func add(_ cues: [SubCue], kind: String) {
+            for c in cues where c.text.localizedCaseInsensitiveContains(q) {
+                hits.append(SubtitleHit(id: "\(kind)-\(c.id)-\(c.start)", start: c.start, text: c.text, kind: kind))
+            }
+        }
+        add(trCues, kind: "tr")
+        add(origCues, kind: "orig")
+        hits.sort { $0.start < $1.start }
+        return hits
+    }
+
+    private func setupRemoteCommands() {
+        UIApplication.shared.beginReceivingRemoteControlEvents()
+        let c = MPRemoteCommandCenter.shared()
+        c.playCommand.isEnabled = true
+        c.pauseCommand.isEnabled = true
+        c.togglePlayPauseCommand.isEnabled = true
+        c.skipForwardCommand.isEnabled = true
+        c.skipBackwardCommand.isEnabled = true
+        c.skipForwardCommand.preferredIntervals = [10]
+        c.skipBackwardCommand.preferredIntervals = [10]
+        c.changePlaybackPositionCommand.isEnabled = true
+
+        c.playCommand.removeTarget(nil)
+        c.pauseCommand.removeTarget(nil)
+        c.togglePlayPauseCommand.removeTarget(nil)
+        c.skipForwardCommand.removeTarget(nil)
+        c.skipBackwardCommand.removeTarget(nil)
+        c.changePlaybackPositionCommand.removeTarget(nil)
+
+        c.playCommand.addTarget { [weak self] _ in
+            DispatchQueue.main.async { self?.play() }
+            return .success
+        }
+        c.pauseCommand.addTarget { [weak self] _ in
+            DispatchQueue.main.async { self?.pause() }
+            return .success
+        }
+        c.togglePlayPauseCommand.addTarget { [weak self] _ in
+            DispatchQueue.main.async { self?.toggle() }
+            return .success
+        }
+        c.skipForwardCommand.addTarget { [weak self] _ in
+            DispatchQueue.main.async { self?.skip(10) }
+            return .success
+        }
+        c.skipBackwardCommand.addTarget { [weak self] _ in
+            DispatchQueue.main.async { self?.skip(-10) }
+            return .success
+        }
+        c.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let ev = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            DispatchQueue.main.async { self?.seek(to: ev.positionTime) }
+            return .success
+        }
+        publishNowPlaying(force: true)
+    }
+
+    private func teardownRemoteCommands() {
+        let c = MPRemoteCommandCenter.shared()
+        c.playCommand.removeTarget(nil)
+        c.pauseCommand.removeTarget(nil)
+        c.togglePlayPauseCommand.removeTarget(nil)
+        c.skipForwardCommand.removeTarget(nil)
+        c.skipBackwardCommand.removeTarget(nil)
+        c.changePlaybackPositionCommand.removeTarget(nil)
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    }
+
+    func publishNowPlaying(force: Bool) {
+        let now = Date()
+        if !force, now.timeIntervalSince(lastNowPlayingAt) < 1 { return }
+        lastNowPlayingAt = now
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: video.title,
+            MPMediaItemPropertyAlbumTitle: "فيديو ٢",
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: current,
+            MPMediaItemPropertyPlaybackDuration: max(duration, 0),
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? Double(rate) : 0
+        ]
+        if let rel = video.thumbnailRelativePath {
+            let path = LibraryStore.documents.appendingPathComponent(rel).path
+            if let img = UIImage(contentsOfFile: path) {
+                info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
+            }
+        }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
     func bumpChrome() {
@@ -277,6 +400,13 @@ struct PlayerLayerView: UIViewRepresentable {
     }
 }
 
+struct SubtitleHit: Identifiable {
+    var id: String
+    var start: Double
+    var text: String
+    var kind: String
+}
+
 struct OfflinePlayerView: View {
     let video: SavedVideo
     @EnvironmentObject var library: LibraryStore
@@ -286,6 +416,7 @@ struct OfflinePlayerView: View {
     @State private var dragStart: Double?
     @State private var showSpeed = false
     @State private var showSleep = false
+    @State private var showSearch = false
 
     init(video: SavedVideo) {
         self.video = video
@@ -407,6 +538,13 @@ struct OfflinePlayerView: View {
                     }
                 } else {
                     Button { vm.toggleFill() } label: { Image(systemName: vm.fill ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left").padding(8) }
+                    if vm.hasSubtitles {
+                        Button { showSearch = true } label: { Image(systemName: "magnifyingglass").padding(8) }
+                        Button { vm.toggleAutoSpeak() } label: {
+                            Image(systemName: vm.autoSpeak ? "speaker.wave.2.circle.fill" : "speaker.wave.2.circle")
+                                .padding(8)
+                        }
+                    }
                     Button { showSleep = true } label: { Image(systemName: "moon.zzz").padding(8) }
                     Button {
                         vm.locked = true
@@ -483,6 +621,53 @@ struct OfflinePlayerView: View {
             }
         }
         .foregroundStyle(.white)
+    }
+}
+
+struct SubtitleSearchSheet: View {
+    @ObservedObject var vm: OfflinePlayerModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(vm.t("pl.search.hint"))
+                        .foregroundStyle(.secondary)
+                } else {
+                    let hits = vm.searchHits(query: query)
+                    if hits.isEmpty {
+                        Text(vm.t("pl.search.empty"))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(hits) { hit in
+                            Button {
+                                vm.seek(to: hit.start)
+                                dismiss()
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(vm.fmt(hit.start))
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(V2Theme.gold)
+                                    Text(hit.text)
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(3)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .searchable(text: $query, prompt: Text(vm.t("pl.search.prompt")))
+            .navigationTitle(vm.t("pl.search.title"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(vm.t("nav.close")) { dismiss() }
+                }
+            }
+        }
     }
 }
 

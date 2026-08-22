@@ -12,6 +12,10 @@ struct SettingsView: View {
     @AppStorage("tr.provider") private var translatorRaw: String = TranslatorKind.auto.rawValue
     @AppStorage("gemini.model") private var geminiModel: String = "gemini-2.0-flash"
     @AppStorage("stt.concurrency") private var sttConcurrency: Int = 3
+    @AppStorage("dl.maxHeight") private var downloadMaxHeight: Int = 0
+    @AppStorage("tts.edge") private var preferEdgeTTS: Bool = true
+    @State private var storage = StorageManager.report()
+    @State private var storageMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -39,6 +43,22 @@ struct SettingsView: View {
                     LabeledContent(lang.t("set.app"), value: "فيديو ٢")
                     LabeledContent(lang.t("set.target"), value: "iPhone 11 · iOS 16.4 · TrollStore")
                     LabeledContent(lang.t("set.bundle"), value: "com.ahcrazy.video2")
+                }
+                Section(lang.t("set.dl.title")) {
+                    Picker(lang.t("set.dl.quality"), selection: $downloadMaxHeight) {
+                        Text(lang.t("det.quality.auto")).tag(0)
+                        Text("1080p").tag(1080)
+                        Text("720p").tag(720)
+                        Text("480p").tag(480)
+                        Text("360p").tag(360)
+                    }
+                    Text(lang.t("set.dl.quality.hint"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Toggle(lang.t("set.tts.edge"), isOn: $preferEdgeTTS)
+                    Text(lang.t("set.tts.edge.hint"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Section(lang.t("set.ad")) {
                     Toggle(lang.t("set.ad.on"), isOn: $adblock)
@@ -158,23 +178,52 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Section {
-                    howBullet("Edge TTS", "مجاناً بالكامل بدون مفتاح — نص إلى كلام عبر Microsoft Edge (مجتمع مفتوح).")
-                    howBullet("OpenL Translate Speech", "مجاني (1500 حرف/مرة) — ترجمة صوتية مباشرة من فيديو إلى SRT بدون تفريغ منفصل.")
+                    howBullet("OpenL Translate Speech", lang.t("set.upcoming.openl"))
                 } header: {
-                    Text("خدمات قادمة قريباً")
+                    Text(lang.t("set.upcoming.title"))
                 } footer: {
-                    Text("DeepL و STT.ai و Speechmatics أُضيفت كمفاتيح في الأعلى. هذه الخدمات المتبقية يمكن إضافتها مستقبلاً كمزودين إضافيين.")
+                    Text(lang.t("set.upcoming.footer"))
                         .font(.caption2)
                 }
 
-                Section(lang.t("set.storage")) {
+                Section {
+                    LabeledContent(lang.t("set.storage.videos"), value: storage.line(storage.videos))
+                    LabeledContent(lang.t("set.storage.thumbs"), value: storage.line(storage.thumbs))
+                    LabeledContent(lang.t("set.storage.subs"), value: storage.line(storage.translations + storage.other))
+                    LabeledContent(lang.t("set.storage.convert"), value: storage.line(storage.conversions))
+                    LabeledContent(lang.t("set.storage.total"), value: storage.line(storage.total))
+                    Button(lang.t("set.storage.purge")) {
+                        let n = StorageManager.purgeTemporary()
+                        storage = StorageManager.report()
+                        storageMessage = String(format: lang.t("set.storage.purged"), ByteCountFormatter.string(fromByteCount: n, countStyle: .file))
+                    }
+                    Button(lang.t("set.storage.orphans"), role: .destructive) {
+                        let n = StorageManager.purgeOrphans(videos: libraryVideos())
+                        storage = StorageManager.report()
+                        storageMessage = String(format: lang.t("set.storage.purged"), ByteCountFormatter.string(fromByteCount: n, countStyle: .file))
+                    }
+                    if let storageMessage {
+                        Text(storageMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Text(lang.t("set.storage.body"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                } header: {
+                    Text(lang.t("set.storage.title"))
                 }
             }
             .navigationTitle(lang.t("tab.settings"))
+            .onAppear { storage = StorageManager.report() }
         }
+    }
+
+    private func libraryVideos() -> [SavedVideo] {
+        let url = LibraryStore.documents.appendingPathComponent("library.json")
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        if let idx = try? JSONDecoder().decode(LibraryIndex.self, from: data) { return idx.videos }
+        return (try? JSONDecoder().decode([SavedVideo].self, from: data)) ?? []
     }
 
     private func howBullet(_ n: String, _ text: String) -> some View {

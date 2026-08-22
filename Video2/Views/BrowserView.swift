@@ -34,7 +34,13 @@ struct BrowserView: View {
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
                 Button(lang.t("paste.download")) {
-                    downloads.enqueueManual(urlString: manualURL, title: browser.current.title, page: browser.current.urlString)
+                    let url = manualURL
+                    let title = browser.current.title
+                    let page = browser.current.urlString
+                    Task {
+                        let auth = await browser.downloadAuth(tab: browser.current, mediaURL: url)
+                        downloads.enqueueManual(urlString: url, title: title, page: page, auth: auth)
+                    }
                     manualURL = ""
                 }
                 Button(lang.t("lib.cancel"), role: .cancel) {}
@@ -131,6 +137,8 @@ struct DetectorSheet: View {
     @EnvironmentObject var lang: LanguageStore
     @Environment(\.dismiss) var dismiss
     @State private var onlyPlayable = true
+    @State private var pickedVariant: [String: String] = [:]
+    @State private var enqueueing = false
 
     var items: [DetectedMedia] {
         let all = browser.current.detected
@@ -174,14 +182,45 @@ struct DetectorSheet: View {
                             if let mime = item.mime, !mime.isEmpty {
                                 Text(mime).font(.caption2).foregroundStyle(.secondary)
                             }
+                            if item.kind == .hls, let vars = item.variants, !vars.isEmpty {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(lang.t("det.quality.pick")).font(.caption.bold())
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 6) {
+                                            qualityChip(lang.t("det.quality.auto"), selected: pickedVariant[item.url] == nil) {
+                                                pickedVariant[item.url] = nil
+                                            }
+                                            ForEach(vars) { v in
+                                                qualityChip(v.qualityLabel, selected: pickedVariant[item.url] == v.url) {
+                                                    pickedVariant[item.url] = v.url
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             Text(item.url).font(.caption2).foregroundStyle(.tertiary).lineLimit(2)
                             Button {
-                                downloads.enqueue(item)
-                                dismiss()
+                                enqueueing = true
+                                Task {
+                                    var media = item
+                                    if let chosen = pickedVariant[item.url],
+                                       let match = item.variants?.first(where: { $0.url == chosen }) {
+                                        media.url = match.url
+                                        media.qualityLabel = match.qualityLabel
+                                        media.height = match.height
+                                        media.width = match.width
+                                    }
+                                    let auth = await browser.downloadAuth(tab: browser.current, mediaURL: media.url)
+                                    let maxH: Int? = pickedVariant[item.url] == nil ? DownloadManager.preferredMaxHeight : nil
+                                    downloads.enqueue(media, auth: auth, maxHeight: maxH)
+                                    enqueueing = false
+                                    dismiss()
+                                }
                             } label: {
                                 Label(item.canDownload ? lang.t("det.save") : lang.t("det.protected"), systemImage: item.canDownload ? "arrow.down.circle.fill" : "lock.fill")
                             }
-                            .disabled(!item.canDownload)
+                            .disabled(!item.canDownload || enqueueing)
                             .buttonStyle(.borderedProminent)
                             .tint(item.canDownload ? V2Theme.accent : .gray)
                         }
@@ -205,6 +244,18 @@ struct DetectorSheet: View {
             Text(v).font(.caption.bold())
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func qualityChip(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption2.bold())
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(selected ? V2Theme.accent.opacity(0.35) : V2Theme.card, in: Capsule())
+                .overlay(Capsule().stroke(selected ? V2Theme.accent : .clear, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
     }
 
     private func chip(_ t: String) -> some View {

@@ -16,7 +16,7 @@ struct DownloadsView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(job.media.title).font(.headline)
                             Text(status(job)).font(.caption).foregroundStyle(color(job.state))
-                            if job.state == .running {
+                            if job.state == .running || (job.state == .paused && job.progress > 0) {
                                 ProgressView(value: job.progress)
                                     .tint(V2Theme.mint)
                             }
@@ -26,24 +26,36 @@ struct DownloadsView: View {
                             Text(job.media.extractionMethod).font(.caption2).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        if job.state.isBusy {
-                            Button {
-                                downloads.cancel(jobID: job.id)
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.secondary)
+                        VStack(spacing: 10) {
+                            if job.state.isBusy {
+                                Button {
+                                    downloads.cancel(jobID: job.id)
+                                } label: {
+                                    Image(systemName: "pause.circle.fill")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(lang.t("dl.pause"))
+                            } else if job.state == .paused || job.state == .failed {
+                                Button {
+                                    downloads.resume(jobID: job.id)
+                                } label: {
+                                    Image(systemName: "play.circle.fill")
+                                        .foregroundStyle(V2Theme.mint)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(lang.t("dl.resume"))
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("إيقاف التحميل")
-                        } else {
-                            Button(role: .destructive) {
-                                downloads.remove(jobID: job.id)
-                            } label: {
-                                Image(systemName: "trash")
-                                    .foregroundStyle(.secondary)
+                            if job.state != .running {
+                                Button(role: .destructive) {
+                                    downloads.remove(jobID: job.id)
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(lang.t("dl.remove"))
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("حذف عنصر من قائمة التحميلات")
                         }
                     }
                     .padding(.vertical, 4)
