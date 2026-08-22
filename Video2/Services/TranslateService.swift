@@ -11,7 +11,7 @@ enum TranslateService {
     }
 
     /// يبني دفعات من الجُمل (حوالي 40 سطراً للدفعة — يوازن الجودة مع حدود المخرجات).
-    static func makeBatches(cues: [SubCue], size: Int = 40) -> [Batch] {
+    static func makeBatches(cues: [SubCue], size: Int = 20) -> [Batch] {
         var batches: [Batch] = []
         var i = 0
         while i < cues.count {
@@ -133,7 +133,7 @@ enum TranslateService {
             "generationConfig": [
                 "temperature": 0.15,
                 "responseMimeType": "application/json",
-                "maxOutputTokens": 8192
+                "maxOutputTokens": 32768
             ] as [String: Any]
         ]
         let payload = try JSONSerialization.data(withJSONObject: body)
