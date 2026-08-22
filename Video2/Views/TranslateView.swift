@@ -1,10 +1,14 @@
 import SwiftUI
 import AVFoundation
+
 // MARK: - شاشة مهام الترجمة
+
 struct TranslateView: View {
     @EnvironmentObject var translations: TranslationManager
     @EnvironmentObject var library: LibraryStore
+    @EnvironmentObject var lang: LanguageStore
     @State private var showNewJob = false
+
     var body: some View {
         NavigationStack {
             Group {
@@ -13,16 +17,16 @@ struct TranslateView: View {
                         Image(systemName: "captions.bubble")
                             .font(.system(size: 48))
                             .foregroundStyle(V2Theme.gold)
-                        Text("لا توجد مهام ترجمة")
+                        Text(lang.t("tv.empty.title"))
                             .font(.title3.bold())
-                        Text("اختر فيديو من المكتبة وسيقوم التطبيق بتفريغ كلامه وترجمته إلى ملف ترجمة كامل يظهر فوق المشغّل — حتى الفيديوهات الطويلة جداً.")
+                        Text(lang.t("tv.empty.hint"))
                             .multilineTextAlignment(.center)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 28)
                         Button {
                             showNewJob = true
                         } label: {
-                            Label("ترجمة فيديو جديد", systemImage: "plus.circle.fill")
+                            Label(lang.t("tv.empty.new"), systemImage: "plus.circle.fill")
                                 .font(.headline)
                         }
                         .buttonStyle(.borderedProminent)
@@ -43,13 +47,13 @@ struct TranslateView: View {
                 }
             }
             .background(V2Theme.bg)
-            .navigationTitle("الترجمة")
+            .navigationTitle(lang.t("tv.title"))
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         showNewJob = true
                     } label: {
-                        Label("مهمة جديدة", systemImage: "plus")
+                        Label(lang.t("tv.jobs.new"), systemImage: "plus")
                     }
                     .disabled(library.videos.isEmpty)
                 }
@@ -58,6 +62,7 @@ struct TranslateView: View {
                 NewTranslationView(preselected: nil)
                     .environmentObject(translations)
                     .environmentObject(library)
+                    .environmentObject(lang)
             }
         }
     }
@@ -65,9 +70,9 @@ struct TranslateView: View {
 
 // MARK: - صف مهمة ترجمة
 
-/// بطاقة مهمة واحدة مع التقدم وأزرار الإيقاف والاستئناف.
 struct TranslationJobRow: View {
     @EnvironmentObject private var translations: TranslationManager
+    @EnvironmentObject private var lang: LanguageStore
     let job: TranslationJob
 
     private var progress: Double {
@@ -113,7 +118,7 @@ struct TranslationJobRow: View {
                     .foregroundStyle(job.state == .failed ? .red : .secondary)
                 Spacer()
                 if job.cueCount > 0 {
-                    Text("\(job.cueCount) سطر")
+                    Text("\(job.cueCount) \(lang.t("tv.lines"))")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -131,7 +136,7 @@ struct TranslationJobRow: View {
                     Button {
                         translations.resume(job.id)
                     } label: {
-                        Label("استئناف", systemImage: "play.fill")
+                        Label(lang.t("tv.resume"), systemImage: "play.fill")
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
@@ -141,7 +146,7 @@ struct TranslationJobRow: View {
                     Button {
                         translations.cancel(job.id)
                     } label: {
-                        Label("إيقاف مؤقت", systemImage: "pause.fill")
+                        Label(lang.t("tv.pause"), systemImage: "pause.fill")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -152,7 +157,7 @@ struct TranslationJobRow: View {
                     Button(role: .destructive) {
                         translations.delete(job.id)
                     } label: {
-                        Label("حذف", systemImage: "trash")
+                        Label(lang.t("tv.delete"), systemImage: "trash")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -191,10 +196,10 @@ struct TranslationJobRow: View {
 
 // MARK: - إنشاء مهمة ترجمة
 
-/// شاشة إعداد مهمة تفريغ وترجمة لفيديو محفوظ في المكتبة.
 struct NewTranslationView: View {
     @EnvironmentObject private var translations: TranslationManager
     @EnvironmentObject private var library: LibraryStore
+    @EnvironmentObject private var lang: LanguageStore
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("stt.provider") private var sttProviderRaw: String = STTProviderKind.auto.rawValue
@@ -236,10 +241,10 @@ struct NewTranslationView: View {
 
     private var startError: String? {
         guard let video = selectedVideo else {
-            return "اختر فيديو من المكتبة أولاً."
+            return lang.t("tv.new.no.videos")
         }
         guard FileManager.default.fileExists(atPath: video.localURL.path) else {
-            return "ملف الفيديو غير موجود على الجهاز."
+            return lang.t("err.file.notfound")
         }
         if source != .auto && source == target {
             return "اختر لغة ترجمة مختلفة عن اللغة الأصلية."
@@ -273,7 +278,7 @@ struct NewTranslationView: View {
                     Button {
                         begin()
                     } label: {
-                        Label("بدء الترجمة", systemImage: "captions.bubble.fill")
+                        Label(lang.t("tv.new.start"), systemImage: "captions.bubble.fill")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
@@ -285,17 +290,17 @@ struct NewTranslationView: View {
                             .foregroundStyle(.red)
                     }
                 } footer: {
-                    Text("يُحفظ كل جزء فور اكتماله، ويمكن إيقاف المهمة واستئنافها لاحقاً من نفس النقطة.")
+                    Text(lang.t("tv.new.footer"))
                         .font(.caption2)
                 }
             }
             .scrollContentBackground(.hidden)
             .background(V2Theme.bg)
-            .navigationTitle("ترجمة فيديو جديد")
+            .navigationTitle(lang.t("tv.new.title"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("إلغاء") { dismiss() }
+                    Button(lang.t("nav.cancel")) { dismiss() }
                 }
             }
             .onAppear {
@@ -309,7 +314,7 @@ struct NewTranslationView: View {
     }
 
     private var videoSection: some View {
-        Section("الفيديو") {
+        Section(lang.t("tv.new.video")) {
             if let preselected {
                 VStack(alignment: .leading, spacing: 5) {
                     BidiText(text: preselected.title, font: .headline)
@@ -318,10 +323,10 @@ struct NewTranslationView: View {
                         .foregroundStyle(.secondary)
                 }
             } else if library.videos.isEmpty {
-                Label("لا توجد فيديوهات محفوظة في المكتبة.", systemImage: "film.slash")
+                Label(lang.t("tv.new.no.videos"), systemImage: "film.slash")
                     .foregroundStyle(.secondary)
             } else {
-                Picker("الفيديو", selection: $selectedVideoID) {
+                Picker(lang.t("tv.new.video"), selection: $selectedVideoID) {
                     ForEach(library.videos) { video in
                         Text(video.title)
                             .lineLimit(1)
@@ -343,14 +348,14 @@ struct NewTranslationView: View {
     }
 
     private var languageSection: some View {
-        Section("اللغات") {
-            Picker("اللغة الأصلية", selection: $source) {
+        Section(lang.t("tv.new.languages")) {
+            Picker(lang.t("tv.new.source.lang"), selection: $source) {
                 ForEach(SubLang.allCases) { language in
                     Text(language.nameAR).tag(language)
                 }
             }
 
-            Picker("لغة الترجمة", selection: $target) {
+            Picker(lang.t("tv.new.target.lang"), selection: $target) {
                 ForEach(SubLang.allCases.filter { $0 != .auto }) { language in
                     Text(language.nameAR).tag(language)
                 }
@@ -359,8 +364,8 @@ struct NewTranslationView: View {
     }
 
     private var providerSection: some View {
-        Section("مزودو الخدمة") {
-            Picker("التفريغ الصوتي", selection: $sttProviderRaw) {
+        Section(lang.t("tv.new.providers")) {
+            Picker(lang.t("tv.new.stt"), selection: $sttProviderRaw) {
                 ForEach(STTProviderKind.allCases) { provider in
                     Text(provider.titleAR).tag(provider.rawValue)
                 }
@@ -369,7 +374,7 @@ struct NewTranslationView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            Picker("الترجمة النصية", selection: $translatorRaw) {
+            Picker(lang.t("tv.new.translator"), selection: $translatorRaw) {
                 ForEach(TranslatorKind.allCases) { provider in
                     Text(provider.titleAR).tag(provider.rawValue)
                 }
@@ -390,7 +395,6 @@ struct NewTranslationView: View {
         didAttemptStart = true
         guard canStart, let video = selectedVideo else { return }
 
-        // إذا كانت هناك مهمة متوقفة لنفس الإعدادات، استأنفها بدلاً من إنشاء نسخة ثانية.
         if let paused = translations.jobs.first(where: {
             $0.videoID == video.id &&
             $0.state == .paused &&
