@@ -40,141 +40,25 @@ enum AudioPipeline {
     static let chunkSeconds = 900.0
 
     // MARK: ═══════════════════════════════════════════════════════════
-    // MARK: CloudConvert API
+    // MARK: CloudConvert API (مدموج)
     // ═════════════════════════════════════════════════════════════════
-
-    private enum CCError: LocalizedError {
-        case missingKey, badResponse, uploadFailed(Int), jobFailed(String), timeout, noURL
-        var errorDescription: String? {
-            switch self {
-            case .missingKey: return "CloudConvert API key غير موجود"
-            case .badResponse: return "استجابة غير صالحة"
-            case .uploadFailed(let c): return "فشل رفع الملف: HTTP \(c)"
-            case .jobFailed(let m): return "فشل التحويل: \(m)"
-            case .timeout: return "انتهت مهلة الانتظار"
-            case .noURL: return "لم يتم العثور على رابط تنزيل"
-            }
+    
+    /// يجلب مفتاح CloudConvert من Keychain (أولوية) أو Info.plist
+    private static func cloudConvertKey() -> String? {
+        // أولاً من Keychain
+        if let key = KeychainStore.get("cloudconvert"), !key.isEmpty {
+            return key
         }
-    }
-
-    private static func ccAPIKey() -> String? {
+        // ثانياً من Info.plist (fallback)
         guard let key = Bundle.main.infoDictionary?["CLOUDCONVERT_API_KEY"] as? String else { return nil }
         return key.isEmpty || key.contains("ضع") ? nil : key
     }
-
-    private static var ccIsAvailable: Bool { ccAPIKey() != nil }
-
-    private static func ccCreateJob(apiKey: String) async throws -> String {
-        let url = URL(string: "https://api.cloudconvert.com/v2/jobs")!
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.timeoutInterval = 60
-        let body: [String: Any] = [
-            "tasks": [
-                "import": ["operation": "import/upload"],
-                "convert": [
-                    "operation": "convert", "input": ["import"],
-                    "output_format": "mp4", "engine": "ffmpeg"
-                ],
-                "export": ["operation": "export/url", "input": ["convert"], "multiple": false]
-            ]
-        ]
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let hr = resp as? HTTPURLResponse, (200...299).contains(hr.statusCode) else {
-            throw CCError.uploadFailed((resp as? HTTPURLResponse)?.statusCode ?? 0)
-        }
-        guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let jd = j["data"] as? [String: Any], let id = jd["id"] as? String else {
-            throw CCError.badResponse
-        }
-        return id
+    
+    /// يتحقق من توفر مفتاح CloudConvert
+    private static var hasCloudConvertKey: Bool {
+        cloudConvertKey() != nil
     }
-
-    private static func ccGetUploadURL(apiKey: String, jobID: String) async throws -> (URL, String) {
-        let url = URL(string: "https://api.cloudconvert.com/v2/jobs/\(jobID)")!
-        var req = URLRequest(url: url)
-        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let hr = resp as? HTTPURLResponse, (200...299).contains(hr.statusCode) else { throw CCError.badResponse }
-        guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let rel = j["relationships"] as? [String: Any],
-              let tasks = rel["tasks"] as? [String: Any],
-              let tData = tasks["data"] as? [[String: Any]],
-              let up = tData.first(where: { $0["operation"] as? String == "import/upload" }),
-              let tid = up["id"] as? String,
-              let p = up["params"] as? [String: Any],
-              let us = p["upload_url"] as? String, let uu = URL(string: us) else {
-            throw CCError.badResponse
-        }
-        return (uu, tid)
-    }
-
-    private static func ccUpload(fileURL: URL, uploadURL: URL) async throws {
-        let data = try Data(contentsOf: fileURL)
-        let b = "Boundary-\(UUID().uuidString)"
-        var req = URLRequest(url: uploadURL)
-        req.httpMethod = "POST"
-        req.setValue("multipart/form-data; boundary=\(b)", forHTTPHeaderField: "Content-Type")
-        req.timeoutInterval = 600
-        var body = Data()
-        body.append("--\(b)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileURL.lastPathComponent)\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
-        body.append(data)
-        body.append("\r\n--\(b)--\r\n".data(using: .utf8)!)
-        req.httpBody = body
-        let (_, resp) = try await URLSession.shared.data(for: req)
-        guard let hr = resp as? HTTPURLResponse, (200...299).contains(hr.statusCode) else {
-            throw CCError.uploadFailed((resp as? HTTPURLResponse)?.statusCode ?? 0)
-        }
-    }
-
-    private static func ccWait(apiKey: String, jobID: String) async throws -> String {
-        let url = URL(string: "https://api.cloudconvert.com/v2/jobs/\(jobID)")!
-        let start = Date()
-        while Date().timeIntervalSince(start) < 600 {
-            var req = URLRequest(url: url)
-            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-            let (data, _) = try await URLSession.shared.data(for: req)
-            if let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let jd = j["data"] as? [String: Any],
-               let st = jd["status"] as? String {
-                if st == "finished" {
-                    if let rel = j["relationships"] as? [String: Any],
-                       let tasks = rel["tasks"] as? [String: Any],
-                       let tData = tasks["data"] as? [[String: Any]] {
-                        for t in tData {
-                            if t["operation"] as? String == "export/url",
-                               let r = t["result"] as? [String: Any],
-                               let fs = r["files"] as? [[String: Any]],
-                               let f = fs.first, let u = f["url"] as? String {
-                                return u
-                            }
-                        }
-                    }
-                    throw CCError.noURL
-                }
-                if st == "error" { throw CCError.jobFailed(jd["message"] as? String ?? "error") }
-            }
-            try await Task.sleep(nanoseconds: 5_000_000_000)
-        }
-        throw CCError.timeout
-    }
-
-    private static func ccDownload(urlString: String, name: String) async throws -> URL {
-        guard let url = URL(string: urlString) else { throw CCError.noURL }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 600
-        let (data, _) = try await URLSession.shared.data(for: req)
-        let out = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cc-\(UUID().uuidString)-\(name).mp4")
-        try data.write(to: out)
-        return out
-    }
-
+    
     /// دمج .ts segments في ملف واحد
     private static func mergeTS(segments: [String], baseFolder: URL) async throws -> URL {
         let out = FileManager.default.temporaryDirectory.appendingPathComponent("merge-\(UUID().uuidString).ts")
@@ -199,12 +83,15 @@ enum AudioPipeline {
         }
         return out
     }
-
+    
     /// تحويل HLS عبر CloudConvert
-    private static func ccConvertHLS(m3u8URL: URL) async throws -> URL {
-        guard let apiKey = ccAPIKey() else { throw CCError.missingKey }
+    private static func convertWithCloudConvert(m3u8URL: URL) async throws -> URL {
+        guard let apiKey = cloudConvertKey() else {
+            throw AudioPipelineError.exportFailed("مفتاح CloudConvert غير موجود — أضفه من الإعدادات")
+        }
+        print("[CloudConvert] ═══════════════════════════════════════")
         print("[CloudConvert] Starting HLS → MP4")
-
+        
         guard let content = try? String(contentsOf: m3u8URL, encoding: .utf8) else {
             throw AudioPipelineError.exportFailed("تعذر قراءة m3u8")
         }
@@ -215,23 +102,124 @@ enum AudioPipeline {
         }
         guard !segs.isEmpty else { throw AudioPipelineError.exportFailed("m3u8 فارغ") }
         print("[CloudConvert] Found \(segs.count) segments")
-
+        
+        // دمج segments
         let merged = try await mergeTS(segments: segs, baseFolder: m3u8URL.deletingLastPathComponent())
         defer { try? FileManager.default.removeItem(at: merged) }
         let size = (try? merged.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         print("[CloudConvert] Merged TS: \(size / 1024 / 1024) MB")
-
-        let jobID = try await ccCreateJob(apiKey: apiKey)
+        
+        // إنشاء job
+        let createURL = URL(string: "https://api.cloudconvert.com/v2/jobs")!
+        var createReq = URLRequest(url: createURL)
+        createReq.httpMethod = "POST"
+        createReq.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        createReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        createReq.timeoutInterval = 60
+        
+        let jobBody: [String: Any] = [
+            "tasks": [
+                "import": ["operation": "import/upload"],
+                "convert": ["operation": "convert", "input": ["import"], "output_format": "mp4", "engine": "ffmpeg"],
+                "export": ["operation": "export/url", "input": ["convert"], "multiple": false]
+            ]
+        ]
+        createReq.httpBody = try JSONSerialization.data(withJSONObject: jobBody)
+        
+        let (createData, createResp) = try await URLSession.shared.data(for: createReq)
+        guard let hr = createResp as? HTTPURLResponse, (200...299).contains(hr.statusCode) else {
+            throw AudioPipelineError.exportFailed("CloudConvert: فشل إنشاء job")
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: createData) as? [String: Any],
+              let jobData = json["data"] as? [String: Any],
+              let jobID = jobData["id"] as? String else {
+            throw AudioPipelineError.exportFailed("CloudConvert: استجابة غير صالحة")
+        }
         print("[CloudConvert] Job: \(jobID)")
-        let (uploadURL, _) = try await ccGetUploadURL(apiKey: apiKey, jobID: jobID)
-        print("[CloudConvert] Uploading...")
-        try await ccUpload(fileURL: merged, uploadURL: uploadURL)
+        
+        // الحصول على upload URL
+        let jobURL = URL(string: "https://api.cloudconvert.com/v2/jobs/\(jobID)")!
+        var jobReq = URLRequest(url: jobURL)
+        jobReq.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let (jobData2, _) = try await URLSession.shared.data(for: jobReq)
+        
+        guard let j = try? JSONSerialization.jsonObject(with: jobData2) as? [String: Any],
+              let rel = j["relationships"] as? [String: Any],
+              let tasks = rel["tasks"] as? [String: Any],
+              let tData = tasks["data"] as? [[String: Any]],
+              let up = tData.first(where: { $0["operation"] as? String == "import/upload" }),
+              let tid = up["id"] as? String,
+              let p = up["params"] as? [String: Any],
+              let us = p["upload_url"] as? String, let uploadURL = URL(string: us) else {
+            throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على upload URL")
+        }
+        print("[CloudConvert] Upload URL ready")
+        
+        // رفع الملف
+        let fileData = try Data(contentsOf: merged)
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var uploadReq = URLRequest(url: uploadURL)
+        uploadReq.httpMethod = "POST"
+        uploadReq.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        uploadReq.timeoutInterval = 600
+        
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(merged.lastPathComponent)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+        body.append(fileData)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        uploadReq.httpBody = body
+        
+        let (_, uploadResp) = try await URLSession.shared.data(for: uploadReq)
+        guard let uhr = uploadResp as? HTTPURLResponse, (200...299).contains(uhr.statusCode) else {
+            throw AudioPipelineError.exportFailed("CloudConvert: فشل رفع الملف")
+        }
         print("[CloudConvert] Uploaded ✅")
-        let dlURL = try await ccWait(apiKey: apiKey, jobID: jobID)
-        print("[CloudConvert] Conversion done ✅")
-        let result = try await ccDownload(urlString: dlURL, name: m3u8URL.deletingPathExtension().lastPathComponent)
-        print("[CloudConvert] Downloaded ✅")
-        return result
+        
+        // انتظار التحويل
+        let start = Date()
+        while Date().timeIntervalSince(start) < 600 {
+            var pollReq = URLRequest(url: jobURL)
+            pollReq.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            let (pollData, _) = try await URLSession.shared.data(for: pollReq)
+            
+            if let pj = try? JSONSerialization.jsonObject(with: pollData) as? [String: Any],
+               let pjd = pj["data"] as? [String: Any],
+               let status = pjd["status"] as? String {
+                if status == "finished" {
+                    if let rel = pj["relationships"] as? [String: Any],
+                       let tasks = rel["tasks"] as? [String: Any],
+                       let tData = tasks["data"] as? [[String: Any]] {
+                        for t in tData {
+                            if t["operation"] as? String == "export/url",
+                               let r = t["result"] as? [String: Any],
+                               let fs = r["files"] as? [[String: Any]],
+                               let f = fs.first, let dlURL = f["url"] as? String {
+                                // تنزيل النتيجة
+                                guard let url = URL(string: dlURL) else {
+                                    throw AudioPipelineError.exportFailed("CloudConvert: رابط تنزيل غير صالح")
+                                }
+                                var dlReq = URLRequest(url: url)
+                                dlReq.timeoutInterval = 600
+                                let (dlData, _) = try await URLSession.shared.data(for: dlReq)
+                                let out = FileManager.default.temporaryDirectory
+                                    .appendingPathComponent("cc-\(UUID().uuidString).mp4")
+                                try dlData.write(to: out)
+                                print("[CloudConvert] Downloaded ✅")
+                                return out
+                            }
+                        }
+                    }
+                    throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على رابط تنزيل")
+                }
+                if status == "error" {
+                    throw AudioPipelineError.exportFailed("CloudConvert: فشل التحويل")
+                }
+            }
+            try await Task.sleep(nanoseconds: 5_000_000_000)
+        }
+        throw AudioPipelineError.exportFailed("CloudConvert: انتهت مهلة الانتظار")
     }
 
     // MARK: ═══════════════════════════════════════════════════════════
@@ -248,10 +236,10 @@ enum AudioPipeline {
         print("[AudioPipeline] m3u8: \(url.lastPathComponent)")
 
         // الطريقة 1: CloudConvert API (لو متاح)
-        if ccIsAvailable {
+        if hasCloudConvertKey {
             print("[AudioPipeline] Trying CloudConvert API...")
             do {
-                let result = try await ccConvertHLS(m3u8URL: url)
+                let result = try await convertWithCloudConvert(m3u8URL: url)
                 print("[AudioPipeline] ✅ CloudConvert succeeded!")
                 return result
             } catch {
