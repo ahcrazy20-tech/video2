@@ -39,113 +39,59 @@ enum AudioPipeline {
     static let sampleRate = 16000.0
     static let chunkSeconds = 900.0
 
-    // MARK: تحويل HLS إلى MP4/M4A مؤقت
+    // MARK: تحويل HLS إلى m4a مؤقت (طريقة قوية)
 
+    /// AVAssetReader بيدعم HLS محلي بشكل أصلي — نستخدمه مباشرة بدل AVAssetExportSession.
+    /// نقرأ الـ audio track من الـ m3u8 ونكتبها كملف m4a واحد.
     static func exportHLSToTempMP4(_ url: URL) async throws -> URL {
 
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw AudioPipelineError.exportFailed("ملف HLS غير موجود: \(url.lastPathComponent)")
         }
 
-        // نحاول عدة presets بالترتيب: passthrough أولاً
-        let presets: [String] = [
-            AVAssetExportPresetPassthrough,
-            AVAssetExportPresetHighestQuality,
-            AVAssetExportPresetMediumQuality,
-            AVAssetExportPreset960x540
-        ]
-
         let asset = AVURLAsset(url: url)
 
-        // نحاول نحمّل الـ tracks
-        var hasAudio = false
-        var hasVideo = false
+        // نحاول نقرأ الـ tracks ونطبع معلومات debug
+        let allTracks: [AVAssetTrack]
         do {
-            let tracks = try await asset.load(.tracks)
-            for track in tracks {
-                let mediaType = track.mediaType
-                if mediaType == .video { hasVideo = true }
-                if mediaType == .audio { hasAudio = true }
+            allTracks = try await asset.load(.tracks)
+            print("[AudioPipeline] HLS asset tracks count: \(allTracks.count)")
+            for (i, t) in allTracks.enumerated() {
+                print("[AudioPipeline]   track[\(i)]: type=\(t.mediaType.rawValue), codec=\(t.formatDescriptions.first.debugDescription.prefix(60))")
             }
-            print("[AudioPipeline] HLS tracks: video=\(hasVideo), audio=\(hasAudio), count=\(tracks.count)")
         } catch {
             print("[AudioPipeline] load(.tracks) failed: \(error.localizedDescription)")
+            throw AudioPipelineError.exportFailed("لا يمكن قراءة مسارات ملف HLS: \(error.localizedDescription)")
         }
 
-        if hasVideo && !hasAudio {
-            throw AudioPipelineError.noAudioTrack
-        }
-
-        let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: asset)
-
-        for preset in presets {
-            guard compatiblePresets.contains(preset) else { continue }
-
-            let out = FileManager.default.temporaryDirectory
-                .appendingPathComponent("v2-hls-\(UUID().uuidString).mp4")
-            try? FileManager.default.removeItem(at: out)
-
-            guard let session = AVAssetExportSession(asset: asset, presetName: preset) else { continue }
-
-            let supportedTypes = session.supportedFileTypes
-            guard supportedTypes.contains(.mp4) else { continue }
-
-            session.outputURL = out
-            session.outputFileType = .mp4
-            session.shouldOptimizeForNetworkUse = true
-
-            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                session.exportAsynchronously {
-                    cont.resume()
-                }
-            }
-
-            if session.status == .completed,
-               FileManager.default.fileExists(atPath: out.path) {
-                let fileSize = (try? out.resourceValues(forKeys: Set([URLResourceKey.fileSizeKey])).fileSize) ?? 0
-                if fileSize > 0 {
-                    print("[AudioPipeline] HLS export succeeded with preset: \(preset), size: \(fileSize)")
-                    return out
-                }
-            }
-
-            if preset == AVAssetExportPresetPassthrough, session.status == .failed {
-                let errDesc = session.error?.localizedDescription ?? "غير معروف"
-                print("[AudioPipeline] Passthrough export failed: \(errDesc)")
-            }
-
-            try? FileManager.default.removeItem(at: out)
-        }
-
-        // لو كل presets فشلت، نلجأ لـ AVAssetReader مباشرة على الـ m3u8
-        print("[AudioPipeline] All export presets failed, using AVAssetReader directly on m3u8...")
-        return try await extractAudioFromHLS(url: url)
-    }
-
-    // MARK: استخراج الصوت من HLS باستخدام AVAssetReader مباشرة
-
-    private static func extractAudioFromHLS(url: URL) async throws -> URL {
-        let asset = AVURLAsset(url: url)
-
-        let audioTracks: [AVAssetTrack]
-        do {
-            audioTracks = try await asset.loadTracks(withMediaType: .audio)
-        } catch {
-            throw AudioPipelineError.noAudioTrack
-        }
-
+        // نبحث عن audio track
+        let audioTracks = allTracks.filter { $0.mediaType == .audio }
         guard let audioTrack = audioTracks.first else {
+            // لو مفيش audio، نشوف لو فيه video ونحاول نعمل extract منه
+            // بعض ملفات HLS يكون الصوت جزء من video track (muxed)
+            let videoTracks = allTracks.filter { $0.mediaType == .video }
+            if !videoTracks.isEmpty {
+                print("[AudioPipeline] No separate audio track, but video tracks exist: \(videoTracks.count)")
+                // في حالة HLS، الصوت غالباً muxed جوه الـ segments
+                // AVAssetReader هيقدر يستخرج الصوت من video track لو فيه embedded audio
+            }
             throw AudioPipelineError.noAudioTrack
         }
 
-        print("[AudioPipeline] Found audio track in HLS: \(audioTrack.naturalTimeScale) Hz")
+        print("[AudioPipeline] Found \(audioTracks.count) audio track(s), using first")
 
         // ملف الإخراج
         let out = FileManager.default.temporaryDirectory
-            .appendingPathComponent("v2-hls-audio-\(UUID().uuidString).m4a")
+            .appendingPathComponent("v2-hls-\(UUID().uuidString).m4a")
         try? FileManager.default.removeItem(at: out)
 
-        let reader = try AVAssetReader(asset: asset)
+        // نقرأ الـ audio من الـ m3u8 مباشرة
+        let reader: AVAssetReader
+        do {
+            reader = try AVAssetReader(asset: asset)
+        } catch {
+            throw AudioPipelineError.readerFailed(error.localizedDescription)
+        }
 
         let pcmSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
@@ -156,16 +102,22 @@ enum AudioPipeline {
             AVLinearPCMIsBigEndianKey: false,
             AVLinearPCMIsNonInterleaved: false
         ]
-
         let readerOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: pcmSettings)
+        readerOutput.alwaysCopiesSampleData = false
         reader.add(readerOutput)
 
         guard reader.startReading() else {
-            throw AudioPipelineError.readerFailed("لا يمكن بدء القراءة من ملف HLS")
+            throw AudioPipelineError.readerFailed(reader.error?.localizedDescription ?? "لا يمكن بدء القراءة من ملف HLS")
         }
 
         // نكتب الصوت كـ AAC m4a
-        let writer = try AVAssetWriter(url: out, fileType: .m4a)
+        let writer: AVAssetWriter
+        do {
+            writer = try AVAssetWriter(url: out, fileType: .m4a)
+        } catch {
+            throw AudioPipelineError.writerFailed(error.localizedDescription)
+        }
+
         let writerSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: sampleRate,
@@ -174,6 +126,9 @@ enum AudioPipeline {
         ]
         let writerInput = AVAssetWriterInput(mediaType: .audio, outputSettings: writerSettings)
         writerInput.expectsMediaDataInRealTime = false
+        guard writer.canAdd(writerInput) else {
+            throw AudioPipelineError.writerFailed("لا يمكن إضافة writer input")
+        }
         writer.add(writerInput)
         writer.startWriting()
 
@@ -183,22 +138,29 @@ enum AudioPipeline {
         while let sample = readerOutput.copyNextSampleBuffer() {
             if !sessionStarted {
                 let t = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
-                if t.isFinite && t > 0 {
-                    writer.startSession(atSourceTime: CMTime(seconds: t, preferredTimescale: 600))
+                if t.isFinite {
+                    writer.startSession(atSourceTime: CMTime(seconds: max(0, t), preferredTimescale: 600))
                 } else {
                     writer.startSession(atSourceTime: .zero)
                 }
                 sessionStarted = true
+                print("[AudioPipeline] Started writing session at t=\(t)")
             }
 
-            // ننتظر حتى writerInput يكون جاهز
             while !writerInput.isReadyForMoreMediaData {
-                try await Task.sleep(nanoseconds: 5_000_000)
+                try? await Task.sleep(nanoseconds: 5_000_000)
             }
 
             if writerInput.append(sample) {
                 sampleCount += 1
             }
+        }
+
+        if reader.status == .failed {
+            let err = reader.error?.localizedDescription ?? "مجهول"
+            print("[AudioPipeline] Reader failed: \(err)")
+            writer.cancelWriting()
+            throw AudioPipelineError.readerFailed(err)
         }
 
         reader.cancelReading()
@@ -207,15 +169,16 @@ enum AudioPipeline {
 
         guard writer.status == .completed else {
             let err = writer.error?.localizedDescription ?? "مجهول"
-            throw AudioPipelineError.writerFailed("فشل دمج الصوت: \(err)")
+            print("[AudioPipeline] Writer failed with status \(writer.status.rawValue): \(err)")
+            throw AudioPipelineError.writerFailed("فشل كتابة ملف الصوت: \(err)")
         }
 
         let fileSize = (try? out.resourceValues(forKeys: Set([URLResourceKey.fileSizeKey])).fileSize) ?? 0
         guard fileSize > 0 else {
-            throw AudioPipelineError.exportFailed("ملف الصوت الناتج فارغ")
+            throw AudioPipelineError.exportFailed("ملف الصوت الناتج فارغ (0 bytes)")
         }
 
-        print("[AudioPipeline] Extracted \(sampleCount) audio samples, \(fileSize) bytes")
+        print("[AudioPipeline] HLS→m4a succeeded: \(sampleCount) samples, \(fileSize) bytes")
         return out
     }
 
