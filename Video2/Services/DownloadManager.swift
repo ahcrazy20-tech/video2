@@ -71,13 +71,17 @@ final class DownloadManager: ObservableObject {
         if job.media.kind == .hls || remote.pathExtension.lowercased() == "m3u8" || job.media.url.contains(".m3u8") {
             let folder = LibraryStore.videosDir.appendingPathComponent(id.uuidString, isDirectory: true)
             _ = try await hls.download(masterURL: remote, destFolder: folder) { [weak self] p in
+                // لا ننشئ Task لكل segment — نكتفي بحساب التقدم على الخلفية
+                // ونصنع تحديثاً واحداً مقيّداً على الـ main actor.
                 Task { @MainActor in
-                    if let i = self?.jobs.firstIndex(where: { $0.id == job.id }) {
-                        self?.jobs[i].progress = p
-                    }
+                    self?.publishProgress(p, for: job.id)
                 }
             }
-            let size = folderSize(folder)
+            // حساب حجم المجلد (قد يضم مئات الملفات) لا يجب أن يجرى على الـ main actor.
+            let size = await Task.detached(priority: .utility) { () -> Int64 in
+                computeFolderSize(folder)
+            }.value
+            publishProgress(1, for: job.id)
             return SavedVideo(id: id, title: title, sourceURL: job.media.url, pageURL: job.media.pageURL, localRelativePath: "Videos/\(id.uuidString)/index.m3u8", thumbnailRelativePath: nil, kind: .hls, createdAt: Date(), duration: job.media.duration, fileSize: size, lastPosition: 0, extractionMethod: job.media.extractionMethod)
         }
 
@@ -87,31 +91,44 @@ final class DownloadManager: ObservableObject {
 
         let ext = job.media.kind.fileExtension
         let dest = LibraryStore.videosDir.appendingPathComponent("\(id.uuidString).\(ext)")
-        let (tmp, response) = try await URLSession.shared.download(from: remote)
+        let (tmp, _) = try await URLSession.shared.download(from: remote)
         try FileManager.default.moveItem(at: tmp, to: dest)
         let bytes = (try? dest.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
+        publishProgress(1, for: job.id)
         if let i = jobs.firstIndex(where: { $0.id == job.id }) {
-            jobs[i].progress = 1
             jobs[i].bytesWritten = bytes
         }
-        _ = response
         return SavedVideo(id: id, title: title, sourceURL: job.media.url, pageURL: job.media.pageURL, localRelativePath: "Videos/\(id.uuidString).\(ext)", thumbnailRelativePath: nil, kind: job.media.kind, createdAt: Date(), duration: job.media.duration, fileSize: bytes, lastPosition: 0, extractionMethod: job.media.extractionMethod)
     }
 
-    private func folderSize(_ url: URL) -> Int64 {
-        let keys: [URLResourceKey] = [.fileSizeKey, .isDirectoryKey]
-        guard let e = FileManager.default.enumerator(at: url, includingPropertiesForKeys: keys) else { return 0 }
-        var total: Int64 = 0
-        for case let f as URL in e {
-            if let v = try? f.resourceValues(forKeys: Set(keys)), v.isDirectory != true {
-                total += Int64(v.fileSize ?? 0)
+    /// ينشر التقدّم بحدّ أقصى ~5 تحديثات/ثانية حتى لا يُغرق الـ main actor
+    /// بعشرات المهام أثناء تنزيل مئات الـ segments.
+    private var lastProgressAt = Date.distantPast
+    private func publishProgress(_ p: Double, for jobID: UUID) {
+        let now = Date()
+        if p >= 1 || now.timeIntervalSince(lastProgressAt) >= 0.2 {
+            if let i = jobs.firstIndex(where: { $0.id == jobID }) {
+                jobs[i].progress = p
             }
+            lastProgressAt = now
         }
-        return total
     }
 
     private func sanitize(_ s: String) -> String {
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         return t.isEmpty ? "فيديو محفوظ" : String(t.prefix(120))
     }
+}
+
+/// حساب الحجم الكلي لمجلد (فيديو HLS) خارج الـ main actor — قد يضم مئات الملفات.
+private func computeFolderSize(_ url: URL) -> Int64 {
+    let keys: Set<URLResourceKey> = [.fileSizeKey, .isDirectoryKey]
+    guard let e = FileManager.default.enumerator(at: url, includingPropertiesForKeys: Array(keys)) else { return 0 }
+    var total: Int64 = 0
+    for case let f as URL in e {
+        if let v = try? f.resourceValues(forKeys: keys), v.isDirectory != true {
+            total += Int64(v.fileSize ?? 0)
+        }
+    }
+    return total
 }
