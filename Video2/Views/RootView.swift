@@ -8,8 +8,7 @@ struct RootView: View {
     @State private var error = false
 
     var body: some View {
-        TabView(selection: $tab) {
-             Group {
+        Group {
             if appLock.isLocked {
                 VStack(spacing: 18) {
                     Image(systemName: "lock.fill").font(.system(size: 42)).foregroundStyle(V2Theme.accent)

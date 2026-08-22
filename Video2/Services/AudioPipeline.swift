@@ -469,20 +469,11 @@ enum AudioPipeline {
         print("[AudioPipeline] ✅ File exists")
         print("[AudioPipeline] m3u8: \(url.lastPathComponent)")
 
-        // الطريقة 1: CloudConvert API (لو متاح)
-        if hasCloudConvertKey {
-            print("[AudioPipeline] ═══ Trying CloudConvert API (method 1)...")
-            do {
-                let result = try await convertWithCloudConvert(m3u8URL: url)
-                print("[AudioPipeline] ✅ CloudConvert succeeded!")
-                return result
-            } catch {
-                print("[AudioPipeline] ⚠️ CloudConvert failed: \(error.localizedDescription)")
-                print("[AudioPipeline] Falling back to native methods...")
-            }
-        } else {
-            print("[AudioPipeline] ⚠️ CloudConvert not available (no API key)")
-        }
+        // CloudConvert لا يستطيع تحويل m3u8 محلياً برفع ملف الـ playlist وحده؛
+        // فالـ segments وملفات التشفير لا تكون ضمن الـ upload. لذلك لا نرسل
+        // playlist ناقصاً للخدمة، ونستخدم AVFoundation/native pipeline أدناه.
+        // CloudConvert يظل متاحاً لمسارات الصوت/الفيديو التي تملك ملفاً واحداً.
+        print("[AudioPipeline] Using native HLS pipeline for local playlist")
 
         // نقرأ playlist
         print("[AudioPipeline] ═══ Reading m3u8 playlist...")
