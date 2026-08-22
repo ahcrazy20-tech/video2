@@ -6,6 +6,7 @@ struct FormatConversionView: View {
     @EnvironmentObject var converter: FormatConverter
     @EnvironmentObject var library: LibraryStore
     @EnvironmentObject var lang: LanguageStore
+    @Environment(\.dismiss) private var dismiss
     @State private var showConvertPicker = false
     @State private var targetVideo: SavedVideo?
 
@@ -49,6 +50,13 @@ struct FormatConversionView: View {
             .background(V2Theme.bg)
             .navigationTitle(lang.t("fc.title"))
             .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Label("إغلاق", systemImage: "xmark")
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         showConvertPicker = true

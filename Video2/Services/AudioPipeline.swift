@@ -236,25 +236,19 @@ enum AudioPipeline {
         createReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
         createReq.timeoutInterval = 60
         
-        // نحدّد صيغة الإدخال صراحةً — ملف الـ .ts المدمج يحتاج demuxer `mpegts`
-        // حتى يتعامل معه ffmpeg بشكل صحيح وليس كـ ملف عام غير معروف.
-        let inputIsTS = merged.pathExtension.lowercased() == "ts"
-        var convertTask: [String: Any] = [
-            "operation": "convert",
-            "input": ["import"],
-            "output_format": "mp4",
-            "engine": "ffmpeg",
-            "audio_codec": "aac",
-            "video_codec": "h264"
-        ]
-        if inputIsTS {
-            convertTask["input_format"] = "mpegts"
-        }
-
+        // لا نمرّر input_format صراحةً — CloudConvert يحدّد صيغة الإدخال من امتداد
+        // الملف المرفوع (merge-*.ts)، وتمرير قيمة خاطئة يجعل مهمة التحويل تفشل.
         let jobBody: [String: Any] = [
             "tasks": [
                 "import": ["operation": "import/upload"],
-                "convert": convertTask,
+                "convert": [
+                    "operation": "convert",
+                    "input": ["import"],
+                    "output_format": "mp4",
+                    "engine": "ffmpeg",
+                    "audio_codec": "aac",
+                    "video_codec": "h264"
+                ],
                 "export": ["operation": "export/url", "input": ["convert"], "multiple": false]
             ],
             "tag": "video2-hls"
@@ -530,6 +524,7 @@ enum AudioPipeline {
         }
 
         // MPEG-TS (أو HLS مشفّر): AVFoundation لا يقرأه محلياً — نعتمد على CloudConvert (ffmpeg).
+        var cloudError: String?
         if hasCloudConvertKey {
             print("[AudioPipeline] ═══ Trying CloudConvert API (MPEG-TS)...")
             do {
@@ -537,9 +532,11 @@ enum AudioPipeline {
                 print("[AudioPipeline] ✅ CloudConvert succeeded!")
                 return result
             } catch {
-                print("[AudioPipeline] ⚠️ CloudConvert failed: \(error.localizedDescription)")
+                cloudError = error.localizedDescription
+                print("[AudioPipeline] ⚠️ CloudConvert failed: \(cloudError ?? "")")
             }
         } else {
+            cloudError = nil
             print("[AudioPipeline] ⚠️ CloudConvert not available (no API key) — TS يحتاج ffmpeg")
         }
 
@@ -560,7 +557,13 @@ enum AudioPipeline {
         if isEncrypted {
             throw AudioPipelineError.exportFailed("هذا البث HLS مشفّر بـ AES-128 ولا يمكن فكّه محلياً بدون مفتاح فكّ التشفير — جرّب رابطاً غير مشفّر.")
         }
-        throw AudioPipelineError.exportFailed("تحويل HLS إلى MP4 تعذّر: MPEG-TS يتطلب مفتاح CloudConvert (أو مصدر فيديو MP4 قابل للقراءة).")
+        if !hasCloudConvertKey {
+            throw AudioPipelineError.exportFailed("تحويل هذا البث (MPEG-TS) يحتاج ffmpeg عبر خدمة CloudConvert — احفظ مفتاح CloudConvert من الإعدادات ثم أعد المحاولة.")
+        }
+        if let cloudError {
+            throw AudioPipelineError.exportFailed("تعذّر التحويل عبر CloudConvert: \(cloudError)")
+        }
+        throw AudioPipelineError.exportFailed("تعذّر تحويل HLS إلى MP4: لم يتمكن AvFoundation من قراءة الملف المحلي ولا CloudConvert من إتمام مهمة التحويل.")
     }
 
     // MARK: ── الطريقة 1 (fMP4/CMAF): دمج init.mp4 + m4s ثم إعادة تصدير ──
@@ -642,9 +645,12 @@ enum AudioPipeline {
     private static func transcodeFileToMP4(_ input: URL) async throws -> URL {
         let asset = AVURLAsset(url: input)
 
-        let duration = (try? await asset.load(.duration)) ?? .zero
-        guard CMTimeGetSeconds(duration) > 0 else {
-            throw AudioPipelineError.exportFailed("تعذر قراءة مدة الملف")
+        // بعض ملفات fMP4 الملمّحة تُبلّغ مدة 0 حتى تُحمَّل — لا نستمر على المدة،
+        // بل نكتفي بوجود مسار صوت/فيديو واحد على الأقل.
+        let hasVideo = (try? await asset.loadTracks(withMediaType: .video))?.isEmpty == false
+        let hasAudio = (try? await asset.loadTracks(withMediaType: .audio))?.isEmpty == false
+        guard hasVideo || hasAudio else {
+            throw AudioPipelineError.exportFailed("الملف لا يحتوي مسارات وسائط قابلة للقراءة")
         }
 
         let out = FileManager.default.temporaryDirectory.appendingPathComponent("v2-tx-\(UUID().uuidString).mp4")

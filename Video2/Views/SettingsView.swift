@@ -284,6 +284,11 @@ struct APIKeyRow: View {
             let result = await KeyTester.verify(provider: provider, key: key)
             testing = false
             testResult = result
+            // إذا نجح الاختبار نُحفظ المفتاح تلقائياً — حتى لا يظن المستخدم أنه
+            // مضبوط بينما لم يُحفظ في Keychain (وهو ما كان يمنع تحويل HLS).
+            if result.hasPrefix("✅") {
+                KeychainStore.set(key, for: keyID)
+            }
         }
     }
 }
