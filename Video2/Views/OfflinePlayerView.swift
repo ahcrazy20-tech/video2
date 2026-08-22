@@ -332,11 +332,11 @@ struct OfflinePlayerView: View {
             }
             Button(lang.t("nav.cancel"), role: .cancel) {}
         }
-        .confirmationDialog(lang.t("pl.sleep"), isPresented: $showSleep, titleVisibility: .visible) {
-            Button("15 \(min)") { vm.startSleep(15) }
-            Button("30 \(min)") { vm.startSleep(30) }
-            Button("45 \(min)") { vm.startSleep(45) }
-            Button("60 \(min)") { vm.startSleep(60) }
+         .confirmationDialog(lang.t("pl.sleep"), isPresented: $showSleep, titleVisibility: .visible) {
+            Button("15 min") { vm.startSleep(15) }
+            Button("30 min") { vm.startSleep(30) }
+            Button("45 min") { vm.startSleep(45) }
+            Button("60 min") { vm.startSleep(60) }
             Button(lang.t("pl.sleep.off")) { vm.startSleep(0) }
             Button(lang.t("nav.cancel"), role: .cancel) {}
         }
