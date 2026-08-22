@@ -1,10 +1,11 @@
 import Foundation
+import AVFoundation
 
 /// خدمة CloudConvert لتحويل الملفات عبر الإنترنت
-/// - مجاني 25 conversion/day
-/// - سجل في: https://cloudconvert.com
-/// - اعمل API Key من: Dashboard → API Keys
-/// - أضف الـ Key في Info.plist:
+/// مجاني 25 conversion/day
+/// سجل في: https://cloudconvert.com
+/// اعمل API Key من: Dashboard → API Keys
+/// أضف الـ Key في Info.plist:
 ///   <key>CLOUDCONVERT_API_KEY</key>
 ///   <string>your-key-here</string>
 final class CloudConvertService {
@@ -50,18 +51,13 @@ final class CloudConvertService {
     
     /// يتحقق من توفر API key
     static var isAvailable: Bool {
-        let key = apiKey()
-        return key != nil && !key!.isEmpty
+        guard let key = apiKey() else { return false }
+        return !key.isEmpty && key != "ضع_الـAPI_Key_هنا"
     }
     
     // MARK: - التحويل الرئيسي
     
     /// يحول ملف فيديو إلى MP4
-    /// - Parameters:
-    ///   - inputFile: مسار ملف المصدر
-    ///   - apiKey: API key (اختياري — هيستخدم اللي في Info.plist)
-    ///   - progress: closure للتقدم (0.0 - 1.0)
-    /// - Returns: مسار ملف MP4 الناتج
     func convertToMP4(
         inputFile: URL,
         apiKey: String? = nil,
@@ -91,37 +87,83 @@ final class CloudConvertService {
         
         // 3. رفع الملف
         progress(0.15)
-        try await uploadFile(
-            fileURL: inputFile,
-            uploadURL: uploadInfo.url,
-            progress: { p in
-                progress(0.15 + 0.30 * p) // من 0.15 إلى 0.45
-            }
-        )
+        try await uploadFile(fileURL: inputFile, uploadURL: uploadInfo.url)
         print("[CloudConvert] ✅ File uploaded")
         
         // 4. انتظار التحويل
         progress(0.50)
-        let downloadURL = try await waitForJob(
-            apiKey: apiKey,
-            jobID: jobID,
-            maxWait: 600, // 10 دقائق
-            progress: { p in
-                progress(0.50 + 0.40 * p) // من 0.50 إلى 0.90
-            }
-        )
+        let downloadURL = try await waitForJob(apiKey: apiKey, jobID: jobID, maxWait: 600) { p in
+            progress(0.50 + 0.40 * p)
+        }
         print("[CloudConvert] ✅ Conversion complete")
         
         // 5. تنزيل النتيجة
         progress(0.92)
-        let outputFile = try await downloadResult(
-            url: downloadURL,
-            originalName: inputFile.deletingPathExtension().lastPathComponent
-        )
+        let outputFile = try await downloadResult(url: downloadURL, originalName: inputFile.deletingPathExtension().lastPathComponent)
         print("[CloudConvert] ✅ Downloaded: \(outputFile.lastPathComponent)")
         
         progress(1.0)
         return outputFile
+    }
+    
+    // MARK: - HLS → MP4
+    
+    /// يحول HLS (m3u8) إلى MP4 عبر CloudConvert
+    func convertHLS(
+        m3u8URL: URL,
+        apiKey: String? = nil,
+        progress: @escaping (Double) -> Void = { _ in }
+    ) async throws -> URL {
+        
+        print("[CloudConvert] ═══════════════════════════════════════")
+        print("[CloudConvert] HLS → MP4 conversion")
+        
+        guard FileManager.default.fileExists(atPath: m3u8URL.path) else {
+            throw AudioPipelineError.exportFailed("ملف HLS غير موجود")
+        }
+        
+        // نقرأ playlist ونستخرج .ts paths
+        guard let playlistContent = try? String(contentsOf: m3u8URL, encoding: .utf8) else {
+            throw AudioPipelineError.exportFailed("تعذر قراءة m3u8")
+        }
+        
+        let lines = playlistContent.components(separatedBy: .newlines)
+        let segmentPaths: [String] = lines.compactMap { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return nil }
+            return trimmed
+        }
+        
+        guard !segmentPaths.isEmpty else {
+            throw AudioPipelineError.exportFailed("ملف m3u8 فارغ")
+        }
+        
+        print("[CloudConvert] Found \(segmentPaths.count) segments")
+        
+        // نلحم كل .ts في ملف واحد
+        progress(0.01)
+        let mergedTS = try await mergeTSSegments(
+            paths: segmentPaths,
+            baseFolder: m3u8URL.deletingLastPathComponent()
+        ) { p in
+            progress(0.01 + 0.09 * p)
+        }
+        
+        defer { try? FileManager.default.removeItem(at: mergedTS) }
+        
+        let mergedSize = (try? mergedTS.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        print("[CloudConvert] Merged TS: \(mergedSize / 1024 / 1024) MB")
+        
+        // نحول الملف المدموج
+        let result = try await convertToMP4(
+            inputFile: mergedTS,
+            apiKey: apiKey,
+            progress: { p in
+                progress(0.10 + 0.90 * p)
+            }
+        )
+        
+        return result
     }
     
     // MARK: - Helper: إنشاء Job
@@ -216,12 +258,7 @@ final class CloudConvertService {
     
     // MARK: - Helper: رفع الملف
     
-    private func uploadFile(
-        fileURL: URL,
-        uploadURL: URL,
-        progress: @escaping (Double) -> Void
-    ) async throws {
-        
+    private func uploadFile(fileURL: URL, uploadURL: URL) async throws {
         let fileData = try Data(contentsOf: fileURL)
         let boundary = "Boundary-\(UUID().uuidString)"
         
@@ -239,10 +276,7 @@ final class CloudConvertService {
         
         request.httpBody = body
         
-        // نستخدم URLSession مع delegate للتقدم (مبسّط)
         let (_, response) = try await URLSession.shared.data(for: request)
-        
-        progress(1.0)
         
         guard let httpResp = response as? HTTPURLResponse else {
             throw CloudConvertError.invalidResponse
@@ -264,7 +298,6 @@ final class CloudConvertService {
         
         let url = URL(string: "https://api.cloudconvert.com/v2/jobs/\(jobID)")!
         let startTime = Date()
-        var lastProgressTime = Date()
         
         while Date().timeIntervalSince(startTime) < maxWait {
             var request = URLRequest(url: url)
@@ -284,7 +317,6 @@ final class CloudConvertService {
             let status = jobData["status"] as? String ?? "unknown"
             
             if status == "finished" {
-                // نحصل على download URL
                 if let relationships = json["relationships"] as? [String: Any],
                    let tasks = relationships["tasks"] as? [String: Any],
                    let tasksData = tasks["data"] as? [[String: Any]] {
@@ -309,12 +341,10 @@ final class CloudConvertService {
                 throw CloudConvertError.jobFailed(msg)
             }
             
-            // نحسب تقدم تقديري
             let elapsed = Date().timeIntervalSince(startTime)
             let estimated = min(0.99, elapsed / maxWait)
             progress(estimated)
             
-            // ننتظر 5 ثواني قبل الـ polling التالي
             try await Task.sleep(nanoseconds: 5_000_000_000)
         }
         
@@ -344,67 +374,6 @@ final class CloudConvertService {
         return outputFile
     }
     
-    // MARK: - دالة مساعدة: HLS → MP4
-    
-    /// يحول HLS (m3u8) إلى MP4 عبر CloudConvert
-    /// بيلحم كل .ts segments في ملف واحد ثم يرفعه
-    func convertHLS(
-        m3u8URL: URL,
-        apiKey: String? = nil,
-        progress: @escaping (Double) -> Void = { _ in }
-    ) async throws -> URL {
-        
-        print("[CloudConvert] ═══════════════════════════════════════")
-        print("[CloudConvert] HLS → MP4 conversion")
-        
-        guard FileManager.default.fileExists(atPath: m3u8URL.path) else {
-            throw AudioPipelineError.exportFailed("ملف HLS غير موجود")
-        }
-        
-        // نقرأ playlist ونستخرج .ts paths
-        guard let playlistContent = try? String(contentsOf: m3u8URL, encoding: .utf8) else {
-            throw AudioPipelineError.exportFailed("تعذر قراءة m3u8")
-        }
-        
-        let lines = playlistContent.components(separatedBy: .newlines)
-        let segmentPaths: [String] = lines.compactMap { line in
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return nil }
-            return trimmed
-        }
-        
-        guard !segmentPaths.isEmpty else {
-            throw AudioPipelineError.exportFailed("ملف m3u8 فارغ")
-        }
-        
-        print("[CloudConvert] Found \(segmentPaths.count) segments")
-        
-        // نلحم كل .ts في ملف واحد
-        progress(0.01)
-        let mergedTS = try await mergeTSSegments(
-            paths: segmentPaths,
-            baseFolder: m3u8URL.deletingLastPathComponent()
-        ) { p in
-            progress(0.01 + 0.09 * p) // من 0.01 إلى 0.10
-        }
-        
-        defer { try? FileManager.default.removeItem(at: mergedTS) }
-        
-        let mergedSize = (try? mergedTS.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        print("[CloudConvert] Merged TS: \(mergedSize / 1024 / 1024) MB")
-        
-        // نحول الملف المدموج
-        let result = try await convertToMP4(
-            inputFile: mergedTS,
-            apiKey: apiKey,
-            progress: { p in
-                progress(0.10 + 0.90 * p) // من 0.10 إلى 1.0
-            }
-        )
-        
-        return result
-    }
-    
     // MARK: - Helper: دمج .ts segments
     
     private func mergeTSSegments(
@@ -429,26 +398,20 @@ final class CloudConvertService {
                 throw CancellationError()
             }
             
-            let segURL: URL
             if segPath.hasPrefix("/") {
-                segURL = URL(fileURLWithPath: segPath)
+                let segURL = URL(fileURLWithPath: segPath)
+                let data = try Data(contentsOf: segURL)
+                fileHandle.write(data)
             } else if segPath.hasPrefix("http://") || segPath.hasPrefix("https://") {
                 guard let u = URL(string: segPath) else { continue }
                 let (data, _) = try await URLSession.shared.data(from: u)
                 fileHandle.write(data)
-                progress(Double(index + 1) / Double(paths.count))
-                continue
             } else {
-                segURL = baseFolder.appendingPathComponent(segPath)
+                let segURL = baseFolder.appendingPathComponent(segPath)
+                let data = try Data(contentsOf: segURL)
+                fileHandle.write(data)
             }
             
-            guard FileManager.default.fileExists(atPath: segURL.path) else {
-                print("[CloudConvert] ⚠️ Segment not found: \(segPath)")
-                continue
-            }
-            
-            let data = try Data(contentsOf: segURL)
-            fileHandle.write(data)
             progress(Double(index + 1) / Double(paths.count))
         }
         
