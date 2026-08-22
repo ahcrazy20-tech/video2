@@ -5,6 +5,7 @@ import SwiftUI
 struct FormatConversionView: View {
     @EnvironmentObject var converter: FormatConverter
     @EnvironmentObject var library: LibraryStore
+    @EnvironmentObject var lang: LanguageStore
     @State private var showConvertPicker = false
     @State private var targetVideo: SavedVideo?
 
@@ -16,16 +17,16 @@ struct FormatConversionView: View {
                         Image(systemName: "arrow.triangle.2.circlepath")
                             .font(.system(size: 48))
                             .foregroundStyle(V2Theme.gold)
-                        Text("لا توجد عمليات تحويل")
+                        Text(lang.t("fc.empty.title"))
                             .font(.title3.bold())
-                        Text("يمكنك تحويل أي فيديو من المكتبة إلى صيغة أخرى — مثلاً MKV أو WebM إلى MP4.")
+                        Text(lang.t("fc.empty.hint"))
                             .multilineTextAlignment(.center)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 28)
                         Button {
                             showConvertPicker = true
                         } label: {
-                            Label("تحويل فيديو", systemImage: "plus.circle.fill")
+                            Label(lang.t("fc.empty.new"), systemImage: "plus.circle.fill")
                                 .font(.headline)
                         }
                         .buttonStyle(.borderedProminent)
@@ -46,13 +47,13 @@ struct FormatConversionView: View {
                 }
             }
             .background(V2Theme.bg)
-            .navigationTitle("تحويل الصيغ")
+            .navigationTitle(lang.t("fc.title"))
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         showConvertPicker = true
                     } label: {
-                        Label("تحويل", systemImage: "plus")
+                        Label(lang.t("fc.jobs.new"), systemImage: "plus")
                     }
                     .disabled(library.videos.isEmpty)
                 }
@@ -61,6 +62,7 @@ struct FormatConversionView: View {
                 ConvertPickerView()
                     .environmentObject(converter)
                     .environmentObject(library)
+                    .environmentObject(lang)
             }
         }
     }
@@ -71,6 +73,7 @@ struct FormatConversionView: View {
 struct ConvertPickerView: View {
     @EnvironmentObject var converter: FormatConverter
     @EnvironmentObject var library: LibraryStore
+    @EnvironmentObject var lang: LanguageStore
     @Environment(\.dismiss) var dismiss
 
     @State private var selectedVideoID: UUID?
@@ -89,19 +92,18 @@ struct ConvertPickerView: View {
 
     var canConvert: Bool {
         guard let video = selectedVideo else { return false }
-        // لا داعي للتحويل إذا كانت الصيغة نفسها
         return video.kind.fileExtension != selectedFormat.fileExtension
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("الفيديو") {
+                Section(lang.t("fc.pick.video")) {
                     if library.videos.isEmpty {
-                        Label("لا توجد فيديوهات في المكتبة", systemImage: "film.slash")
+                        Label(lang.t("fc.pick.no.videos"), systemImage: "film.slash")
                             .foregroundStyle(.secondary)
                     } else {
-                        Picker("الفيديو", selection: $selectedVideoID) {
+                        Picker(lang.t("fc.pick.video"), selection: $selectedVideoID) {
                             ForEach(library.videos) { video in
                                 Text(video.title)
                                     .lineLimit(1)
@@ -120,15 +122,15 @@ struct ConvertPickerView: View {
                     }
                 }
 
-                Section("الصيغة المطلوبة") {
-                    Picker("إلى", selection: $selectedFormat) {
+                Section(lang.t("fc.pick.format")) {
+                    Picker(lang.t("fc.pick.to"), selection: $selectedFormat) {
                         ForEach(OutputFormat.allCases) { format in
                             Text(format.titleAR).tag(format)
                         }
                     }
                     .pickerStyle(.segmented)
 
-                    Text("MP4: الأكثر توافقاً مع جميع الأجهزة والتطبيقات. MOV: جودة عالية لحفظ الأرشفة. M4V: مثل MP4 مع دعم iTunes.")
+                    Text(lang.t("fc.pick.info"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -136,7 +138,7 @@ struct ConvertPickerView: View {
                 if let video = selectedVideo {
                     Section {
                         if video.kind.fileExtension == selectedFormat.fileExtension {
-                            Label("الفيديو بهذه الصيغة بالفعل", systemImage: "checkmark.circle")
+                            Label(lang.t("fc.pick.same"), systemImage: "checkmark.circle")
                                 .foregroundStyle(.secondary)
                         } else {
                             Text("\(video.kind.titleAR) ← \(selectedFormat.titleAR)")
@@ -152,23 +154,23 @@ struct ConvertPickerView: View {
                             dismiss()
                         }
                     } label: {
-                        Label("بدء التحويل", systemImage: "arrow.triangle.2.circlepath")
+                        Label(lang.t("fc.pick.start"), systemImage: "arrow.triangle.2.circlepath")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(!canConvert)
                 } footer: {
-                    Text("يُحوَّل الفيديو بصيغة MP4 الأكثر توافقاً. يمكن استبدال الأصلي بالنسخة المحوّلة بعد اكتمال التحويل.")
+                    Text(lang.t("fc.pick.footer"))
                         .font(.caption2)
                 }
             }
             .scrollContentBackground(.hidden)
             .background(V2Theme.bg)
-            .navigationTitle("تحويل صيغة")
+            .navigationTitle(lang.t("fc.pick.title"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("إلغاء") { dismiss() }
+                    Button(lang.t("nav.cancel")) { dismiss() }
                 }
             }
             .onAppear {
@@ -185,6 +187,7 @@ struct ConvertPickerView: View {
 struct ConversionJobRow: View {
     @EnvironmentObject private var converter: FormatConverter
     @EnvironmentObject private var library: LibraryStore
+    @EnvironmentObject private var lang: LanguageStore
     let job: ConversionJob
 
     var body: some View {
@@ -236,17 +239,16 @@ struct ConversionJobRow: View {
                     Button {
                         converter.replaceOriginal(job.id)
                     } label: {
-                        Label("استبدال الأصلي", systemImage: "arrow.triangle.2.circlepath")
+                        Label(lang.t("fc.replace"), systemImage: "arrow.triangle.2.circlepath")
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
 
-                    // مشاركة الملف المحوّل
                     if let rel = job.outputRelativePath {
                         let url = LibraryStore.documents.appendingPathComponent(rel)
                         if FileManager.default.fileExists(atPath: url.path) {
                             ShareLink(item: url) {
-                                Label("مشاركة", systemImage: "square.and.arrow.up")
+                                Label(lang.t("fc.share"), systemImage: "square.and.arrow.up")
                             }
                             .controlSize(.small)
                         }
@@ -258,7 +260,7 @@ struct ConversionJobRow: View {
                 Button(role: .destructive) {
                     converter.delete(job.id)
                 } label: {
-                    Label("حذف", systemImage: "trash")
+                    Label(lang.t("nav.delete"), systemImage: "trash")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
