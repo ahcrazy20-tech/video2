@@ -34,45 +34,55 @@ struct AudioChunk: Codable, Equatable {
 
 // MARK: - خط أنابيب الصوت
 
-/// يستخرج الصوت من أي فيديو محلي و يقطّعه لأجزاء m4a صغيرة (AAC 16kHz أحادي ~32kbps)
-/// جاهزة للرفع لخدمات التفريغ، أو ملف واحد كامل لخدمات الرفع الطويل مثل AssemblyAI.
 enum AudioPipeline {
 
     static let sampleRate = 16000.0
-
-    /// طول الجزء الافتراضي: 15 دقيقة (~3.6MB لكل جزء — بعيد عن حد 25MB في Groq/OpenAI)
     static let chunkSeconds = 900.0
 
     // MARK: تحويل HLS إلى MP4 مؤقت
 
     /// AVAssetReader لا يقرأ بث HLS حتى المحلي؛ نصدّره أولاً لملف مؤقت ثم نكمل.
-    /// نجرّب عدة presets بالترتيب: passthrough أولاً (بدون إعادة ترميز — الأسرع والأضمن)، ثم presets أخرى.
     static func exportHLSToTempMP4(_ url: URL) async throws -> URL {
-        let asset = AVURLAsset(url: url)
 
-        // تحقق أن الفيديو يحتوي مسارات صالحة قبل محاولة التصدير
-        do {
-            let videoTracks = try await asset.loadTracks(withMediaType: .video)
-            let audioTracks = try await asset.loadTracks(withMediaType: .audio)
-            guard !videoTracks.isEmpty else {
-                throw AudioPipelineError.exportFailed("الفيديو لا يحتوي مسار فيديو صالح")
-            }
-            guard !audioTracks.isEmpty else {
-                throw AudioPipelineError.noAudioTrack
-            }
-        } catch let e as AudioPipelineError {
-            throw e
-        } catch {
-            throw AudioPipelineError.exportFailed("تعذر قراءة مسارات الفيديو: \(error.localizedDescription)")
+        // التحقق أن الملف موجود فعلياً قبل أي محاولة
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw AudioPipelineError.exportFailed("ملف HLS غير موجود: \(url.lastPathComponent)")
         }
 
-        // نجرّب عدة presets بالترتيب: passthrough أولاً (الأسرع والأضمن)
+        // نحاول عدة presets بالترتيب: passthrough أولاً (الأسرع والأضمن)
         let presets: [String] = [
             AVAssetExportPresetPassthrough,
             AVAssetExportPresetHighestQuality,
             AVAssetExportPresetMediumQuality,
             AVAssetExportPreset960x540
         ]
+
+        let asset = AVURLAsset(url: url)
+
+        // محاولة تحميل المسارات عبر AVURLAsset — إذا نجح نتحقق من وجود صوت
+        var hasAudio = false
+        var hasVideo = false
+        do {
+            let tracks = try await asset.load(.tracks)
+            for track in tracks {
+                let mediaType = try await track.load(.mediaType)
+                if mediaType == .video { hasVideo = true }
+                if mediaType == .audio { hasAudio = true }
+            }
+        } catch {
+            // لو load(.tracks) فشل، نكمل ونجرب الـ export ونشوف لو ينجح
+            // بعض ملفات HLS المحلية تفشل في load لكن تنجح في export
+        }
+
+        // إذا تأكدنا إنه مفيش صوت، نرمي خطأ فوراً
+        if hasVideo && !hasAudio {
+            throw AudioPipelineError.noAudioTrack
+        }
+
+        // لو تأكدنا إنه مفيش فيديو خالص، نرمي خطأ
+        if hasVideo == false && hasAudio == false {
+            // مش متأكدين — نكمل ونجرب
+        }
 
         let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: asset)
 
@@ -91,6 +101,7 @@ enum AudioPipeline {
 
             session.outputURL = out
             session.outputFileType = .mp4
+            session.shouldOptimizeForNetworkUse = true
 
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 session.exportAsynchronously {
@@ -100,24 +111,33 @@ enum AudioPipeline {
 
             if session.status == .completed,
                FileManager.default.fileExists(atPath: out.path) {
-                let fileSize = (try? out.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                let fileSize = (try? out.resourceValues(forKeys: Set([URLResourceKey.fileSizeKey])).fileSize) ?? 0
                 if fileSize > 0 {
                     return out
                 }
             }
+
+            // نطبع تفاصيل الخطأ لو أول محاولة (passthrough) فشلت
+            if preset == AVAssetExportPresetPassthrough, session.status == .failed {
+                let errDesc = session.error?.localizedDescription ?? "غير معروف"
+                print("[AudioPipeline] Passthrough export failed for HLS: \(errDesc)")
+                print("[AudioPipeline] HLS URL: \(url.path)")
+                // نتحقق إن الـ m3u8 playlist صحيح
+                if let content = try? String(contentsOf: url, encoding: .utf8) {
+                    print("[AudioPipeline] m3u8 preview: \(content.prefix(200))")
+                }
+            }
+
             // فشل هذا preset، جرّب التالي
             try? FileManager.default.removeItem(at: out)
         }
 
         throw AudioPipelineError.exportFailed(
-            "تعذر تحويل HLS إلى MP4. جرّب تحميل الفيديو بصيغة MP4 مباشرة بدلاً من HLS.")
+            "تعذر تحويل HLS إلى MP4. تأكد أن ملف m3u8 وملفات الأجزاء (.ts) موجودة في نفس المجلد. جرّب تحميل الفيديو بصيغة MP4 مباشرة بدلاً من HLS.")
     }
 
     // MARK: الاستخراج والتقطيع
 
-    /// يقرأ الصوت ويكتب أجزاء m4a في المجلد المطلوب، ويعيد قائمة الأجزاء.
-    /// `singleFile: true` ينتج ملفاً واحداً كاملاً (لخدمة AssemblyAI).
-    /// يستأنف تلقائياً إذا وُجد manifest مطابق من تشغيل سابق.
     static func extractChunks(from videoURL: URL,
                               into dir: URL,
                               singleFile: Bool,
@@ -130,7 +150,6 @@ enum AudioPipeline {
 
         var sourceURL = videoURL
         if videoURL.pathExtension.lowercased() == "m3u8" {
-            // AVAssetReader لا يقرأ HLS؛ نصدّره مرة واحدة لملف مؤقت (يُعاد استخدامه عند الاستئناف)
             let cached = dir.appendingPathComponent("hls-source.mp4")
             if FileManager.default.fileExists(atPath: cached.path) {
                 sourceURL = cached
@@ -237,7 +256,6 @@ enum AudioPipeline {
             let pts = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
             if !pts.isFinite { continue }
 
-            // بداية جزء جديد؟
             if writer == nil {
                 chunkStartPTS = pts
                 let (w, input) = try makeWriter(index: chunkIndex)
@@ -247,7 +265,6 @@ enum AudioPipeline {
                 writerInput = input
             }
 
-            // تجاوزنا طول الجزء؟ أنهِ وابدأ جزءاً جديداً
             if !singleFile && pts - chunkStartPTS >= effectiveChunkSeconds {
                 try await finishWriter()
                 let dur = pts - chunkStartPTS
@@ -265,7 +282,6 @@ enum AudioPipeline {
                 if duration > 0 { progress(min(0.98, pts / duration)) }
             }
 
-            // انتظر جاهزية الكاتب
             while writerInput?.isReadyForMoreMediaData == false {
                 try await Task.sleep(nanoseconds: 5_000_000)
                 if Task.isCancelled {
@@ -284,7 +300,6 @@ enum AudioPipeline {
             throw AudioPipelineError.readerFailed(reader.error?.localizedDescription ?? "غير معروف")
         }
 
-        // إغلاق آخر جزء
         if let w = writer {
             writerInput?.markAsFinished()
             await w.finishWriting()
@@ -315,7 +330,6 @@ enum AudioPipeline {
         return s.isFinite ? s : 0
     }
 
-    /// حذف ملفات الصوت المؤقتة بعد نجاح المهمة (يبقي النصوص والترجمات فقط).
     static func cleanupAudio(in dir: URL) {
         let chunksDir = dir.appendingPathComponent("chunks", isDirectory: true)
         try? FileManager.default.removeItem(at: chunksDir)
