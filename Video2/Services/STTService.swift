@@ -50,7 +50,6 @@ enum HTTP {
         return (data, http)
     }
 
-    /// ترويسات افتراضية — Groq (خلف Cloudflare) قد يرفض الطلبات بـ 403 بدون User-Agent
     static func applyDefaultHeaders(_ req: inout URLRequest) {
         if req.value(forHTTPHeaderField: "User-Agent") == nil {
             req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
@@ -80,7 +79,6 @@ enum HTTP {
         return (data, http)
     }
 
-    /// إعادة محاولة مع تراجع أُسّي، مع احترام Retry-After وتراخيص 429.
     static func withRetry<T: Sendable>(attempts: Int = 4,
                                        baseDelay: Double = 2.0,
                                        _ op: () async throws -> T) async throws -> T {
@@ -94,7 +92,7 @@ enum HTTP {
                 let ra = e.retryAfter ?? (baseDelay * pow(2.0, Double(n)) + (e.status == 429 ? 4 : 0))
                 try await Task.sleep(nanoseconds: UInt64(min(ra, 90) * 1_000_000_000))
             } catch let e as APIError {
-                throw e // أخطاء لا تُعاد تلقائياً (401/402...)
+                throw e
             } catch {
                 lastError = error
                 try await Task.sleep(nanoseconds: UInt64(baseDelay * pow(2.0, Double(n)) * 1_000_000_000))
@@ -127,9 +125,8 @@ struct STTResult {
 
 enum STTService {
 
-    // MARK: Groq Whisper (تقطيع + توازٍ)
+    // MARK: Groq Whisper
 
-    /// يفرّغ أجزاء الصوت عبر Groq whisper-large-v3-turbo بالتوازي ويدمج النتائج بتوقيتات مُصحّحة.
     static func groqTranscribe(chunks: [AudioChunk],
                                chunksDir: URL,
                                language: SubLang,
@@ -141,7 +138,6 @@ enum STTService {
         var detected: String? = nil
         var allCues: [SubCue] = []
 
-        // نوافذ متوازية بحجم محدود
         var i = 0
         while i < chunks.count {
             if Task.isCancelled { throw CancellationError() }
@@ -160,7 +156,6 @@ enum STTService {
                     }
                 }
                 for try await (idx, cues, lang) in group {
-                    // حلقة الاستهلاك تسلسلية داخل المهمة الأم — لا حاجة لقفل
                     allCues.append(contentsOf: cues)
                     if detected == nil { detected = lang }
                     chunkDone(idx)
@@ -213,7 +208,6 @@ enum STTService {
                       let t = seg["text"] as? String else { continue }
                 let text = t.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { continue }
-                // إزالة تكرارات الهلوسة الشائعة في الصمت
                 if text.count < 3 && [".", "..", "...", "you", "thank you"].contains(text.lowercased()) { continue }
                 let start = chunk.start + s
                 let end = chunk.start + e
@@ -221,14 +215,13 @@ enum STTService {
                 cues.append(SubCue(id: cues.count, start: start, end: end, text: text, translated: nil))
             }
         }
-        // إذا لم تتوفر segments نستخدم النص الكامل كجملة واحدة
         if cues.isEmpty, let full = json["text"] as? String, !full.isEmpty {
             cues.append(SubCue(id: 0, start: chunk.start, end: chunk.start + max(2, chunk.duration), text: full, translated: nil))
         }
         return STTResult(cues: cues, detectedLang: json["language"] as? String)
     }
 
-    // MARK: AssemblyAI (ملف واحد حتى 10 ساعات)
+    // MARK: AssemblyAI
 
     static func assemblyTranscribe(audioURL: URL,
                                    language: SubLang,
@@ -239,7 +232,6 @@ enum STTService {
 
         let auth = ["Authorization": apiKey]
 
-        // 1) الحصول على transcript قائم (استئناف) أو رفع جديد
         var transcriptID = existingTranscriptID
         if transcriptID == nil {
             pollTick("رفع الملف الصوتي…")
@@ -282,7 +274,6 @@ enum STTService {
             throw APIError(status: 0, body: "معرّف مهمة مفقود")
         }
 
-        // 2) الاستعلام الدوري
         let timeout = max(900, estimatedDuration * 2.5)
         let started = Date()
         var lastStatus = ""
@@ -322,7 +313,6 @@ enum STTService {
         }
     }
 
-    /// يفضّل utterances الجاهزة، وإلا يجمّع الكلمات إلى جمل بعلامات الترقيم والفراغات الزمنية.
     private static func parseAssemblyResponse(_ json: [String: Any]) -> [SubCue] {
         var cues: [SubCue] = []
         if let utterances = json["utterances"] as? [[String: Any]], !utterances.isEmpty {
@@ -385,7 +375,7 @@ enum STTService {
         return cues
     }
 
-    // MARK: STT.ai (تفريغ سريع — 600 دقيقة مجاناً/شهر + 100 دقيقة API)
+    // MARK: STT.ai
 
     static func sttaiTranscribe(audioURL: URL,
                                 language: SubLang,
@@ -424,35 +414,60 @@ enum STTService {
         return STTResult(cues: cues, detectedLang: language.rawValue)
     }
 
-    // MARK: Speechmatics (480 دقيقة مجاناً/شهر — دقة عالية لـ 55+ لغة)
+    // MARK: Speechmatics — إصلاح: رفع الملف فعلياً بدل إرسال file:// URL
 
     static func speechmaticsTranscribe(audioURL: URL,
                                        language: SubLang,
                                        apiKey: String) async throws -> STTResult {
         // 1) إنشاء مهمة
-        let body: [String: Any] = [
-            "audio_url": audioURL.absoluteString,
-            "language": language.bcp47 ?? language.rawValue,
-            "model": "enhanced"
+        let configBody: [String: Any] = [
+            "config": [
+                "type": "transcription",
+                "transcription_config": [
+                    "language": language.bcp47 ?? language.rawValue,
+                    "diarization": "none"
+                ]
+            ]
         ]
-        let payload = try JSONSerialization.data(withJSONObject: body)
+        let configPayload = try JSONSerialization.data(withJSONObject: configBody)
         let (jobData, _) = try await HTTP.withRetry(attempts: 2) {
             try await HTTP.request("POST", "https://asr.api.speechmatics.com/v2/jobs/",
                                    headers: ["api-key": apiKey,
                                              "Content-Type": "application/json"],
-                                   body: payload,
+                                   body: configPayload,
                                    timeout: 60)
         }
         let jobJson = HTTP.json(from: jobData)
         guard let jobID = jobJson["id"] as? String else {
             throw APIError(status: 0, body: "تعذر إنشاء مهمة Speechmatics")
         }
-        // 2) الاستعلام الدوري (تبسيط: ننتظر حتى يكتمل)
+
+        // 2) رفع الملف الصوتي (PUT /v2/jobs/{id}/data) — بدل إرسال file:// URL
+        let audioData = try Data(contentsOf: audioURL)
+        try await HTTP.withRetry(attempts: 3) {
+            try await HTTP.request("PUT",
+                                   "https://asr.api.speechmatics.com/v2/jobs/\(jobID)/data",
+                                   headers: ["api-key": apiKey,
+                                             "Content-Type": "audio/m4a"],
+                                   body: audioData,
+                                   timeout: 1800)
+        }
+
+        // 3) بدء المعالجة
+        try await HTTP.withRetry(attempts: 2) {
+            try await HTTP.request("PUT",
+                                   "https://asr.api.speechmatics.com/v2/jobs/\(jobID)/start",
+                                   headers: ["api-key": apiKey],
+                                   timeout: 60)
+        }
+
+        // 4) الاستعلام الدوري
         let start = Date()
         while true {
             if Task.isCancelled { throw CancellationError() }
             let (data, _) = try await HTTP.withRetry(attempts: 3, baseDelay: 3) {
-                try await HTTP.request("GET", "https://asr.api.speechmatics.com/v2/jobs/\(jobID)/transcript",
+                try await HTTP.request("GET",
+                                       "https://asr.api.speechmatics.com/v2/jobs/\(jobID)/transcript",
                                        headers: ["api-key": apiKey], timeout: 60)
             }
             let json = HTTP.json(from: data)
