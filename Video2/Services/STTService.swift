@@ -235,7 +235,7 @@ enum STTService {
         var transcriptID = existingTranscriptID
         if transcriptID == nil {
             pollTick("رفع الملف الصوتي…")
-            let (upData, _) = let _ = try await HTTP.withRetry(attempts: 3) {
+            let (upData, _)  = try await HTTP.withRetry(attempts: 3) {
                 try await HTTP.uploadFile("https://api.assemblyai.com/v2/upload",
                                           fileURL: audioURL,
                                           headers: ["Authorization": apiKey,
