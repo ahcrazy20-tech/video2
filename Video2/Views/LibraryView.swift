@@ -186,6 +186,49 @@ struct LibraryView: View {
         .onAppear { renameText = v.title }
     }
 
+    /// شريط تصفية حسب المجلدات: الكل / بدون مجلد / كل مجلد + زر إنشاء مجلد
+    private var folderBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                chip(lang.t("lib.all"), isOn: filter == .all) { filter = .all }
+                chip(lang.t("lib.folder.none"), isOn: filter == .unfiled) { filter = .unfiled }
+                ForEach(library.folders) { folder in
+                    chip(folder.name, isOn: filter == .folder(folder.id)) {
+                        filter = .folder(folder.id)
+                    }
+                }
+                Button {
+                    showNewFolder = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.footnote.weight(.bold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(V2Theme.card, in: Capsule())
+                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+                        .foregroundStyle(V2Theme.gold)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private func chip(_ title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.footnote.weight(isOn ? .semibold : .regular))
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(isOn ? V2Theme.accent.opacity(0.18) : V2Theme.card, in: Capsule())
+                .overlay(Capsule().strokeBorder(isOn ? V2Theme.accent : Color.white.opacity(0.12), lineWidth: 1))
+                .foregroundStyle(isOn ? V2Theme.accent : .primary)
+        }
+        .buttonStyle(.plain)
+    }
+
     private func continueCard(_ v: SavedVideo) -> some View {
         Button { playing = v } label: {
             VStack(alignment: .leading, spacing: 6) {

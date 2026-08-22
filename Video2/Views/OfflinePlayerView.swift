@@ -129,7 +129,7 @@ final class OfflinePlayerModel: ObservableObject {
         if let endObs { NotificationCenter.default.removeObserver(endObs) }
         player.pause()
         sleepWork?.cancel()
-        SpeechNarrator.shared.stop()
+        MainActor.assumeIsolated { SpeechNarrator.shared.stop() }
         teardownRemoteCommands()
     }
 
@@ -145,7 +145,7 @@ final class OfflinePlayerModel: ObservableObject {
         player.pause()
         isPlaying = false
         showChrome = true
-        SpeechNarrator.shared.stop()
+        MainActor.assumeIsolated { SpeechNarrator.shared.stop() }
         publishNowPlaying(force: true)
     }
 
@@ -245,7 +245,7 @@ final class OfflinePlayerModel: ObservableObject {
             if !spoken.isEmpty, spoken != lastSpoken {
                 lastSpoken = spoken
                 let langCode = video.subtitleTargetLang ?? "ar"
-                SpeechNarrator.shared.speak(spoken, language: langCode)
+                MainActor.assumeIsolated { SpeechNarrator.shared.speak(spoken, language: langCode) }
             }
         }
     }
@@ -253,7 +253,7 @@ final class OfflinePlayerModel: ObservableObject {
     func toggleAutoSpeak() {
         autoSpeak.toggle()
         if !autoSpeak {
-            SpeechNarrator.shared.stop()
+            MainActor.assumeIsolated { SpeechNarrator.shared.stop() }
             flash(t("pl.tts.off"))
         } else {
             lastSpoken = ""

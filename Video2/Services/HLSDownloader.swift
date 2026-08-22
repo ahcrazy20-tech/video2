@@ -132,7 +132,7 @@ final class HLSDownloader {
                   auth: DownloadAuth? = nil,
                   maxHeight: Int? = nil,
                   progress: @escaping (Double) -> Void) async throws -> URL {
-        let (data, _) = try await fetch(masterURL, auth: auth)
+        let data = try await fetch(masterURL, auth: auth)
         guard let text = String(data: data, encoding: .utf8) else { throw HLSError.badPlaylist }
         let drm = HLSInspector.inspect(playlist: text)
         if drm.isProtected { throw HLSError.drmProtected(drm) }
@@ -146,7 +146,7 @@ final class HLSDownloader {
                 throw HLSError.badPlaylist
             }
             mediaURL = variantURL
-            let (d2, _) = try await fetch(variantURL, auth: auth)
+            let d2 = try await fetch(variantURL, auth: auth)
             guard let t2 = String(data: d2, encoding: .utf8) else { throw HLSError.badPlaylist }
             let drm2 = HLSInspector.inspect(playlist: t2)
             if drm2.isProtected { throw HLSError.drmProtected(drm2) }
@@ -213,7 +213,6 @@ final class HLSDownloader {
             progress(planned.count)
             return
         }
-        let doneLock = NSLock()
         var doneCount = planned.count - pending.count
         progress(doneCount)
 
@@ -237,11 +236,9 @@ final class HLSDownloader {
             }
 
             for try await _ in group {
-                doneLock.lock()
+                // جسم الحلقة يعمل تسلسلياً داخل مهمة واحدة — لا حاجة لقفل
                 doneCount += 1
-                let snapshot = doneCount
-                doneLock.unlock()
-                progress(snapshot)
+                progress(doneCount)
                 if Task.isCancelled {
                     group.cancelAll()
                     throw CancellationError()
