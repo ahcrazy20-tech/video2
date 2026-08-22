@@ -465,6 +465,7 @@ enum AudioPipeline {
         print("[AudioPipeline] m3u8: \(url.lastPathComponent)")
 
         // الطريقة 1: CloudConvert API (لو متاح)
+        // نلحم الـ segments في ملف TS واحد ثم نرفعه — فلا نفرّغ playlist ناقص للخدمة.
         if hasCloudConvertKey {
             print("[AudioPipeline] ═══ Trying CloudConvert API (method 1)...")
             do {
