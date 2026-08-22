@@ -169,7 +169,6 @@ final class FormatConverter: ObservableObject {
         guard let i = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         let job = jobs[i]
         if job.phase.isBusy { cancel(jobID) }
-        // حذف الملف الناتج إن وُجد
         if let rel = job.outputRelativePath {
             try? FileManager.default.removeItem(at: LibraryStore.documents.appendingPathComponent(rel))
         }
@@ -188,22 +187,34 @@ final class FormatConverter: ObservableObject {
         let outURL = LibraryStore.documents.appendingPathComponent(outRel)
         guard FileManager.default.fileExists(atPath: outURL.path) else { return }
 
-        // حذف الملف القديم (أو المجلد بالكامل إذا كان HLS)
-        if video.kind == .hls {
-            let hlsFolder = video.localURL.deletingLastPathComponent()
-            try? FileManager.default.removeItem(at: hlsFolder)
-        } else {
-            try? FileManager.default.removeItem(at: video.localURL)
-        }
-
-        // نقل الملف الجديد لمكان القديم
+        // نقل الملف الجديد لمكان الفيديو الحالي (قبل حذف القديم)
         let newKind = MediaKind.infer(url: outRel, mime: nil)
-        let destURL = video.localURL.deletingPathExtension().appendingPathExtension(job.outputFormat.fileExtension)
+        let destURL: URL
+        if video.kind == .hls {
+            // HLS: نستبدل الفولدر كامل بملف واحد
+            destURL = video.localURL.deletingLastPathComponent()
+                .appendingPathComponent("\(video.id.uuidString).\(job.outputFormat.fileExtension)")
+        } else {
+            destURL = video.localURL.deletingPathExtension()
+                .appendingPathExtension(job.outputFormat.fileExtension)
+        }
         do {
             try FileManager.default.moveItem(at: outURL, to: destURL)
         } catch {
             try? FileManager.default.copyItem(at: outURL, to: destURL)
             try? FileManager.default.removeItem(at: outURL)
+        }
+
+        // حذف الملف القديم (أو المجلد بالكامل إذا كان HLS) بعد نجاح النقل
+        if video.kind == .hls {
+            let hlsFolder = video.localURL.deletingLastPathComponent()
+            if hlsFolder != destURL.deletingLastPathComponent() {
+                try? FileManager.default.removeItem(at: hlsFolder)
+            }
+        } else {
+            if video.localURL != destURL {
+                try? FileManager.default.removeItem(at: video.localURL)
+            }
         }
 
         let bytes = (try? destURL.resourceValues(forKeys: Set([URLResourceKey.fileSizeKey])).fileSize).map { Int64($0) } ?? 0
