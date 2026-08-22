@@ -109,6 +109,10 @@ final class HLSDownloader {
             if line.hasPrefix("#") {
                 if line.uppercased().contains("EXT-X-KEY:METHOD=AES-128") {
                     rewritten += try await rewriteAESKeyLine(line, base: mediaURL, folder: destFolder) + "\n"
+                } else if line.uppercased().hasPrefix("#EXT-X-MAP:") {
+                    // fMP4 HLS يحتاج init segment؛ ترك URI remote يجعل النسخة
+                    // الأوفلاين تفشل حتى لو تم تنزيل كل ملفات m4s.
+                    rewritten += try await rewriteMapLine(line, base: mediaURL, folder: destFolder) + "\n"
                 } else {
                     rewritten += line + "\n"
                 }
@@ -132,6 +136,19 @@ final class HLSDownloader {
         let playlistURL = destFolder.appendingPathComponent("index.m3u8")
         try rewritten.write(to: playlistURL, atomically: true, encoding: .utf8)
         return playlistURL
+    }
+
+    private func rewriteMapLine(_ line: String, base: URL, folder: URL) async throws -> String {
+        guard let start = line.range(of: "URI=\"") else { return line }
+        let rest = line[start.upperBound...]
+        guard let end = rest.firstIndex(of: "\"") else { return line }
+        let uri = String(rest[..<end])
+        guard let remote = URL(string: uri, relativeTo: base)?.absoluteURL else { throw HLSError.badPlaylist }
+        let (data, response) = try await URLSession.shared.data(from: remote)
+        guard (response as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) ?? false else { throw HLSError.network }
+        let name = "init\(remote.pathExtension.isEmpty ? ".mp4" : ".\(remote.pathExtension)")"
+        try data.write(to: folder.appendingPathComponent(name), options: .atomic)
+        return line.replacingOccurrences(of: uri, with: name)
     }
 
     /// مفتاح AES-128 الثابت في HLS العادي (ليس FairPlay). يُحفظ محلياً للتشغيل الأوفلاين.
