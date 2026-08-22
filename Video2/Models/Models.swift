@@ -185,6 +185,8 @@ struct SavedVideo: Identifiable, Codable, Hashable {
 
 enum DownloadState: String, Codable {
     case queued, running, paused, failed, completed, blockedDRM
+
+    var isBusy: Bool { self == .queued || self == .running }
 }
 
 struct DownloadJob: Identifiable, Codable {

@@ -8,9 +8,30 @@ final class DownloadManager: ObservableObject {
     private weak var library: LibraryStore?
     private let hls = HLSDownloader()
     private var running = false
+    private var runningJobID: UUID?
+    private var currentTask: Task<Void, Never>?
 
     func attach(library: LibraryStore) {
         self.library = library
+    }
+
+    /// يوقف تحميلاً جارياً/في الانتظار ويُبقيه في حالة "متوقف" حتى لا يبقى
+    /// عالقاً بنسبة ثابتة إلى الأبد.
+    func cancel(jobID: UUID) {
+        guard let i = jobs.firstIndex(where: { $0.id == jobID }), jobs[i].state.isBusy else { return }
+        // لا نُلغِ إلا مهمة التحميل الجارية فعلاً — لو كان العنصر في الانتظار فلم تبدأ بعد.
+        if jobID == runningJobID {
+            currentTask?.cancel()
+            currentTask = nil
+        }
+        jobs[i].state = .paused
+        jobs[i].errorMessage = nil
+    }
+
+    func remove(jobID: UUID) {
+        guard let i = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+        if jobs[i].state.isBusy { cancel(jobID: jobID) }
+        jobs.removeAll { $0.id == jobID }
     }
 
     func enqueue(_ media: DetectedMedia) {
@@ -35,11 +56,19 @@ final class DownloadManager: ObservableObject {
         var job = jobs[idx]
         job.state = .running
         jobs[idx] = job
-        Task { await run(jobID: job.id) }
+        let startingID = job.id
+        runningJobID = startingID
+        currentTask = Task { await run(jobID: startingID) }
     }
 
     private func run(jobID: UUID) async {
-        guard let idx = jobs.firstIndex(where: { $0.id == jobID }) else { running = false; pump(); return }
+        defer {
+            if runningJobID == jobID { runningJobID = nil }
+            currentTask = nil
+            running = false
+            pump()
+        }
+        guard let idx = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         let job = jobs[idx]
         do {
             let saved = try await perform(job)
@@ -49,8 +78,13 @@ final class DownloadManager: ObservableObject {
             }
             library?.add(saved)
         } catch {
+            // أُلغِي يدوياً — سواءً عبر CancellationError أو لطّ خيط URLSession العائد بـ .cancelled.
+            let cancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
             if let i = jobs.firstIndex(where: { $0.id == jobID }) {
-                if let h = error as? HLSError, case .drmProtected(let k) = h {
+                if cancelled {
+                    jobs[i].state = .paused
+                    jobs[i].errorMessage = nil
+                } else if let h = error as? HLSError, case .drmProtected(let k) = h {
                     jobs[i].state = .blockedDRM
                     jobs[i].errorMessage = k.messageAR
                 } else {
@@ -59,8 +93,6 @@ final class DownloadManager: ObservableObject {
                 }
             }
         }
-        running = false
-        pump()
     }
 
     private func perform(_ job: DownloadJob) async throws -> SavedVideo {
@@ -91,14 +123,57 @@ final class DownloadManager: ObservableObject {
 
         let ext = job.media.kind.fileExtension
         let dest = LibraryStore.videosDir.appendingPathComponent("\(id.uuidString).\(ext)")
-        let (tmp, _) = try await URLSession.shared.download(from: remote)
-        try FileManager.default.moveItem(at: tmp, to: dest)
+        // تنزيل ملف واحد الذي يبلغ حجمه مئات الميجا يبقى عند نسبة ثابتة (غالباً 0) لأن
+        // URLSession.shared.download لا يبلغ عن التقدّم — فيبدو وكأنه متوقّف. نستخدم
+        // downloadTask مع delegate لبلّغ عن البايتات فعلياً (مع حفظ نسبة كل ~0.2 ثانية).
+        try await downloadFileWithProgress(from: remote, to: dest, jobID: job.id)
         let bytes = (try? dest.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
         publishProgress(1, for: job.id)
         if let i = jobs.firstIndex(where: { $0.id == job.id }) {
             jobs[i].bytesWritten = bytes
         }
         return SavedVideo(id: id, title: title, sourceURL: job.media.url, pageURL: job.media.pageURL, localRelativePath: "Videos/\(id.uuidString).\(ext)", thumbnailRelativePath: nil, kind: job.media.kind, createdAt: Date(), duration: job.media.duration, fileSize: bytes, lastPosition: 0, extractionMethod: job.media.extractionMethod)
+    }
+
+    /// تنزيل ملف واحد مع تقدّم بالبايتات — يمنع أن يظهر التقدّم عالقاً عند نسبة ثابتة
+    /// في الملفات الكبيرة. يبلّغ عن التقدّم كل ~0.25 ثانية (لا flood للـ main actor).
+    private func downloadFileWithProgress(from remote: URL, to dest: URL, jobID: UUID) async throws {
+        let delegate = FileDownloadDelegate()
+        let gate = DownloadProgressGate()
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 24 * 3600
+        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: OperationQueue())
+
+        delegate.onProgress = { [weak self] written, expected in
+            let p = expected > 0 ? min(1, Double(written) / Double(expected)) : 0
+            guard gate.shouldEmit(isFinal: p >= 1) else { return }
+            guard let self else { return }
+            if Task.isCancelled { return }
+            Task { @MainActor in self.publishProgress(p, for: jobID) }
+        }
+
+        let box = DownloadTaskBox()
+        let location: URL = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<URL, Error>) in
+                delegate.onFinish = { result in
+                    switch result {
+                    case .success(let u): c.resume(returning: u)
+                    case .failure(let e): c.resume(throwing: e)
+                    }
+                }
+                let t = session.downloadTask(with: remote)
+                box.task = t
+                t.resume()
+            }
+        } onCancel: {
+            if let t = box.task { t.cancel() }
+            session.invalidateAndCancel()
+        }
+        defer { session.invalidateAndCancel() }
+
+        try? FileManager.default.removeItem(at: dest)
+        try FileManager.default.moveItem(at: location, to: dest)
     }
 
     /// ينشر التقدّم بحدّ أقصى ~5 تحديثات/ثانية حتى لا يُغرق الـ main actor
@@ -131,4 +206,55 @@ private func computeFolderSize(_ url: URL) -> Int64 {
         }
     }
     return total
+}
+
+/// Delegate لتنزيل ملف واحد مع تقدّم بالبايتات (يبلغ عن كل دفعة كتبها URLSession).
+final class FileDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    var onProgress: ((Int64, Int64) -> Void)?
+    var onFinish: ((Result<URL, Error>) -> Void)?
+    private var location: URL?
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        self.location = location
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            onFinish?(.failure(error))
+        } else if let location {
+            onFinish?(.success(location))
+        } else {
+            onFinish?(.failure(URLError(.unknown)))
+        }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64,
+                    totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        onProgress?(totalBytesWritten, totalBytesExpectedToWrite)
+    }
+}
+
+/// بوابة خفيفة تُحدّد متى يُبثّ تحديث التقدّم (كل ~0.25 ثانية أو عند الاكتمال) بأمان من خيط الخلفية.
+/// متزامنة عبر NSLock لأن onProgress يُستدعى من خيط URLSession الخلفي.
+final class DownloadProgressGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last = Date.distantPast
+
+    func shouldEmit(isFinal: Bool) -> Bool {
+        let now = Date()
+        lock.lock()
+        defer { lock.unlock() }
+        if isFinal || now.timeIntervalSince(last) >= 0.25 {
+            last = now
+            return true
+        }
+        return false
+    }
+}
+
+/// يحمل مرجعاً إلى task التحميل حتى يمكن إلغاؤه من onCancel في withTaskCancellationHandler.
+final class DownloadTaskBox: @unchecked Sendable {
+    var task: URLSessionDownloadTask?
 }
