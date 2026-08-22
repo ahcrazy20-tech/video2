@@ -273,23 +273,35 @@ final class FormatConverter: ObservableObject {
         var tempHLSFile: URL? = nil
 
         if video.kind == .hls {
-            // HLS المحلي: نحتاج تحويله لملف واحد أولاً
-            do {
-                jobs[i].phase = .converting
-                jobs[i].progress = 0.05
-                saveIndex()
-                tempHLSFile = try await AudioPipeline.exportHLSToTempMP4(video.localURL)
-                sourceURL = tempHLSFile!
-            } catch {
-                jobs[i].phase = .failed
-                jobs[i].errorMessage = error.localizedDescription
-                jobs[i].finishedAt = Date()
-                saveIndex()
-                return
-            }
+            // لا ندمج أجزاء HLS يدوياً: هذا يكسر الـ timestamps والصوت و EXT-X-MAP.
+            // AVFoundation يفهم الـ playlist المحلي ويختار الـ audio/video renditions
+            // ويحافظ على التزامن. نستخدم المسار القديم فقط كـ fallback للـ playlists
+            // التي لا يستطيع النظام فتحها.
+            jobs[i].phase = .converting
+            jobs[i].progress = 0.05
+            saveIndex()
+            sourceURL = video.localURL
         }
 
-        let asset = AVURLAsset(url: sourceURL)
+        var asset = AVURLAsset(url: sourceURL)
+        if video.kind == .hls {
+            do {
+                let playable = try await asset.load(.isPlayable)
+                guard playable else { throw ConversionError.exportFailed("قائمة HLS غير قابلة للتشغيل") }
+            } catch {
+                do {
+                    tempHLSFile = try await AudioPipeline.exportHLSToTempMP4(video.localURL)
+                    sourceURL = tempHLSFile!
+                    asset = AVURLAsset(url: sourceURL)
+                } catch {
+                    jobs[i].phase = .failed
+                    jobs[i].errorMessage = error.localizedDescription
+                    jobs[i].finishedAt = Date()
+                    saveIndex()
+                    return
+                }
+            }
+        }
 
         // اختيار أفضل preset متاح
         let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: asset)
