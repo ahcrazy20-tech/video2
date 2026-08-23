@@ -493,14 +493,23 @@ final class TranslationManager: ObservableObject {
                 }
             }
 
-            // موديل الترجمة يأتي من الإعداد الجديد، مع توافق عكسي للمفتاح القديم
+            // لكل مزود موديله المستقل؛ يمنع إرسال اسم موديل Gemini إلى SiliconFlow.
+            let resolvedTranslator = TranslateService.resolved(provider: job.translator)
             let translatorModel: String
-            if let newModel = UserDefaults.standard.string(forKey: "translator.model"), !newModel.isEmpty {
-                translatorModel = newModel
-            } else if let legacy = UserDefaults.standard.string(forKey: "gemini.model"), !legacy.isEmpty {
-                translatorModel = legacy
-            } else {
-                translatorModel = "gemini-2.5-flash"
+            switch resolvedTranslator {
+            case .gemini:
+                translatorModel = ModelSelection.selected(purpose: "translator", provider: .gemini,
+                                                          fallback: "gemini-2.5-flash")
+            case .groqLLM:
+                translatorModel = ModelSelection.selected(purpose: "translator", provider: .groq,
+                                                          fallback: "openai/gpt-oss-120b")
+            case .siliconflow:
+                translatorModel = ModelSelection.selected(purpose: "translator", provider: .siliconflow,
+                                                          fallback: "Qwen/Qwen2.5-72B-Instruct")
+            case .deepL:
+                translatorModel = "DeepL API"
+            case .auto:
+                translatorModel = ""
             }
             let translatorConfig = TranslateService.Config(provider: job.translator,
                                                           model: translatorModel,

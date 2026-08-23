@@ -62,12 +62,12 @@ enum SiliconFlowTTS {
         ]
         let payload = try JSONSerialization.data(withJSONObject: body)
         let (data, _) = try await HTTP.withRetry(attempts: 2, baseDelay: 2) {
-            try await HTTP.request("POST",
-                                   "https://api.siliconflow.cn/v1/audio/speech",
-                                   headers: ["Authorization": "Bearer \(key)",
-                                             "Content-Type": "application/json"],
-                                   body: payload,
-                                   timeout: 60)
+            try await SiliconFlowAPI.request("POST",
+                                                path: "/audio/speech",
+                                                key: key,
+                                                headers: ["Content-Type": "application/json"],
+                                                body: payload,
+                                                timeout: 60)
         }
         try data.write(to: outputURL, options: .atomic)
         return EdgeTTSClient.approximateMP3Duration(bytes: data.count)
@@ -116,7 +116,10 @@ enum ElevenLabsTTS {
                                    timeout: 90)
         }
         try data.write(to: outputURL, options: .atomic)
-        return EdgeTTSClient.approximateMP3Duration(bytes: data.count)
+        let duration = CMTimeGetSeconds(AVURLAsset(url: outputURL).duration)
+        return duration.isFinite && duration > 0
+            ? duration
+            : EdgeTTSClient.approximateMP3Duration(bytes: data.count)
     }
 
     /// يجلب قائمة الأصوات المتاحة لحساب المستخدم

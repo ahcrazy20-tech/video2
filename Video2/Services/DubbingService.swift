@@ -450,7 +450,7 @@ extension DubbingVoice {
         case .siliconflow:
             return siliconFlowVoices(for: lang)
         case .elevenlabs:
-            return [] // يتطلب جلب ديناميكي
+            return ElevenLabsTTS.defaultVoices
         case .auto:
             return edgeVoices(for: lang)
         }
@@ -511,14 +511,14 @@ extension DubbingVoice {
         switch lang {
         case .ar:
             return [
-                DubbingVoice(id: "FunAudioLLM/CosyVoice2-0.5B", name: "CosyVoice 2 (مفتوح، صيني غالباً)", language: "zh", gender: .female, naturalness: 3, provider: .siliconflow)
+                DubbingVoice(id: "FunAudioLLM/CosyVoice2-0.5B:alex", name: "Alex — CosyVoice 2", language: "multi", gender: .male, naturalness: 3, provider: .siliconflow)
             ]
         case .en:
             return [
-                DubbingVoice(id: "FunAudioLLM/CosyVoice2-0.5B", name: "CosyVoice 2", language: "en", gender: .female, naturalness: 3, provider: .siliconflow)
+                DubbingVoice(id: "FunAudioLLM/CosyVoice2-0.5B:alex", name: "Alex — CosyVoice 2", language: "multi", gender: .male, naturalness: 3, provider: .siliconflow)
             ]
         default:
-            return [DubbingVoice(id: "FunAudioLLM/CosyVoice2-0.5B", name: "CosyVoice 2", language: "zh", gender: .female, naturalness: 3, provider: .siliconflow)]
+            return [DubbingVoice(id: "FunAudioLLM/CosyVoice2-0.5B:alex", name: "Alex — CosyVoice 2", language: "multi", gender: .male, naturalness: 3, provider: .siliconflow)]
         }
     }
 

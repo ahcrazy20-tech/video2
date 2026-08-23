@@ -114,6 +114,49 @@ enum HTTP {
     }
 }
 
+// MARK: - SiliconFlow (النطاق العالمي والصيني)
+
+/// مفاتيح SiliconFlow العالمية تعمل على `.com`، بينما بعض الحسابات القديمة
+/// أُنشئت على `.cn`. نجرب النطاق المحفوظ أولاً ثم الآخر عند أخطاء المصادقة.
+enum SiliconFlowAPI {
+    private static let preferenceKey = "siliconflow.api.base"
+    private static let globalBase = "https://api.siliconflow.com/v1"
+    private static let chinaBase = "https://api.siliconflow.cn/v1"
+
+    static func request(_ method: String,
+                        path: String,
+                        key: String,
+                        headers: [String: String] = [:],
+                        body: Data? = nil,
+                        timeout: Double = 300) async throws -> (Data, HTTPURLResponse) {
+        let saved = UserDefaults.standard.string(forKey: preferenceKey)
+        var bases = [saved, globalBase, chinaBase].compactMap { $0 }
+        bases = bases.reduce(into: []) { result, base in
+            if !result.contains(base) { result.append(base) }
+        }
+
+        var lastError: Error = URLError(.userAuthenticationRequired)
+        for (index, base) in bases.enumerated() {
+            do {
+                var allHeaders = headers
+                allHeaders["Authorization"] = "Bearer \(KeychainStore.normalized(key))"
+                let result = try await HTTP.request(method, base + path,
+                                                    headers: allHeaders,
+                                                    body: body,
+                                                    timeout: timeout)
+                UserDefaults.standard.set(base, forKey: preferenceKey)
+                return result
+            } catch let error as APIError where (error.status == 401 || error.status == 403) && index < bases.count - 1 {
+                lastError = error
+                continue
+            } catch {
+                throw error
+            }
+        }
+        throw lastError
+    }
+}
+
 // MARK: - نتيجة التفريغ
 
 struct STTResult {
@@ -438,14 +481,12 @@ enum STTService {
                                 boundary: boundary)
 
         let (data, _) = try await HTTP.withRetry(attempts: 4, baseDelay: 4) {
-            try await HTTP.request("POST",
-                                   "https://api.siliconflow.cn/v1/audio/asr",
-                                   headers: [
-                                    "Authorization": "Bearer \(apiKey)",
-                                    "Content-Type": "multipart/form-data; boundary=\(boundary)"
-                                   ],
-                                   body: payload,
-                                   timeout: 600)
+            try await SiliconFlowAPI.request("POST",
+                                                path: "/audio/transcriptions",
+                                                key: apiKey,
+                                                headers: ["Content-Type": "multipart/form-data; boundary=\(boundary)"],
+                                                body: payload,
+                                                timeout: 600)
         }
         let json = HTTP.json(from: data)
         var cues: [SubCue] = []

@@ -19,6 +19,9 @@ struct DubbingView: View {
     @State private var dubbingCompleted = false
     @State private var lastResult: DubbingResult?
     @State private var error: String?
+    @State private var elevenVoices: [DubbingVoice] = []
+    @State private var loadingVoices = false
+    @State private var previewPlayer: AVAudioPlayer?
 
     init(video: SavedVideo, onCompleted: @escaping (String, DubbingResult) -> Void) {
         self.video = video
@@ -28,19 +31,33 @@ struct DubbingView: View {
 
 
     private var availableVoices: [DubbingVoice] {
-        DubbingVoice.voices(for: targetLang, provider: serviceResolveProvider(provider))
+        let resolved = serviceResolveProvider(provider)
+        if resolved == .elevenlabs, !elevenVoices.isEmpty { return elevenVoices }
+        return DubbingVoice.voices(for: targetLang, provider: resolved)
+    }
+
+    private var resolvedProvider: DubbingProvider { serviceResolveProvider(provider) }
+
+    private var activeModelName: String {
+        switch resolvedProvider {
+        case .elevenlabs: return "eleven_multilingual_v2"
+        case .siliconflow: return "FunAudioLLM/CosyVoice2-0.5B"
+        case .groqPlayAI: return "playai-tts"
+        case .edge: return "Microsoft Edge Neural TTS"
+        case .auto: return "—"
+        }
     }
 
     private var currentVoice: DubbingVoice? {
         if !selectedVoiceID.isEmpty {
             return availableVoices.first { $0.id == selectedVoiceID }
         }
-        return DubbingVoice.best(for: targetLang, provider: serviceResolveProvider(provider))
+        return availableVoices.max(by: { $0.naturalness < $1.naturalness })
     }
 
     private var canStart: Bool {
         guard let v = currentVoice else { return false }
-        return serviceResolveProvider(provider).isAvailable && v.naturalness > 0
+        return !loadingVoices && serviceResolveProvider(provider).isAvailable && v.naturalness > 0
     }
 
     var body: some View {
@@ -64,10 +81,12 @@ struct DubbingView: View {
             }
             .onChange(of: provider) { _ in
                 selectedVoiceID = ""
+                Task { await loadElevenVoicesIfNeeded() }
             }
             .onChange(of: targetLang) { _ in
                 selectedVoiceID = ""
             }
+            .task { await loadElevenVoicesIfNeeded() }
         }
     }
 
@@ -119,6 +138,22 @@ struct DubbingView: View {
             Text(provider.detailAR)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Label("المستخدم فعلياً: \(resolvedProvider.titleAR)", systemImage: "cpu")
+                    .font(.caption.bold())
+                    .foregroundStyle(V2Theme.gold)
+                Text(activeModelName)
+                    .font(.caption.monospaced())
+                    .environment(\.layoutDirection, .leftToRight)
+                if loadingVoices {
+                    Label("جاري تحميل أصوات حساب ElevenLabs…", systemImage: "arrow.clockwise")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(V2Theme.card, in: RoundedRectangle(cornerRadius: 10))
         }
     }
 
@@ -277,6 +312,23 @@ struct DubbingView: View {
 
     // MARK: - الأفعال
 
+    @MainActor
+    private func loadElevenVoicesIfNeeded() async {
+        guard resolvedProvider == .elevenlabs, KeychainStore.has("elevenlabs") else { return }
+        loadingVoices = true
+        defer { loadingVoices = false }
+        do {
+            elevenVoices = try await ElevenLabsTTS.fetchVoices()
+            if !selectedVoiceID.isEmpty,
+               !elevenVoices.contains(where: { $0.id == selectedVoiceID }) {
+                selectedVoiceID = ""
+            }
+        } catch {
+            // نترك الأصوات الافتراضية ظاهرة، لكن نوضح سبب فشل جلب أصوات الحساب.
+            self.error = "تعذر تحميل أصوات ElevenLabs: \(error.localizedDescription)"
+        }
+    }
+
     private var hasTranslations: Bool {
         guard let files = video.subtitleFiles else { return false }
         guard let targetPath = files["target"] else { return false }
@@ -360,9 +412,9 @@ struct DubbingView: View {
     private func playPreview(url: URL) {
         // استخدم مشغّل سريع بسيط
         do {
-            let player = try AVAudioPlayer(contentsOf: url)
-            player.prepareToPlay()
-            player.play()
+            previewPlayer = try AVAudioPlayer(contentsOf: url)
+            previewPlayer?.prepareToPlay()
+            previewPlayer?.play()
         } catch {
             self.error = "تعذر تشغيل الملف: \(error.localizedDescription)"
         }
