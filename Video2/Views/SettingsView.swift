@@ -29,6 +29,7 @@ struct SettingsView: View {
             List {
                  Section("حماية التطبيق") {
                     SecureField("كلمة سر جديدة (4 أحرف على الأقل)", text: $newPassword)
+                        .environment(\.layoutDirection, .leftToRight)
                     Button(appLock.hasPassword ? "تغيير كلمة السر" : "تفعيل كلمة السر") {
                         passwordMessage = appLock.setPassword(newPassword) ? "تم حفظ كلمة السر" : "كلمة السر قصيرة جداً"
                         if passwordMessage == "تم حفظ كلمة السر" { newPassword = "" }
@@ -205,10 +206,15 @@ struct SettingsView: View {
 
                 Section(lang.t("set.extract")) {
                     Text("HTML5 video/source")
+                        .environment(\.layoutDirection, .leftToRight)
                     Text("fetch / XMLHttpRequest")
+                        .environment(\.layoutDirection, .leftToRight)
                     Text("Performance log")
+                        .environment(\.layoutDirection, .leftToRight)
                     Text("HLS m3u8")
+                        .environment(\.layoutDirection, .leftToRight)
                     Text("MP4 / WebM")
+                        .environment(\.layoutDirection, .leftToRight)
                 }
                 Section(lang.t("set.drm")) {
                     Text(lang.t("set.drm.body"))

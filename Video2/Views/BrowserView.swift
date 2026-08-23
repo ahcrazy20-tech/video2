@@ -33,6 +33,7 @@ struct BrowserView: View {
                 TextField("https://...", text: $manualURL)
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
+                    .environment(\.layoutDirection, .leftToRight)
                 Button(lang.t("paste.download")) {
                     let url = manualURL
                     let title = browser.current.title
@@ -83,6 +84,7 @@ struct BrowserView: View {
                 TextField(lang.t("addr.placeholder"), text: $address)
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
+                    .environment(\.layoutDirection, .leftToRight)
                     .submitLabel(.go)
                     .onSubmit {
                         browser.current.load(address)
@@ -181,6 +183,7 @@ struct DetectorSheet: View {
                             }
                             if let mime = item.mime, !mime.isEmpty {
                                 Text(mime).font(.caption2).foregroundStyle(.secondary)
+                                    .environment(\.layoutDirection, .leftToRight)
                             }
                             if item.kind == .hls, let vars = item.variants, !vars.isEmpty {
                                 VStack(alignment: .leading, spacing: 6) {
@@ -200,6 +203,7 @@ struct DetectorSheet: View {
                                 }
                             }
                             Text(item.url).font(.caption2).foregroundStyle(.tertiary).lineLimit(2)
+                                .environment(\.layoutDirection, .leftToRight)
                             Button {
                                 enqueueing = true
                                 Task {
@@ -283,6 +287,7 @@ struct TabsSheet: View {
                         VStack(alignment: .leading) {
                             Text(tab.title).foregroundStyle(.primary)
                             Text(tab.urlString).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                .environment(\.layoutDirection, .leftToRight)
                         }
                     }
                     .swipeActions {

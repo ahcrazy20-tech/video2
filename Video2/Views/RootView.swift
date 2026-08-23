@@ -38,8 +38,9 @@ struct RootView: View {
             }
         }
         .background(V2Theme.bg.ignoresSafeArea())
-        // اتجاه موحّد لكل الشاشات بدلاً من اعتماد كل View على لغة الجهاز.
-        .environment(\.layoutDirection, lang.isRTL ? .rightToLeft : .leftToRight)
+        // الاتجاه RTL مضبوط الآن على مستوى النظام عند الإقلاع (AppleLanguages +
+        // semanticContentAttribute في Video2App)، فيعمل بشكل طبيعي بدون قلب
+        // الـ Pickers/Forms الذي كان يسبّبه فرض layoutDirection هنا.
         .id(lang.code)
     }
 }
@@ -61,6 +62,7 @@ struct LockScreenView: View {
                 .foregroundStyle(.white)
             SecureField("كلمة السر", text: $password)
                 .textFieldStyle(.roundedBorder)
+                .environment(\.layoutDirection, .leftToRight)
                 .frame(maxWidth: 280)
             Button("دخول") {
                 error = !appLock.unlock(password)

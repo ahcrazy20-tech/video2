@@ -1,11 +1,21 @@
 import Foundation
 import SwiftUI
 import Combine
+import UIKit
 
 final class LanguageStore: ObservableObject {
     static let key = "v2.lang"
     @Published var code: String {
-        didSet { UserDefaults.standard.set(code, forKey: Self.key) }
+        didSet {
+            UserDefaults.standard.set(code, forKey: Self.key)
+            // مزامنة اتجاه الواجهة مع اللغة المختارة: RTL للعربي، LTR للإنجليزي.
+            // بدون ده، تبديل اللغة لا يقلب اتجاه التخطيط فيظهر نص إنجليزي
+            // داخل واجهة عربية (لخبطة) والعكس. RootView يعاد بناؤه عبر .id(lang.code).
+            UserDefaults.standard.set([code], forKey: "AppleLanguages")
+            UIView.appearance().semanticContentAttribute = (code == "en")
+                ? .forceLeftToRight
+                : .forceRightToLeft
+        }
     }
 
     init() {

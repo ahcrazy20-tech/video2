@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import UIKit
 
 @main
 struct Video2App: App {
@@ -13,6 +14,17 @@ struct Video2App: App {
     @StateObject private var appLock = AppLock()
 
     init() {
+        // Force the app's base language at launch so iOS lays the UI out RTL
+        // natively. This is the correct fix for the "flipped Pickers/Forms in
+        // RTL" SwiftUI bug — forcing `.environment(\.layoutDirection: .rightToLeft)`
+        // at the root double-flips NavigationStack/Form content (mirrored options).
+        let saved = UserDefaults.standard.string(forKey: LanguageStore.key)
+        let code = (saved == "en" || saved == "ar") ? saved! : "ar"
+        UserDefaults.standard.set([code], forKey: "AppleLanguages")
+        UIView.appearance().semanticContentAttribute = (code == "en")
+            ? .forceLeftToRight
+            : .forceRightToLeft
+
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         try? AVAudioSession.sharedInstance().setActive(true)
         AdBlock.compileIfNeeded()

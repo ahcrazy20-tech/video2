@@ -314,7 +314,17 @@ enum EdgeTTSClient {
                 try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 throw URLError(.timedOut)
             }
-            let first = try await group.next()!
+            let first: T
+            do {
+                if let f = try await group.next() {
+                    first = f
+                } else {
+                    throw URLError(.timedOut)
+                }
+            } catch {
+                group.cancelAll()
+                throw error
+            }
             group.cancelAll()
             return first
         }

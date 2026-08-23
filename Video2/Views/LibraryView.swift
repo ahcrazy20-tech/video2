@@ -149,6 +149,7 @@ struct LibraryView: View {
             }
             .alert(lang.t("lib.folder.new"), isPresented: $showNewFolder) {
                 TextField(lang.t("lib.folder.name"), text: $newFolderName)
+                    .environment(\.layoutDirection, .leftToRight)
                 Button(lang.t("lib.save")) {
                     _ = library.addFolder(named: newFolderName)
                     newFolderName = ""
