@@ -341,34 +341,46 @@ final class DubbingService: ObservableObject {
         }
 
         var cursor = CMTime.zero
+        var insertedAny = false
         for item in generated {
             let asset = AVURLAsset(url: item.audioURL)
             guard let audioAssetTrack = asset.tracks(withMediaType: .audio).first else { continue }
             let segmentDuration = asset.duration
+            // تجاهل الملفات الفارغة/التالفة لتفادي بناء مسار زمني غير صالح
+            guard segmentDuration.seconds.isFinite, segmentDuration.seconds > 0 else { continue }
+
             let targetStart = item.cue.start
             let targetEnd = item.cue.end
             let targetDuration = max(0.2, targetEnd - targetStart)
 
-            // إدراج في التوقيت الأصلي، مع تحويل المدة عبر scale إن لزم
             let timeScale = CMTimeScale(600)
             let startTime = CMTime(seconds: targetStart, preferredTimescale: timeScale)
             var insertedDuration = segmentDuration
             if stretchToFit, segmentDuration.seconds > targetDuration * 1.05 {
-                // تسريع الصوت ليتناسب مع التوقيت
-                let scale = segmentDuration.seconds / targetDuration
-                let scaled = CMTime(seconds: segmentDuration.seconds / max(0.1, scale),
-                                    preferredTimescale: timeScale)
+                // تسريع الصوت ليتناسب مع التوقيت (محدود بمدة الجملة الأصلية)
+                let clamped = min(segmentDuration.seconds, max(0.1, targetDuration))
+                let scaled = CMTime(seconds: clamped, preferredTimescale: timeScale)
                 insertedDuration = scaled
             }
+            guard insertedDuration.seconds.isFinite, insertedDuration.seconds > 0 else { continue }
+
             let timeRange = CMTimeRange(start: .zero, duration: insertedDuration)
             do {
                 try audioTrack.insertTimeRange(timeRange, of: audioAssetTrack, at: startTime)
+                insertedAny = true
             } catch {
-                // لو فشل الإدراج، ضعه في المؤشر الحالي
-                try audioTrack.insertTimeRange(timeRange, of: audioAssetTrack, at: cursor)
-                cursor = CMTimeAdd(cursor, insertedDuration)
+                // لو فشل الإدراج (تداخل مثلاً)، ضعه متتالياً بعد المؤشر الحالي
+                do {
+                    try audioTrack.insertTimeRange(timeRange, of: audioAssetTrack, at: cursor)
+                    cursor = CMTimeAdd(cursor, insertedDuration)
+                    insertedAny = true
+                } catch {
+                    // تجاهل هذه الجملة إن تعذّر إدراجها تماماً
+                }
             }
         }
+
+        guard insertedAny else { throw DubbingError.compositionFailed }
 
         // اكتب كـ m4a
         if FileManager.default.fileExists(atPath: outputURL.path) {
@@ -418,6 +430,7 @@ enum DubbingError: LocalizedError {
     case invalidProvider
     case compositionFailed
     case exportFailed
+    case localSynthesisFailed
 
     var errorDescription: String? {
         switch self {
@@ -426,6 +439,7 @@ enum DubbingError: LocalizedError {
         case .invalidProvider: return "مزود الدبلجة غير محدد."
         case .compositionFailed: return "فشل تجميع المسار الصوتي."
         case .exportFailed: return "فشل تصدير ملف الدبلجة."
+        case .localSynthesisFailed: return "تعذر توليد صوت الجهاز الاحتياطي."
         }
     }
 }
