@@ -199,11 +199,11 @@ final class DubbingService: ObservableObject {
                 if Task.isCancelled { throw CancellationError() }
                 let text = cue.translated ?? cue.text
                 let url = tempDir.appendingPathComponent("cue-\(cue.id).\(perCueExt)")
-                let dur = try await synthesizeOne(text: text,
-                                                  voice: voice,
-                                                  provider: provider,
-                                                  outputURL: url,
-                                                  sampleRate: sampleRate)
+                let dur = try await DubbingService.synthesizeOneStatic(text: text,
+                                                                       voice: voice,
+                                                                       provider: provider,
+                                                                       outputURL: url,
+                                                                       sampleRate: sampleRate)
                 generated.append((cue, url, dur))
                 let p = Double(generated.count) / total
                 progress = 0.85 * p
@@ -267,20 +267,7 @@ final class DubbingService: ObservableObject {
     // MARK: - توليد صوت جملة واحدة (مع fallback تلقائي)
 
     /// توليد صوت جملة — لو المزود الأساسي فشل (مثل Edge TTS محجوب)، يجرب تلقائياً صوت الجهاز.
-    private func synthesizeOne(text: String,
-                               voice: DubbingVoice,
-                               provider: DubbingProvider,
-                               outputURL: URL,
-                               sampleRate: Int) async throws -> Double {
-        do {
-            return try await synthesizeOnePrimary(text: text, voice: voice, provider: provider, outputURL: outputURL, sampleRate: sampleRate)
-        } catch {
-            // الاحتياطي: صوت الجهاز — يعمل أوفلاين 100%
-            if Task.isCancelled { throw CancellationError() }
-            return try await LocalTTS.synthesizeToFile(text: text, voice: voice, outputURL: outputURL)
-        }
-    }
-
+    /// nonisolated لأن `withThrowingTaskGroup` block لا يرث الـ MainActor
     nonisolated private static func synthesizeOneStatic(text: String,
                                                         voice: DubbingVoice,
                                                         provider: DubbingProvider,
@@ -289,31 +276,13 @@ final class DubbingService: ObservableObject {
         do {
             return try await synthesizeOnePrimaryStatic(text: text, voice: voice, provider: provider, outputURL: outputURL, sampleRate: sampleRate)
         } catch {
+            // الاحتياطي: صوت الجهاز — يعمل أوفلاين 100%
             if Task.isCancelled { throw CancellationError() }
             return try await LocalTTS.synthesizeToFile(text: text, voice: voice, outputURL: outputURL)
         }
     }
 
     /// المحاولة الأولى (المزود السحابي المختار)
-    private func synthesizeOnePrimary(text: String,
-                                     voice: DubbingVoice,
-                                     provider: DubbingProvider,
-                                     outputURL: URL,
-                                     sampleRate: Int) async throws -> Double {
-        switch provider {
-        case .edge:
-            return try await EdgeTTSClient.synthesizeAndSave(text: text, voice: voice.id, outputURL: outputURL)
-        case .groqPlayAI:
-            return try await GroqTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
-        case .siliconflow:
-            return try await SiliconFlowTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
-        case .elevenlabs:
-            return try await ElevenLabsTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
-        case .auto:
-            throw DubbingError.invalidProvider
-        }
-    }
-
     nonisolated private static func synthesizeOnePrimaryStatic(text: String,
                                                               voice: DubbingVoice,
                                                               provider: DubbingProvider,

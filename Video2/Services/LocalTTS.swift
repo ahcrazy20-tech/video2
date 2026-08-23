@@ -41,14 +41,11 @@ enum LocalTTS {
         utterance.pitchMultiplier = voice.gender == .female ? 1.05 : 0.95
         utterance.volume = 1.0
 
-        // انتظر حتى ينتهي النطق
+        // انتظر حتى ينتهي النطق — نستخدم continuation مع delegate
+        let delegate = SpeechDelegate()
+        synth.delegate = delegate
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            let delegate = SpeechDelegate {
-                cont.resume()
-            }
-            // نحتفظ بالـ delegate في الـ synth عبر associated object
-            objc_setAssociatedObject(synth, &SpeechDelegate.key, delegate, .OBJC_ASSOCIATION_RETAIN)
-            synth.delegate = delegate
+            delegate.onFinish = { cont.resume() }
             synth.speak(utterance)
         }
 
@@ -161,21 +158,16 @@ private final class SpeechRecorder {
 // MARK: - مندوب AVSpeechSynthesizer
 
 private final class SpeechDelegate: NSObject, AVSpeechSynthesizerDelegate {
-    static var key: UInt8 = 0
-    private let onFinish: () -> Void
-
-    init(_ onFinish: @escaping () -> Void) {
-        self.onFinish = onFinish
-    }
+    var onFinish: (() -> Void)?
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         // تأخير بسيط لضمان كتابة آخر buffer
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.onFinish()
+            self?.onFinish?()
         }
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        onFinish()
+        onFinish?()
     }
 }
