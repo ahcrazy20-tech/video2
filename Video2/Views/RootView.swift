@@ -62,6 +62,7 @@ struct LockScreenView: View {
                 .foregroundStyle(.white)
             SecureField("كلمة السر", text: $password)
                 .textFieldStyle(.roundedBorder)
+                .environment(\.layoutDirection, .leftToRight)
                 .frame(maxWidth: 280)
             Button("دخول") {
                 error = !appLock.unlock(password)
