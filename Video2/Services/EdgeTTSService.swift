@@ -129,6 +129,24 @@ final class SpeechNarrator: NSObject, ObservableObject, AVSpeechSynthesizerDeleg
         default: return "ar-SA-ZariyahNeural"
         }
     }
+
+    /// يستخرج BCP-47 من معرّف صوت Edge TTS مثل "ar-SA-ZariyahNeural" → "ar-SA"
+    nonisolated static func voiceLang(_ voice: String) -> String {
+        // نمط: lang-REGION-NameNeural
+        let parts = voice.split(separator: "-")
+        if parts.count >= 2 {
+            return "\(parts[0])-\(parts[1])"
+        }
+        return "ar-SA"
+    }
+
+    /// تقدير تقريبي لمدة MP3 بناءً على حجم البيانات (24kbps mono)
+    nonisolated static func approximateMP3Duration(bytes: Int) -> Double {
+        // 24 kbps = 3 KB/s تقريباً
+        let bits = Double(bytes) * 8.0
+        let duration = bits / 24_000.0
+        return max(0.3, duration)
+    }
 }
 
 extension SpeechNarrator: AVAudioPlayerDelegate {
@@ -158,6 +176,19 @@ enum EdgeTTSClient {
     static func synthesize(text: String, language: String) async throws -> Data {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw EdgeTTSError.empty }
+        return try await synthesizeInternal(text: trimmed, voice: SpeechNarrator.edgeVoice(for: language))
+    }
+
+    /// يخزّن الصوت في ملف ويعيد مدته التقريبية بالثواني.
+    static func synthesizeAndSave(text: String, voice: String, outputURL: URL) async throws -> Double {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw EdgeTTSError.empty }
+        let data = try await synthesizeInternal(text: trimmed, voice: voice)
+        try data.write(to: outputURL, options: .atomic)
+        return approximateMP3Duration(bytes: data.count)
+    }
+
+    private static func synthesizeInternal(text: String, voice: String) async throws -> Data {
 
         let token = secMSGEC()
         let conn = UUID().uuidString.replacingOccurrences(of: "-", with: "").uppercased()
@@ -189,10 +220,9 @@ enum EdgeTTSClient {
         """
         try await ws.send(.string(config))
 
-        let voice = SpeechNarrator.edgeVoice(for: language)
-        let lang = SpeechNarrator.bcp47(language)
+        let lang = SpeechNarrator.bcp47(voiceLang(voice))
         let ssml = """
-        <speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='\(lang)'><voice name='\(voice)'>\(escapeXML(trimmed))</voice></speak>
+        <speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='\(lang)'><voice name='\(voice)'>\(escapeXML(text))</voice></speak>
         """
         let requestId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let ssmlMsg = """

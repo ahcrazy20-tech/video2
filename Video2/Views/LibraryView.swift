@@ -16,6 +16,7 @@ struct LibraryView: View {
     @State private var thumbTick = 0
     @State private var translateVideo: SavedVideo?
     @State private var convertVideo: SavedVideo?
+    @State private var dubbingVideo: SavedVideo?
     @State private var showConverter = false
     @State private var filter: LibraryFilter = .all
     @State private var showImporter = false
@@ -89,6 +90,22 @@ struct LibraryView: View {
                 NewTranslationView(preselected: v)
                     .environmentObject(translations)
                     .environmentObject(library)
+            }
+            .sheet(item: $dubbingVideo) { v in
+                DubbingView(video: v) { relativePath, result in
+                    var updated = v
+                    updated.dubbedAudioPath = relativePath
+                    updated.dubbedInfo = SavedVideo.DubbedInfo(
+                        provider: result.provider.rawValue,
+                        voice: result.voice.id,
+                        language: result.voice.language,
+                        createdAt: Date(),
+                        totalDuration: result.totalDuration
+                    )
+                    library.update(updated)
+                }
+                .environmentObject(library)
+                .environmentObject(lang)
             }
             .sheet(item: $convertVideo) { v in
                 ConvertPickerView(initialVideo: v)
@@ -255,6 +272,11 @@ struct LibraryView: View {
                             .font(.caption2)
                             .foregroundStyle(V2Theme.mint)
                     }
+                    if v.hasDubbedAudio {
+                        Label("دبلجة", systemImage: "waveform.badge.mic")
+                            .font(.caption2)
+                            .foregroundStyle(V2Theme.gold)
+                    }
                 }
                 Spacer(minLength: 0)
             }
@@ -269,6 +291,13 @@ struct LibraryView: View {
             } label: {
                 Label(lang.t("lib.translate"), systemImage: "captions.bubble")
             }
+            Button {
+                dubbingVideo = v
+            } label: {
+                Label(v.hasDubbedAudio ? "إعادة الدبلجة" : "دبلجة عربية",
+                      systemImage: v.hasDubbedAudio ? "waveform.badge.mic.fill" : "waveform.badge.mic")
+            }
+            .disabled(!v.hasSubtitles)
             if v.hasSubtitles,
                let files = v.subtitleFiles,
                let rel = files["target"] ?? files["orig"] {
@@ -276,6 +305,14 @@ struct LibraryView: View {
                 if FileManager.default.fileExists(atPath: url.path) {
                     ShareLink(item: url) {
                         Label("تصدير SRT", systemImage: "square.and.arrow.up")
+                    }
+                }
+            }
+            if v.hasDubbedAudio, let p = v.dubbedAudioPath {
+                let url = LibraryStore.documents.appendingPathComponent(p)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    ShareLink(item: url) {
+                        Label("تصدير الدبلجة", systemImage: "square.and.arrow.up.on.square")
                     }
                 }
             }

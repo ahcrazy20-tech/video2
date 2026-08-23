@@ -375,6 +375,96 @@ enum STTService {
         return cues
     }
 
+    // MARK: SiliconFlow SenseVoice (ASR)
+
+    static func siliconFlowTranscribe(chunks: [AudioChunk],
+                                      chunksDir: URL,
+                                      language: SubLang,
+                                      apiKey: String,
+                                      model: String,
+                                      concurrency: Int,
+                                      chunkDone: @escaping (Int) -> Void,
+                                      chunkResult: @escaping (Int, [SubCue], String?) -> Void) async throws -> STTResult {
+        var detected: String? = nil
+        var allCues: [SubCue] = []
+
+        var i = 0
+        while i < chunks.count {
+            if Task.isCancelled { throw CancellationError() }
+            let window = Array(chunks[i..<min(i + max(1, concurrency), chunks.count)])
+            i += window.count
+
+            try await withThrowingTaskGroup(of: (Int, [SubCue], String?).self) { group in
+                for chunk in window {
+                    group.addTask {
+                        let r = try await transcribeOneChunkSiliconFlow(chunk: chunk,
+                                                                         chunksDir: chunksDir,
+                                                                         language: language,
+                                                                         apiKey: apiKey,
+                                                                         model: model)
+                        return (chunk.index, r.cues, r.detectedLang)
+                    }
+                }
+                for try await (idx, cues, lang) in group {
+                    allCues.append(contentsOf: cues)
+                    if detected == nil { detected = lang }
+                    chunkDone(idx)
+                    chunkResult(idx, cues, lang)
+                }
+            }
+        }
+        return STTResult(cues: allCues, detectedLang: detected)
+    }
+
+    private static func transcribeOneChunkSiliconFlow(chunk: AudioChunk,
+                                                      chunksDir: URL,
+                                                      language: SubLang,
+                                                      apiKey: String,
+                                                      model: String) async throws -> STTResult {
+        let fileURL = chunksDir.appendingPathComponent(chunk.fileName)
+        let fileData: Data
+        do { fileData = try Data(contentsOf: fileURL) }
+        catch { throw AudioPipelineError.readerFailed("تعذر قراءة ملف الجزء \(chunk.index)") }
+
+        let body: [String: Any] = [
+            "model": model.isEmpty ? "FunAudioLLM/SenseVoiceSmall" : model
+        ]
+        let boundary = "sf\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        let payload = multipart(fields: body.mapValues { "\($0)" },
+                                fileField: "file",
+                                fileName: chunk.fileName,
+                                mime: "audio/mp4",
+                                fileData: fileData,
+                                boundary: boundary)
+
+        let (data, _) = try await HTTP.withRetry(attempts: 4, baseDelay: 4) {
+            try await HTTP.request("POST",
+                                   "https://api.siliconflow.cn/v1/audio/asr",
+                                   headers: [
+                                    "Authorization": "Bearer \(apiKey)",
+                                    "Content-Type": "multipart/form-data; boundary=\(boundary)"
+                                   ],
+                                   body: payload,
+                                   timeout: 600)
+        }
+        let json = HTTP.json(from: data)
+        var cues: [SubCue] = []
+        // استجابة SiliconFlow: { "text": "...", "language": "ar|en|..." }
+        if let text = json["text"] as? String {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                // SenseVoice لا يعطي segments افتراضياً، فنضع الجملة الكاملة
+                cues.append(SubCue(id: 0,
+                                   start: chunk.start,
+                                   end: chunk.start + max(2, chunk.duration),
+                                   text: trimmed,
+                                   translated: nil))
+            }
+        }
+        let lang = json["language"] as? String
+        return STTResult(cues: cues, detectedLang: lang ?? language.rawValue)
+    }
+
     // MARK: STT.ai
 
     static func sttaiTranscribe(audioURL: URL,

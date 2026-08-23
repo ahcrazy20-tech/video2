@@ -73,6 +73,7 @@ final class TranslationManager: ObservableObject {
             if KeychainStore.has("sttai") { return .sttai }
             if KeychainStore.has("speechmatics") { return .speechmatics }
             if KeychainStore.has("groq") { return .groq }
+            if KeychainStore.has("siliconflow") { return .siliconflow }
             return .groq
         default:
             return kind
@@ -355,6 +356,58 @@ final class TranslationManager: ObservableObject {
                         j.errorMessage = nil
                         j.progress = 0.72
                     }
+                } else if job.sttProvider == .siliconflow {
+                    // SiliconFlow SenseVoice - تقطيع لأجزاء متوازية
+                    let chunksDir = dir.appendingPathComponent("chunks", isDirectory: true)
+                    var pending: [AudioChunk] = []
+                    var doneCount = 0
+                    for c in audioChunks {
+                        let f = dir.appendingPathComponent("stt-\(String(format: "%03d", c.index)).json")
+                        if let data = try? Data(contentsOf: f),
+                           let cached = try? JSONDecoder().decode([SubCue].self, from: data) {
+                            allCues.append(contentsOf: cached)
+                            doneCount += 1
+                        } else {
+                            pending.append(c)
+                        }
+                    }
+                    setJob(jobID) { j in
+                        j.doneChunks = doneCount
+                        j.totalChunks = audioChunks.count
+                    }
+                    saveIndex()
+
+                    let key = Self.sttHasKey(.siliconflow) ?? ""
+                    let model = UserDefaults.standard.string(forKey: "stt.model") ?? "FunAudioLLM/SenseVoiceSmall"
+                    let result = try await STTService.siliconFlowTranscribe(
+                        chunks: pending,
+                        chunksDir: chunksDir,
+                        language: job.sourceLang,
+                        apiKey: key,
+                        model: model,
+                        concurrency: sttConcurrency) { [weak self] _ in
+                            Task { @MainActor in
+                                self?.setJob(jobID) { j in
+                                    j.doneChunks += 1
+                                    let total = max(1, j.totalChunks)
+                                    j.progress = 0.13 + 0.57 * Double(j.doneChunks) / Double(total)
+                                }
+                                self?.saveIndex()
+                            }
+                        } chunkResult: { idx, cues, lang in
+                            if let data = try? JSONEncoder().encode(cues) {
+                                try? data.write(to: dir.appendingPathComponent("stt-\(String(format: "%03d", idx)).json"), options: .atomic)
+                            }
+                            _ = lang
+                        }
+                    allCues.append(contentsOf: result.cues)
+                    if detected == nil { detected = result.detectedLang }
+                    allCues = SubtitleCodec.normalize(SubtitleCodec.sortedAndMerged(allCues))
+                    setJob(jobID) { j in
+                        j.detectedLang = detected
+                        j.cueCount = allCues.count
+                        j.progress = 0.70
+                    }
                 } else {
                     // Groq مع تخطّي الأجزاء المفرّغة سابقاً (استئناف)
                     let chunksDir = dir.appendingPathComponent("chunks", isDirectory: true)
@@ -440,7 +493,19 @@ final class TranslationManager: ObservableObject {
                 }
             }
 
-            let geminiModel = UserDefaults.standard.string(forKey: "gemini.model") ?? "gemini-2.0-flash"
+            // موديل الترجمة يأتي من الإعداد الجديد، مع توافق عكسي للمفتاح القديم
+            let translatorModel: String
+            if let newModel = UserDefaults.standard.string(forKey: "translator.model"), !newModel.isEmpty {
+                translatorModel = newModel
+            } else if let legacy = UserDefaults.standard.string(forKey: "gemini.model"), !legacy.isEmpty {
+                translatorModel = legacy
+            } else {
+                translatorModel = "gemini-2.5-flash"
+            }
+            let translatorConfig = TranslateService.Config(provider: job.translator,
+                                                          model: translatorModel,
+                                                          temperature: 0.15,
+                                                          maxOutputTokens: 32768)
             let pendingBatches = batches.filter { translationsByStart[$0.startIndex] == nil }
             var doneBatches = batches.count - pendingBatches.count
             setJob(jobID) { j in
@@ -468,15 +533,15 @@ final class TranslationManager: ObservableObject {
                 try await withThrowingTaskGroup(of: (Int, [String]).self) { group in
                     for batch in window {
                         let tail = contextTail
+                        let cfg = translatorConfig
                         group.addTask {
                             let out = try await TranslateService.translateBatch(
-                                provider: job.translator,
+                                config: cfg,
                                 batch: batch,
                                 contextTail: tail,
                                 source: job.sourceLang,
                                 target: job.targetLang,
-                                videoTitle: job.videoTitle,
-                                geminiModel: geminiModel)
+                                videoTitle: job.videoTitle)
                             return (batch.startIndex, out)
                         }
                     }

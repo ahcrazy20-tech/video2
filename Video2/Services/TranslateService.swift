@@ -10,6 +10,14 @@ enum TranslateService {
         var texts: [String]
     }
 
+    /// إعدادات جلسة الترجمة — تُمرر في كل استدعاء.
+    struct Config {
+        var provider: TranslatorKind
+        var model: String
+        var temperature: Double
+        var maxOutputTokens: Int
+    }
+
     /// يبني دفعات من الجُمل (حوالي 40 سطراً للدفعة — يوازن الجودة مع حدود المخرجات).
     static func makeBatches(cues: [SubCue], size: Int = 20) -> [Batch] {
         var batches: [Batch] = []
@@ -34,15 +42,37 @@ enum TranslateService {
                                target: SubLang,
                                videoTitle: String,
                                geminiModel: String) async throws -> [String] {
-        switch resolved(provider: provider) {
+        let cfg = Config(provider: provider,
+                         model: geminiModel,
+                         temperature: 0.15,
+                         maxOutputTokens: 32768)
+        return try await translateBatch(config: cfg,
+                                         batch: batch,
+                                         contextTail: contextTail,
+                                         source: source,
+                                         target: target,
+                                         videoTitle: videoTitle)
+    }
+
+    /// النسخة الكاملة من translateBatch مع إعدادات مخصّصة.
+    static func translateBatch(config: Config,
+                               batch: Batch,
+                               contextTail: [(String, String)],
+                               source: SubLang,
+                               target: SubLang,
+                               videoTitle: String) async throws -> [String] {
+        switch resolved(provider: config.provider) {
         case .gemini:
-            return try await geminiBatch(batch, contextTail: contextTail, source: source, target: target,
-                                         videoTitle: videoTitle, model: geminiModel)
+            return try await geminiBatch(batch, config: config, contextTail: contextTail,
+                                         source: source, target: target, videoTitle: videoTitle)
         case .groqLLM:
-            return try await groqBatch(batch, contextTail: contextTail, source: source, target: target,
-                                       videoTitle: videoTitle)
+            return try await groqBatch(batch, config: config, contextTail: contextTail,
+                                       source: source, target: target, videoTitle: videoTitle)
         case .deepL:
             return try await deepLBatch(batch, source: source, target: target)
+        case .siliconflow:
+            return try await siliconFlowBatch(batch, config: config, contextTail: contextTail,
+                                              source: source, target: target, videoTitle: videoTitle)
         case .auto:
             throw APIError(status: 0, body: "لا يوجد مزود ترجمة مفعّل")
         }
@@ -54,6 +84,7 @@ enum TranslateService {
         case .auto:
             if KeychainStore.has("gemini") { return .gemini }
             if KeychainStore.has("groq") { return .groqLLM }
+            if KeychainStore.has("siliconflow") { return .siliconflow }
             if KeychainStore.has("deepl") { return .deepL }
             return .auto
         default:
@@ -71,6 +102,7 @@ enum TranslateService {
         case .gemini: return "Gemini"
         case .groqLLM: return "Groq LLM"
         case .deepL: return "DeepL"
+        case .siliconflow: return "SiliconFlow"
         case .auto: return "—"
         }
     }
@@ -118,41 +150,55 @@ enum TranslateService {
     // MARK: Gemini
 
     private static func geminiBatch(_ batch: Batch,
+                                    config: Config,
                                     contextTail: [(String, String)],
                                     source: SubLang,
                                     target: SubLang,
-                                    videoTitle: String,
-                                    model: String) async throws -> [String] {
+                                    videoTitle: String) async throws -> [String] {
         guard let key = KeychainStore.get("gemini") else {
             throw APIError(status: 401, body: "أدخل مفتاح Gemini من الإعدادات")
         }
+        let model = config.model.isEmpty ? "gemini-2.5-flash" : config.model
         let url = "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent?key=\(key)"
         let body: [String: Any] = [
             "system_instruction": ["parts": [["text": systemPrompt(source: source, target: target, videoTitle: videoTitle)]]],
             "contents": [["role": "user", "parts": [["text": userPrompt(batch: batch, contextTail: contextTail)]]]],
             "generationConfig": [
-                "temperature": 0.15,
+                "temperature": config.temperature,
                 "responseMimeType": "application/json",
-                "maxOutputTokens": 32768
+                "maxOutputTokens": config.maxOutputTokens
             ] as [String: Any]
         ]
         let payload = try JSONSerialization.data(withJSONObject: body)
-        let (data, _) = try await HTTP.withRetry(attempts: 5, baseDelay: 6) {
+        let (data, resp) = try await HTTP.withRetry(attempts: 5, baseDelay: 6) {
             try await HTTP.request("POST", url,
                                    headers: ["Content-Type": "application/json"],
                                    body: payload,
                                    timeout: 180)
         }
+        // Gemini أحياناً يرجع 200 لكن بدون "candidates" بسبب فلترة الأمان — نرمي برسالة واضحة
         let json = HTTP.json(from: data)
+        if let err = json["error"] as? [String: Any] {
+            let msg = (err["message"] as? String) ?? "خطأ غير معروف"
+            let code = (err["code"] as? Int) ?? resp.statusCode
+            throw APIError(status: code, body: "Gemini: \(msg)")
+        }
         var text = ""
         if let candidates = json["candidates"] as? [[String: Any]],
            let content = candidates.first?["content"] as? [String: Any],
            let parts = content["parts"] as? [[String: Any]] {
             text = parts.compactMap { $0["text"] as? String }.joined()
         }
-        if text.isEmpty, let promptFeedback = json["promptFeedback"] as? [String: Any] {
-            let reason = promptFeedback["blockReason"] as? String ?? "empty"
-            throw APIError(status: 0, body: "استجابة Gemini فارغة (\(reason))")
+        if text.isEmpty {
+            if let promptFeedback = json["promptFeedback"] as? [String: Any] {
+                let reason = promptFeedback["blockReason"] as? String ?? "empty"
+                throw APIError(status: 0, body: "استجابة Gemini فارغة (\(reason)) — جرّب موديلاً آخر من شاشة اختيار الموديل")
+            }
+            // في بعض الأحيان Gemini يعيد candidates فارغة بسبب MAX_TOKENS
+            if let finishReason = (json["candidates"] as? [[String: Any]])?.first?["finishReason"] as? String {
+                throw APIError(status: 0, body: "Gemini توقف مبكراً (\(finishReason)) — قلل حجم الدفعة من الإعدادات")
+            }
+            throw APIError(status: 0, body: "استجابة Gemini فارغة — جرّب موديلاً آخر من شاشة اختيار الموديل")
         }
         return parseLines(rawJSON: text, batch: batch)
     }
@@ -160,6 +206,7 @@ enum TranslateService {
     // MARK: Groq LLM
 
     private static func groqBatch(_ batch: Batch,
+                                  config: Config,
                                   contextTail: [(String, String)],
                                   source: SubLang,
                                   target: SubLang,
@@ -167,9 +214,10 @@ enum TranslateService {
         guard let key = KeychainStore.get("groq") else {
             throw APIError(status: 401, body: "أدخل مفتاح Groq من الإعدادات")
         }
+        let model = config.model.isEmpty ? "openai/gpt-oss-120b" : config.model
         let body: [String: Any] = [
-            "model": "openai/gpt-oss-120b",
-            "temperature": 0.15,
+            "model": model,
+            "temperature": config.temperature,
             "response_format": ["type": "json_object"],
             "messages": [
                 ["role": "system", "content": systemPrompt(source: source, target: target, videoTitle: videoTitle)],
@@ -186,6 +234,10 @@ enum TranslateService {
                                    timeout: 180)
         }
         let json = HTTP.json(from: data)
+        if let err = json["error"] as? [String: Any] {
+            let msg = (err["message"] as? String) ?? "خطأ غير معروف"
+            throw APIError(status: 0, body: "Groq: \(msg)")
+        }
         var text = ""
         if let choices = json["choices"] as? [[String: Any]],
            let message = choices.first?["message"] as? [String: Any],
@@ -194,6 +246,53 @@ enum TranslateService {
         }
         guard !text.isEmpty else {
             throw APIError(status: 0, body: "استجابة Groq فارغة")
+        }
+        return parseLines(rawJSON: text, batch: batch)
+    }
+
+    // MARK: SiliconFlow
+
+    private static func siliconFlowBatch(_ batch: Batch,
+                                         config: Config,
+                                         contextTail: [(String, String)],
+                                         source: SubLang,
+                                         target: SubLang,
+                                         videoTitle: String) async throws -> [String] {
+        guard let key = KeychainStore.get("siliconflow") else {
+            throw APIError(status: 401, body: "أدخل مفتاح SiliconFlow من الإعدادات")
+        }
+        let model = config.model.isEmpty ? "Qwen/Qwen2.5-72B-Instruct" : config.model
+        let body: [String: Any] = [
+            "model": model,
+            "temperature": config.temperature,
+            "response_format": ["type": "json_object"],
+            "messages": [
+                ["role": "system", "content": systemPrompt(source: source, target: target, videoTitle: videoTitle)],
+                ["role": "user", "content": userPrompt(batch: batch, contextTail: contextTail)]
+            ]
+        ]
+        let payload = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await HTTP.withRetry(attempts: 5, baseDelay: 6) {
+            try await HTTP.request("POST",
+                                   "https://api.siliconflow.cn/v1/chat/completions",
+                                   headers: ["Authorization": "Bearer \(key)",
+                                             "Content-Type": "application/json"],
+                                   body: payload,
+                                   timeout: 180)
+        }
+        let json = HTTP.json(from: data)
+        if let err = json["error"] as? [String: Any] {
+            let msg = (err["message"] as? String) ?? "خطأ غير معروف"
+            throw APIError(status: 0, body: "SiliconFlow: \(msg)")
+        }
+        var text = ""
+        if let choices = json["choices"] as? [[String: Any]],
+           let message = choices.first?["message"] as? [String: Any],
+           let content = message["content"] as? String {
+            text = content
+        }
+        guard !text.isEmpty else {
+            throw APIError(status: 0, body: "استجابة SiliconFlow فارغة")
         }
         return parseLines(rawJSON: text, batch: batch)
     }

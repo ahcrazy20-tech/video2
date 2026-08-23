@@ -230,6 +230,24 @@ struct SavedVideo: Identifiable, Codable, Hashable {
     /// كود لغة الترجمة الهدف (مثل "ar")
     var subtitleTargetLang: String?
 
+    /// مسار ملف الدبلجة الصوتي (m4a) نسبةً إلى مجلد المستندات
+    var dubbedAudioPath: String?
+    /// معلومات عن الدبلجة
+    var dubbedInfo: DubbedInfo?
+
+    var hasDubbedAudio: Bool {
+        guard let p = dubbedAudioPath else { return false }
+        return FileManager.default.fileExists(atPath: LibraryStore.documents.appendingPathComponent(p).path)
+    }
+
+    struct DubbedInfo: Codable, Hashable {
+        var provider: String  // معرّف المزود
+        var voice: String     // معرّف الصوت
+        var language: String  // BCP-47
+        var createdAt: Date
+        var totalDuration: Double
+    }
+
     var localURL: URL {
         LibraryStore.documents.appendingPathComponent(localRelativePath)
     }
