@@ -188,6 +188,11 @@ enum EdgeTTSClient {
         return approximateMP3Duration(bytes: data.count)
     }
 
+    /// تقدير تقريبي لمدة MP3 بناءً على حجم البيانات (24kbps mono).
+    static func approximateMP3Duration(bytes: Int) -> Double {
+        SpeechNarrator.approximateMP3Duration(bytes: bytes)
+    }
+
     private static func synthesizeInternal(text: String, voice: String) async throws -> Data {
 
         let token = secMSGEC()
@@ -220,7 +225,7 @@ enum EdgeTTSClient {
         """
         try await ws.send(.string(config))
 
-        let lang = SpeechNarrator.bcp47(voiceLang(voice))
+        let lang = SpeechNarrator.bcp47(SpeechNarrator.voiceLang(voice))
         let ssml = """
         <speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='\(lang)'><voice name='\(voice)'>\(escapeXML(text))</voice></speak>
         """

@@ -311,12 +311,7 @@ struct DubbingView: View {
                                          voice: currentVoice,
                                          stretchToFit: stretchToFit,
                                          maxConcurrent: Int(concurrency))
-                let result = try await service.dub(request: req, outputURL: outURL) { p, status in
-                    DispatchQueue.main.async {
-                        service.progress = p
-                        service.statusText = status
-                    }
-                }
+                let result = try await service.dub(request: req, outputURL: outURL)
                 await MainActor.run {
                     lastResult = result
                     dubbingCompleted = true
@@ -420,12 +415,5 @@ extension DubbingService {
         case .auto:
             return try await EdgeTTSClient.synthesizeAndSave(text: text, voice: voice.id, outputURL: outputURL)
         }
-    }
-
-    @MainActor
-    func cancel() {
-        currentTask?.cancel()
-        currentTask = nil
-        inProgress = false
     }
 }
