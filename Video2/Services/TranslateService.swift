@@ -273,12 +273,12 @@ enum TranslateService {
         ]
         let payload = try JSONSerialization.data(withJSONObject: body)
         let (data, _) = try await HTTP.withRetry(attempts: 5, baseDelay: 6) {
-            try await HTTP.request("POST",
-                                   "https://api.siliconflow.cn/v1/chat/completions",
-                                   headers: ["Authorization": "Bearer \(key)",
-                                             "Content-Type": "application/json"],
-                                   body: payload,
-                                   timeout: 180)
+            try await SiliconFlowAPI.request("POST",
+                                                path: "/chat/completions",
+                                                key: key,
+                                                headers: ["Content-Type": "application/json"],
+                                                body: payload,
+                                                timeout: 180)
         }
         let json = HTTP.json(from: data)
         if let err = json["error"] as? [String: Any] {

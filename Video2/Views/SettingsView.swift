@@ -153,71 +153,39 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    // === موديل الترجمة (اختيار مرئي) ===
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("موديل الترجمة")
+                    // === موديل الترجمة (العناصر تحت بعضها لسهولة القراءة) ===
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text("الموديل المستخدم فعلياً للترجمة")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
-                        HStack(spacing: 8) {
-                            Text(displayedTranslatorModel)
-                                .font(.footnote)
-                                .environment(\.layoutDirection, .leftToRight)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Spacer()
-                            Button {
-                                openModelPicker(provider: .gemini, purpose: .translation)
-                            } label: {
-                                Label("اختيار", systemImage: "list.bullet.rectangle")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            Button {
-                                openModelPicker(provider: .siliconflow, purpose: .translation)
-                            } label: {
-                                Label("SiliconFlow", systemImage: "cpu")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
+                        modelNameLine(provider: resolvedTranslatorProviderName,
+                                      model: displayedTranslatorModel)
+                        if let provider = translatorCatalogProvider {
+                            modelPickerButton(title: "اختيار موديل \(provider.titleAR)",
+                                              provider: provider,
+                                              purpose: .translation)
+                        } else {
+                            Text("هذا المزود لا يحتاج اختيار موديل.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
-                        Text("اضغط «اختيار» لفتح شاشة الموديلات المتاحة مع ترشيحات ⭐.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, 2)
+                    .padding(.vertical, 4)
 
-                    // === موديل التفريغ (اختيار مرئي) ===
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("موديل التفريغ")
+                    // === موديل التفريغ ===
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text("الموديل المستخدم فعلياً للتفريغ")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
-                        HStack(spacing: 8) {
-                            Text(displayedSTTModel)
-                                .font(.footnote)
-                                .environment(\.layoutDirection, .leftToRight)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Spacer()
-                            Button {
-                                openModelPicker(provider: .groq, purpose: .transcription)
-                            } label: {
-                                Label("اختيار", systemImage: "list.bullet.rectangle")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            Button {
-                                openModelPicker(provider: .siliconflow, purpose: .transcription)
-                            } label: {
-                                Label("SenseVoice", systemImage: "waveform")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
+                        modelNameLine(provider: resolvedSTT.titleAR,
+                                      model: displayedSTTModel)
+                        if let provider = sttCatalogProvider {
+                            modelPickerButton(title: "اختيار موديل \(provider.titleAR)",
+                                              provider: provider,
+                                              purpose: .transcription)
                         }
-                        Text("اضغط «اختيار» لاستعراض موديلات التفريغ المتاحة (Whisper, SenseVoice).")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, 2)
+                    .padding(.vertical, 4)
 
                     Stepper("توازي التفريغ: \(sttConcurrency)", value: $sttConcurrency, in: 1...4)
                     Text("عدد أجزاء الصوت التي تُفرَّغ معاً. قلّله عند ظهور أخطاء 429.")
@@ -306,22 +274,83 @@ struct SettingsView: View {
 
     // MARK: - مساعدات الموديلات
 
+    private var resolvedTranslator: TranslatorKind {
+        TranslateService.resolved(provider: TranslatorKind(rawValue: translatorRaw) ?? .auto)
+    }
+
+    private var resolvedSTT: STTProviderKind {
+        TranslationManager.resolvedSTT(STTProviderKind(rawValue: sttProviderRaw) ?? .auto)
+    }
+
+    private var translatorCatalogProvider: ModelProvider? {
+        switch resolvedTranslator {
+        case .gemini: return .gemini
+        case .groqLLM: return .groq
+        case .siliconflow: return .siliconflow
+        case .deepL, .auto: return nil
+        }
+    }
+
+    private var sttCatalogProvider: ModelProvider? {
+        switch resolvedSTT {
+        case .groq: return .groq
+        case .siliconflow: return .siliconflow
+        default: return nil
+        }
+    }
+
+    private var resolvedTranslatorProviderName: String {
+        resolvedTranslator == .auto ? "غير محدد" : resolvedTranslator.titleAR
+    }
+
     private var displayedTranslatorModel: String {
-        if let m = UserDefaults.standard.string(forKey: "translator.model"), !m.isEmpty { return m }
-        if !geminiModel.isEmpty { return geminiModel }
-        return "gemini-2.5-flash"
+        switch resolvedTranslator {
+        case .gemini:
+            return ModelSelection.selected(purpose: "translator", provider: .gemini, fallback: geminiModel)
+        case .groqLLM:
+            return ModelSelection.selected(purpose: "translator", provider: .groq, fallback: "openai/gpt-oss-120b")
+        case .siliconflow:
+            return ModelSelection.selected(purpose: "translator", provider: .siliconflow, fallback: "Qwen/Qwen2.5-72B-Instruct")
+        case .deepL: return "DeepL API"
+        case .auto: return "—"
+        }
     }
 
     private var displayedSTTModel: String {
-        if let m = UserDefaults.standard.string(forKey: "stt.model"), !m.isEmpty { return m }
-        switch sttProviderRaw {
-        case "groq": return "whisper-large-v3-turbo"
-        case "siliconflow": return "FunAudioLLM/SenseVoiceSmall"
-        case "assemblyai": return "universal"
-        case "speechmatics": return "default"
-        case "sttai": return "whisper-large-v3"
-        default: return "whisper-large-v3-turbo"
+        switch resolvedSTT {
+        case .groq:
+            return ModelSelection.selected(purpose: "stt", provider: .groq, fallback: "whisper-large-v3-turbo")
+        case .siliconflow:
+            return ModelSelection.selected(purpose: "stt", provider: .siliconflow, fallback: "FunAudioLLM/SenseVoiceSmall")
+        case .assemblyai: return "universal"
+        case .speechmatics: return "default"
+        case .sttai: return "whisper-large-v3"
+        case .auto: return "—"
         }
+    }
+
+    private func modelNameLine(provider: String, model: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(provider).font(.caption)
+            Text(model)
+                .font(.footnote.monospaced())
+                .environment(\.layoutDirection, .leftToRight)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(2)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(V2Theme.card, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func modelPickerButton(title: String,
+                                   provider: ModelProvider,
+                                   purpose: ModelPickerView.ModelPurpose) -> some View {
+        Button { openModelPicker(provider: provider, purpose: purpose) } label: {
+            Label(title, systemImage: "list.bullet.rectangle")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
     }
 
     private func openModelPicker(provider: ModelProvider, purpose: ModelPickerView.ModelPurpose) {
@@ -452,6 +481,22 @@ struct APIKeyRow: View {
 
 enum KeyTester {
     static func verify(provider: String, key: String) async -> String {
+        let key = KeychainStore.normalized(key)
+        if provider == "siliconflow" {
+            do {
+                _ = try await SiliconFlowAPI.request("GET", path: "/models", key: key, timeout: 30)
+                return "✅ المفتاح يعمل بنجاح"
+            } catch let e as APIError {
+                if e.status == 401 { return "❌ المفتاح مرفوض على النطاقين العالمي والصيني (401) — تأكد أنه API Key وليس كلمة مرور الحساب" }
+                if e.status == 403 { return "❌ الحساب مقيّد أو الشبكة محجوبة (403) — جرّب بيانات الهاتف أو VPN" }
+                if e.status == 429 { return "⚠️ المفتاح يعمل لكن وصلت لحد الطلبات مؤقتاً"
+                }
+                return "⚠️ استجابة SiliconFlow غير متوقعة (رمز \(e.status))"
+            } catch {
+                return "⚠️ تعذر الاتصال بـ SiliconFlow — تحقق من الإنترنت"
+            }
+        }
+
         let url: String
         var headers: [String: String] = [:]
         switch provider {

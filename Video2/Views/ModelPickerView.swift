@@ -78,6 +78,10 @@ struct ModelPickerView: View {
                 }
                 .searchable(text: $searchText, prompt: "ابحث في الموديلات")
         }
+        // نحافظ على إحداثيات الشاشة LTR هنا لأن iOS 16 كان يعكس الـ List كاملة
+        // داخل الـ sheet في الواجهة العربية (فتظهر حتى أسماء الموديلات بالمقلوب).
+        // النص العربي نفسه يظل يُرسم RTL تلقائياً بواسطة Unicode.
+        .environment(\.layoutDirection, .leftToRight)
         .task {
             // اجلب الموديلات تلقائياً عند الفتح إذا لم تكن محفوظة أو انتهت صلاحيتها
             if catalog.models(for: provider).isEmpty {
@@ -244,12 +248,20 @@ struct ModelPickerView: View {
     // MARK: - الاختيار
 
     private var currentSelection: String {
-        UserDefaults.standard.string(forKey: purpose.defaultsKey) ?? ""
+        UserDefaults.standard.string(forKey: ModelSelection.key(purpose: selectionPurpose, provider: provider)) ?? ""
+    }
+
+    private var selectionPurpose: String {
+        switch purpose {
+        case .translation: return "translator"
+        case .transcription: return "stt"
+        case .tts: return "tts"
+        case .any: return "generic"
+        }
     }
 
     private func select(_ entry: ModelEntry) {
-        UserDefaults.standard.set(entry.rawID, forKey: purpose.defaultsKey)
-        // أيضاً حافظ على المفاتيح القديمة المستخدمة داخل الكود
+        ModelSelection.save(entry.rawID, purpose: selectionPurpose, provider: provider)
         if provider == .gemini && purpose == .translation {
             UserDefaults.standard.set(entry.rawID, forKey: "gemini.model")
         }

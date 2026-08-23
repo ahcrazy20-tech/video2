@@ -383,11 +383,52 @@ struct NewTranslationView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
+            VStack(alignment: .leading, spacing: 6) {
+                Label("سيُستخدم فعلياً", systemImage: "cpu")
+                    .font(.caption.bold())
+                    .foregroundStyle(V2Theme.gold)
+                Text("التفريغ: \(resolvedSTT.titleAR)")
+                    .font(.caption2)
+                BidiText(text: sttModelName, font: .caption.monospaced(), lineLimit: 2)
+                Text("الترجمة: \(resolvedTranslator.titleAR)")
+                    .font(.caption2)
+                BidiText(text: translatorModelName, font: .caption.monospaced(), lineLimit: 2)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(V2Theme.card, in: RoundedRectangle(cornerRadius: 10))
+
             if let message = startError, !didAttemptStart {
                 Label(message, systemImage: "info.circle")
                     .font(.caption2)
                     .foregroundStyle(.orange)
             }
+        }
+    }
+
+    private var sttModelName: String {
+        switch resolvedSTT {
+        case .groq:
+            return ModelSelection.selected(purpose: "stt", provider: .groq, fallback: "whisper-large-v3-turbo")
+        case .siliconflow:
+            return ModelSelection.selected(purpose: "stt", provider: .siliconflow, fallback: "FunAudioLLM/SenseVoiceSmall")
+        case .assemblyai: return "universal"
+        case .sttai: return "whisper-large-v3"
+        case .speechmatics: return "default"
+        case .auto: return "—"
+        }
+    }
+
+    private var translatorModelName: String {
+        switch resolvedTranslator {
+        case .gemini:
+            return ModelSelection.selected(purpose: "translator", provider: .gemini, fallback: "gemini-2.5-flash")
+        case .groqLLM:
+            return ModelSelection.selected(purpose: "translator", provider: .groq, fallback: "openai/gpt-oss-120b")
+        case .siliconflow:
+            return ModelSelection.selected(purpose: "translator", provider: .siliconflow, fallback: "Qwen/Qwen2.5-72B-Instruct")
+        case .deepL: return "DeepL API"
+        case .auto: return "—"
         }
     }
 

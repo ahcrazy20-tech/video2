@@ -38,6 +38,8 @@ struct RootView: View {
             }
         }
         .background(V2Theme.bg.ignoresSafeArea())
+        // اتجاه موحّد لكل الشاشات بدلاً من اعتماد كل View على لغة الجهاز.
+        .environment(\.layoutDirection, lang.isRTL ? .rightToLeft : .leftToRight)
         .id(lang.code)
     }
 }

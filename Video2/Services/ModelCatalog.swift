@@ -123,6 +123,31 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - اختيار الموديل لكل مزود
+
+enum ModelSelection {
+    static func key(purpose: String, provider: ModelProvider) -> String {
+        "\(purpose).model.\(provider.rawValue)"
+    }
+
+    static func selected(purpose: String, provider: ModelProvider, fallback: String) -> String {
+        if let value = UserDefaults.standard.string(forKey: key(purpose: purpose, provider: provider)), !value.isEmpty {
+            return value
+        }
+        // توافق مع الإصدارات السابقة، لكن فقط للمزوّد المطابق حتى لا يُرسل
+        // موديل Gemini إلى SiliconFlow أو العكس.
+        if provider == .gemini, purpose == "translator",
+           let legacy = UserDefaults.standard.string(forKey: "gemini.model"), !legacy.isEmpty {
+            return legacy
+        }
+        return fallback
+    }
+
+    static func save(_ model: String, purpose: String, provider: ModelProvider) {
+        UserDefaults.standard.set(model, forKey: key(purpose: purpose, provider: provider))
+    }
+}
+
 // MARK: - كتالوج الموديلات
 
 /// يخزّن ويرجع الموديلات من المزودين المختلفين مع تخزين مؤقت محلي.
@@ -181,9 +206,9 @@ final class ModelCatalog: ObservableObject {
                 saveCache()
             case .siliconflow:
                 let key = KeychainStore.get("siliconflow") ?? ""
-                headers = ["Authorization": "Bearer \(key)"]
+                headers = [:]
                 let (data, _) = try await HTTP.withRetry(attempts: 2) {
-                    try await HTTP.request("GET", url, headers: headers, timeout: 30)
+                    try await SiliconFlowAPI.request("GET", path: "/models", key: key, timeout: 30)
                 }
                 let entries = ModelCatalogParser.siliconflow(data: data)
                 models[provider] = entries
