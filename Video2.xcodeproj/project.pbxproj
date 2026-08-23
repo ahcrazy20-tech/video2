@@ -43,6 +43,12 @@
 		A10000000000000100000041 /* AppLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000041 /* AppLock.swift */; };
 		A10000000000000100000042 /* EdgeTTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000042 /* EdgeTTSService.swift */; };
 		A10000000000000100000043 /* StorageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000043 /* StorageManager.swift */; };
+		A10000000000000100000044 /* ModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000044 /* ModelCatalog.swift */; };
+		A10000000000000100000045 /* ModelPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000045 /* ModelPickerView.swift */; };
+		A10000000000000100000046 /* DubbingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000046 /* DubbingService.swift */; };
+		A10000000000000100000047 /* TTSProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000047 /* TTSProviders.swift */; };
+		A10000000000000100000048 /* DubbingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000048 /* DubbingView.swift */; };
+		A10000000000000100000049 /* LocalTTS.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000049 /* LocalTTS.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -85,6 +91,12 @@
 		B10000000000000100000041 /* AppLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLock.swift; sourceTree = "<group>"; };
 		B10000000000000100000042 /* EdgeTTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeTTSService.swift; sourceTree = "<group>"; };
 		B10000000000000100000043 /* StorageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageManager.swift; sourceTree = "<group>"; };
+		B10000000000000100000044 /* ModelCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCatalog.swift; sourceTree = "<group>"; };
+		B10000000000000100000045 /* ModelPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPickerView.swift; sourceTree = "<group>"; };
+		B10000000000000100000046 /* DubbingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DubbingService.swift; sourceTree = "<group>"; };
+		B10000000000000100000047 /* TTSProviders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSProviders.swift; sourceTree = "<group>"; };
+		B10000000000000100000048 /* DubbingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DubbingView.swift; sourceTree = "<group>"; };
+		B10000000000000100000049 /* LocalTTS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalTTS.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -161,6 +173,10 @@
 				B10000000000000100000041 /* AppLock.swift */,
 				B10000000000000100000042 /* EdgeTTSService.swift */,
 				B10000000000000100000043 /* StorageManager.swift */,
+				B10000000000000100000044 /* ModelCatalog.swift */,
+				B10000000000000100000046 /* DubbingService.swift */,
+				B10000000000000100000047 /* TTSProviders.swift */,
+				B10000000000000100000049 /* LocalTTS.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -179,6 +195,8 @@
 				B1000000000000010000000D /* DownloadsView.swift */,
 				B1000000000000010000000E /* SettingsView.swift */,
 				B10000000000000100000040 /* FormatConversionView.swift */,
+				B10000000000000100000045 /* ModelPickerView.swift */,
+				B10000000000000100000048 /* DubbingView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -296,6 +314,12 @@
 				A10000000000000100000041 /* AppLock.swift in Sources */,
 				A10000000000000100000042 /* EdgeTTSService.swift in Sources */,
 				A10000000000000100000043 /* StorageManager.swift in Sources */,
+				A10000000000000100000044 /* ModelCatalog.swift in Sources */,
+				A10000000000000100000045 /* ModelPickerView.swift in Sources */,
+				A10000000000000100000046 /* DubbingService.swift in Sources */,
+				A10000000000000100000047 /* TTSProviders.swift in Sources */,
+				A10000000000000100000048 /* DubbingView.swift in Sources */,
+				A10000000000000100000049 /* LocalTTS.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

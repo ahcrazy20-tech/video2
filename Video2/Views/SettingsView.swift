@@ -10,12 +10,19 @@ struct SettingsView: View {
 
     @AppStorage("stt.provider") private var sttProviderRaw: String = STTProviderKind.auto.rawValue
     @AppStorage("tr.provider") private var translatorRaw: String = TranslatorKind.auto.rawValue
-    @AppStorage("gemini.model") private var geminiModel: String = "gemini-2.0-flash"
+    @AppStorage("gemini.model") private var geminiModel: String = "gemini-2.5-flash"
     @AppStorage("stt.concurrency") private var sttConcurrency: Int = 3
     @AppStorage("dl.maxHeight") private var downloadMaxHeight: Int = 0
     @AppStorage("tts.edge") private var preferEdgeTTS: Bool = true
     @State private var storage = StorageManager.report()
     @State private var storageMessage: String?
+    @State private var modelPickerConfig: ModelPickerConfig? = nil
+
+    struct ModelPickerConfig: Identifiable {
+        let id = UUID()
+        let provider: ModelProvider
+        let purpose: ModelPickerView.ModelPurpose
+    }
 
     var body: some View {
         NavigationStack {
@@ -87,6 +94,14 @@ struct SettingsView: View {
                               placeholder: "AIza...",
                               keyID: "gemini",
                               hint: "للترجمة النصية السياقية — شريحة مجانية سخية.")
+                    APIKeyRow(title: "مفتاح SiliconFlow",
+                              placeholder: "sk-...",
+                              keyID: "siliconflow",
+                              hint: "Qwen 2.5 72B / DeepSeek V3 للترجمة، SenseVoice للتفريغ، CosyVoice للدبلجة. من siliconflow.cn — شريحة مجانية سخية.")
+                    APIKeyRow(title: "مفتاح ElevenLabs",
+                              placeholder: "xi-api-key",
+                              keyID: "elevenlabs",
+                              hint: "أفضل جودة بشرية للدبلجة — 10K حرف/شهر مجاناً. متعدد اللغات بـ Multilingual v2.")
                     APIKeyRow(title: "مفتاح AssemblyAI",
                               placeholder: "من لوحة التحكم",
                               keyID: "assemblyai",
@@ -138,11 +153,71 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    TextField("موديل Gemini (gemini-2.0-flash)", text: $geminiModel)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.footnote)
-                        .environment(\.layoutDirection, .leftToRight)
+                    // === موديل الترجمة (اختيار مرئي) ===
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("موديل الترجمة")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            Text(displayedTranslatorModel)
+                                .font(.footnote)
+                                .environment(\.layoutDirection, .leftToRight)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                            Button {
+                                openModelPicker(provider: .gemini, purpose: .translation)
+                            } label: {
+                                Label("اختيار", systemImage: "list.bullet.rectangle")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            Button {
+                                openModelPicker(provider: .siliconflow, purpose: .translation)
+                            } label: {
+                                Label("SiliconFlow", systemImage: "cpu")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        Text("اضغط «اختيار» لفتح شاشة الموديلات المتاحة مع ترشيحات ⭐.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 2)
+
+                    // === موديل التفريغ (اختيار مرئي) ===
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("موديل التفريغ")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            Text(displayedSTTModel)
+                                .font(.footnote)
+                                .environment(\.layoutDirection, .leftToRight)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                            Button {
+                                openModelPicker(provider: .groq, purpose: .transcription)
+                            } label: {
+                                Label("اختيار", systemImage: "list.bullet.rectangle")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            Button {
+                                openModelPicker(provider: .siliconflow, purpose: .transcription)
+                            } label: {
+                                Label("SenseVoice", systemImage: "waveform")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        Text("اضغط «اختيار» لاستعراض موديلات التفريغ المتاحة (Whisper, SenseVoice).")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 2)
 
                     Stepper("توازي التفريغ: \(sttConcurrency)", value: $sttConcurrency, in: 1...4)
                     Text("عدد أجزاء الصوت التي تُفرَّغ معاً. قلّله عند ظهور أخطاء 429.")
@@ -216,6 +291,9 @@ struct SettingsView: View {
             }
             .navigationTitle(lang.t("tab.settings"))
             .onAppear { storage = StorageManager.report() }
+            .sheet(item: $modelPickerConfig) { config in
+                ModelPickerView(provider: config.provider, purpose: config.purpose)
+            }
         }
     }
 
@@ -224,6 +302,30 @@ struct SettingsView: View {
         guard let data = try? Data(contentsOf: url) else { return [] }
         if let idx = try? JSONDecoder().decode(LibraryIndex.self, from: data) { return idx.videos }
         return (try? JSONDecoder().decode([SavedVideo].self, from: data)) ?? []
+    }
+
+    // MARK: - مساعدات الموديلات
+
+    private var displayedTranslatorModel: String {
+        if let m = UserDefaults.standard.string(forKey: "translator.model"), !m.isEmpty { return m }
+        if !geminiModel.isEmpty { return geminiModel }
+        return "gemini-2.5-flash"
+    }
+
+    private var displayedSTTModel: String {
+        if let m = UserDefaults.standard.string(forKey: "stt.model"), !m.isEmpty { return m }
+        switch sttProviderRaw {
+        case "groq": return "whisper-large-v3-turbo"
+        case "siliconflow": return "FunAudioLLM/SenseVoiceSmall"
+        case "assemblyai": return "universal"
+        case "speechmatics": return "default"
+        case "sttai": return "whisper-large-v3"
+        default: return "whisper-large-v3-turbo"
+        }
+    }
+
+    private func openModelPicker(provider: ModelProvider, purpose: ModelPickerView.ModelPurpose) {
+        modelPickerConfig = ModelPickerConfig(provider: provider, purpose: purpose)
     }
 
     private func howBullet(_ n: String, _ text: String) -> some View {
@@ -358,6 +460,12 @@ enum KeyTester {
             headers = ["Authorization": "Bearer \(key)"]
         case "gemini":
             url = "https://generativelanguage.googleapis.com/v1beta/models?key=\(key)"
+        case "siliconflow":
+            url = "https://api.siliconflow.cn/v1/models"
+            headers = ["Authorization": "Bearer \(key)"]
+        case "elevenlabs":
+            url = "https://api.elevenlabs.io/v1/user"
+            headers = ["xi-api-key": key]
         case "assemblyai":
             url = "https://api.assemblyai.com/v2/transcript?limit=1"
             headers = ["Authorization": key]
