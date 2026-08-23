@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Cue (سطر ترجمة واحد بتوقيته)
 
-struct SubCue: Codable, Equatable {
+struct SubCue: Codable, Equatable, Sendable {
     var id: Int
     var start: Double
     var end: Double

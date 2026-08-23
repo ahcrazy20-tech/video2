@@ -4,7 +4,7 @@ import AVFoundation
 // MARK: - إعدادات الدبلجة
 
 /// كل ما يتعلق ببناء مسار صوتي واحد من جُمل الترجمة.
-struct DubbingRequest {
+struct DubbingRequest: Sendable {
     var cues: [SubCue]              // جُمل الترجمة (يجب أن يحتوي كل منها على translated != nil)
     var targetLang: SubLang
     var provider: DubbingProvider
@@ -19,7 +19,7 @@ struct DubbingRequest {
     }
 }
 
-enum DubbingProvider: String, Codable, CaseIterable, Identifiable {
+enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     case edge        // Microsoft Edge (مجاني بدون مفتاح)
     case groqPlayAI  // Groq PlayAI TTS (نفس مفتاح Groq)
     case siliconflow // SiliconFlow CosyVoice (مفتوح، أفضل جودة)
@@ -76,7 +76,7 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable {
 }
 
 /// وصف صوت واحد في مزوّد ما.
-struct DubbingVoice: Codable, Hashable, Identifiable {
+struct DubbingVoice: Codable, Hashable, Identifiable, Sendable {
     var id: String                  // المعرّف الفريد (مثل "ar-SA-ZariyahNeural")
     var name: String                // اسم وصفي
     var language: String           // BCP-47
@@ -99,7 +99,7 @@ struct DubbingVoice: Codable, Hashable, Identifiable {
 
 // MARK: - نتائج الدبلجة
 
-struct DubbingResult {
+struct DubbingResult: Sendable {
     let audioFileURL: URL          // ملف صوتي نهائي (m4a/aac)
     let totalDuration: Double
     let cuesCount: Int
