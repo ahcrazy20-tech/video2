@@ -56,7 +56,7 @@ enum LocalTTS {
         let finalDuration = duration.isFinite ? duration : estimateDuration(for: text)
 
         // تحويل من WAV إلى M4A (AAC) لتوافق AVFoundation واقتصاد الحجم
-        try convertWAVToM4A(wavURL: wavURL, outputURL: outputURL)
+        try await convertWAVToM4A(wavURL: wavURL, outputURL: outputURL)
         try? FileManager.default.removeItem(at: wavURL)
 
         return finalDuration
@@ -103,7 +103,7 @@ enum LocalTTS {
     }
 
     /// تحويل WAV → M4A عبر AVAssetExportSession
-    private static func convertWAVToM4A(wavURL: URL, outputURL: URL) throws {
+    private static func convertWAVToM4A(wavURL: URL, outputURL: URL) async throws {
         if FileManager.default.fileExists(atPath: outputURL.path) {
             try? FileManager.default.removeItem(at: outputURL)
         }
@@ -118,9 +118,11 @@ enum LocalTTS {
         exporter.outputFileType = .m4a
         exporter.shouldOptimizeForNetworkUse = false
 
-        let sema = DispatchSemaphore(value: 0)
-        exporter.exportAsynchronously { sema.signal() }
-        _ = sema.wait(timeout: .now() + 60)
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            exporter.exportAsynchronously {
+                cont.resume()
+            }
+        }
         if exporter.status != .completed {
             // fallback: انسخ WAV كـ m4a (مزيف بس مفيش crash)
             try FileManager.default.copyItem(at: wavURL, to: outputURL)
