@@ -28,7 +28,9 @@ jobs:
       - name: Build
         run: |
           set -euo pipefail
-          xcodebuild -project Video2.xcodeproj -scheme Video2 -configuration Release -sdk iphoneos -derivedDataPath derived -destination 'generic/platform=iOS' CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO DEVELOPMENT_TEAM="" PRODUCT_BUNDLE_IDENTIFIER=com.ahcrazy.video2 IPHONEOS_DEPLOYMENT_TARGET=16.4 ONLY_ACTIVE_ARCH=NO build
+          set -o pipefail
+          xcodebuild -project Video2.xcodeproj -scheme Video2 -configuration Release -sdk iphoneos -derivedDataPath derived -destination 'generic/platform=iOS' CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO DEVELOPMENT_TEAM="" PRODUCT_BUNDLE_IDENTIFIER=com.ahcrazy.video2 IPHONEOS_DEPLOYMENT_TARGET=16.4 ONLY_ACTIVE_ARCH=NO build 2>&1 | tee build.log | tail -200
+          echo "=== exit ${PIPESTATUS[0]} ==="
 
       - name: Package IPA
         run: |
@@ -47,3 +49,11 @@ jobs:
           name: Video2-TrollStore
           path: Video2.ipa
           if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
