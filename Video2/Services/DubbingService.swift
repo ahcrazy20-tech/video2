@@ -264,18 +264,45 @@ final class DubbingService: ObservableObject {
                              voice: voice)
     }
 
-    // MARK: - توليد صوت جملة واحدة
+    // MARK: - توليد صوت جملة واحدة (مع fallback تلقائي)
 
+    /// توليد صوت جملة — لو المزود الأساسي فشل (مثل Edge TTS محجوب)، يجرب تلقائياً صوت الجهاز.
     private func synthesizeOne(text: String,
                                voice: DubbingVoice,
                                provider: DubbingProvider,
                                outputURL: URL,
                                sampleRate: Int) async throws -> Double {
+        do {
+            return try await synthesizeOnePrimary(text: text, voice: voice, provider: provider, outputURL: outputURL, sampleRate: sampleRate)
+        } catch {
+            // الاحتياطي: صوت الجهاز — يعمل أوفلاين 100%
+            if Task.isCancelled { throw CancellationError() }
+            return try await LocalTTS.synthesizeToFile(text: text, voice: voice, outputURL: outputURL)
+        }
+    }
+
+    nonisolated private static func synthesizeOneStatic(text: String,
+                                                        voice: DubbingVoice,
+                                                        provider: DubbingProvider,
+                                                        outputURL: URL,
+                                                        sampleRate: Int) async throws -> Double {
+        do {
+            return try await synthesizeOnePrimaryStatic(text: text, voice: voice, provider: provider, outputURL: outputURL, sampleRate: sampleRate)
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            return try await LocalTTS.synthesizeToFile(text: text, voice: voice, outputURL: outputURL)
+        }
+    }
+
+    /// المحاولة الأولى (المزود السحابي المختار)
+    private func synthesizeOnePrimary(text: String,
+                                     voice: DubbingVoice,
+                                     provider: DubbingProvider,
+                                     outputURL: URL,
+                                     sampleRate: Int) async throws -> Double {
         switch provider {
         case .edge:
-            return try await EdgeTTSClient.synthesizeAndSave(text: text,
-                                                             voice: voice.id,
-                                                             outputURL: outputURL)
+            return try await EdgeTTSClient.synthesizeAndSave(text: text, voice: voice.id, outputURL: outputURL)
         case .groqPlayAI:
             return try await GroqTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
         case .siliconflow:
@@ -287,11 +314,11 @@ final class DubbingService: ObservableObject {
         }
     }
 
-    nonisolated private static func synthesizeOneStatic(text: String,
-                                                        voice: DubbingVoice,
-                                                        provider: DubbingProvider,
-                                                        outputURL: URL,
-                                                        sampleRate: Int) async throws -> Double {
+    nonisolated private static func synthesizeOnePrimaryStatic(text: String,
+                                                              voice: DubbingVoice,
+                                                              provider: DubbingProvider,
+                                                              outputURL: URL,
+                                                              sampleRate: Int) async throws -> Double {
         switch provider {
         case .edge:
             return try await EdgeTTSClient.synthesizeAndSave(text: text, voice: voice.id, outputURL: outputURL)
