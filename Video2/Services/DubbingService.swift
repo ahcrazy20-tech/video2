@@ -124,6 +124,7 @@ final class DubbingService: ObservableObject {
     private(set) var lastResolvedLangRaw: String = ""
 
     private var currentTask: Task<DubbingResult, Error>?
+    private var currentTaskID: UUID?
 
     private init() {}
 
@@ -146,6 +147,8 @@ final class DubbingService: ObservableObject {
         guard !translatable.isEmpty else { throw DubbingError.noTranslations }
 
         // نشغّل داخل Task قابل للإلغاء، ثم نُرجع النتيجة
+        currentTask?.cancel()
+        let taskID = UUID()
         let task = Task { [weak self] in
             guard let self else { throw DubbingError.emptyCues }
             return try await self.runDub(request: request,
@@ -154,8 +157,22 @@ final class DubbingService: ObservableObject {
                                          onProgress: onProgress)
         }
         currentTask = task
-        defer { if currentTask === task { currentTask = nil } }
+        currentTaskID = taskID
+        defer {
+            if currentTaskID == taskID {
+                currentTask = nil
+                currentTaskID = nil
+            }
+        }
         return try await task.value
+    }
+
+    func cancel() {
+        currentTask?.cancel()
+        currentTask = nil
+        currentTaskID = nil
+        inProgress = false
+        statusText = ""
     }
 
     // MARK: - التنفيذ الفعلي
@@ -195,7 +212,7 @@ final class DubbingService: ObservableObject {
 
         // تسلسلي لتجنّب 429، أو متوازي حسب الإعداد
         if request.maxConcurrent <= 1 {
-            for (i, cue) in translatable.enumerated() {
+            for cue in translatable {
                 if Task.isCancelled { throw CancellationError() }
                 let text = cue.translated ?? cue.text
                 let url = tempDir.appendingPathComponent("cue-\(cue.id).\(perCueExt)")
@@ -207,16 +224,20 @@ final class DubbingService: ObservableObject {
                 generated.append((cue, url, dur))
                 let p = Double(generated.count) / total
                 progress = 0.85 * p
-                onProgress?(p, "توليد الصوت \(generated.count)/\(translatable.count)")
+                onProgress?(progress, "توليد الصوت \(generated.count)/\(translatable.count)")
             }
         } else {
             // متوازي مع سقف
+            let maxConcurrent = max(1, request.maxConcurrent)
             try await withThrowingTaskGroup(of: (SubCue, URL, Double).self) { group in
                 var pending = Array(translatable)
                 var done = 0
-                while !pending.isEmpty || !group.isEmpty {
+                var inFlight = 0
+
+                while !pending.isEmpty || inFlight > 0 {
                     if Task.isCancelled { throw CancellationError() }
-                    while pending.count > 0 && group.activeTasks.count < request.maxConcurrent {
+
+                    while !pending.isEmpty && inFlight < maxConcurrent {
                         let cue = pending.removeFirst()
                         let text = cue.translated ?? cue.text
                         let url = tempDir.appendingPathComponent("cue-\(cue.id).\(perCueExt)")
@@ -230,8 +251,11 @@ final class DubbingService: ObservableObject {
                                                                                    sampleRate: sampleRate)
                             return (cue, url, dur)
                         }
+                        inFlight += 1
                     }
+
                     if let result = try await group.next() {
+                        inFlight -= 1
                         done += 1
                         generated.append(result)
                         progress = 0.85 * Double(done) / total
