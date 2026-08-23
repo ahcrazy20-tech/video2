@@ -20,11 +20,14 @@ enum LocalTTS {
         let voiceObj = bestVoice(for: voice)
 
         // تأكد من تفعيل session للتسجيل
-        #if os(iOS)
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .spokenAudio, options: [.mixWithOthers])
-        try? session.setActive(true)
-        #endif
+        // AVAudioSession يجب أن يضبط على MainActor لتجنب التحذيرات
+        await MainActor.run {
+            #if os(iOS)
+            let session = AVAudioSession.sharedInstance()
+            try? session.setCategory(.playback, mode: .spokenAudio, options: [.mixWithOthers])
+            try? session.setActive(true)
+            #endif
+        }
 
         // ملف WAV مؤقت (لتسجيل AVSpeech بدقة)
         let wavURL = outputURL.deletingPathExtension().appendingPathExtension("wav")

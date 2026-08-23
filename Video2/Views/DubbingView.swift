@@ -406,6 +406,7 @@ struct DubbingView: View {
 
 extension DubbingService {
     /// معاينة صوت بدون دبلجة كاملة
+    @MainActor
     func preview(text: String, voice: DubbingVoice, outputURL: URL) async throws -> Double {
         switch voice.provider {
         case .edge:
@@ -421,6 +422,7 @@ extension DubbingService {
         }
     }
 
+    @MainActor
     func cancel() {
         currentTask?.cancel()
         currentTask = nil

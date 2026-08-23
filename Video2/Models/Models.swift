@@ -208,7 +208,7 @@ struct DetectedMedia: Identifiable, Hashable, Codable {
     }
 }
 
-struct SavedVideo: Identifiable, Codable, Hashable {
+struct SavedVideo: Identifiable, Codable, Hashable, Sendable {
     var id: UUID
     var title: String
     var sourceURL: String
