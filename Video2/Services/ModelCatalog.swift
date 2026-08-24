@@ -229,6 +229,13 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    /// مزوّدات تُجلب قوائمها "حيّة" من واجهة عامة (بدون مفتاح) لأن تشكيلها
+    /// يتغيّر باستمرار — لا يمكن تثبيتها في التطبيق. حالياً OpenRouter فقط:
+    /// قائمة الموديلات المجانية (‎:free) تُضاف وتُحذف باستمرار.
+    var hasLiveFreeCatalog: Bool {
+        self == .openRouter
+    }
+
     /// رابط جلب الموديلات
     var modelsURL: String? {
         switch self {
@@ -265,6 +272,14 @@ enum ModelSelection {
                 if purpose == "translator" {
                     UserDefaults.standard.set(replacement, forKey: "gemini.model")
                 }
+                return replacement
+            }
+            if provider == .openRouter, !clean.hasSuffix(":free") {
+                // موديل OpenRouter محفوظ من إصدار أقدم ولا ينتهي بـ :free (مثل Qwen3
+                // أو أي إصدار أحدث بدون لاحقة) — استخدامه يُمضي من رصيد الحساب.
+                // نرحّله إلى الافتراضي المجاني حتى لا ينفق التطبيق بلا قصد.
+                let replacement = TranslateService.defaultOpenRouterModel
+                save(replacement, purpose: purpose, provider: provider)
                 return replacement
             }
             return clean
@@ -313,13 +328,32 @@ final class ModelCatalog: ObservableObject {
                 models[provider] = ModelCatalogParser.staticCatalog(for: provider)
             }
         }
+        // OpenRouter: قائمة الموديلات المجانية تتغيّر باستمرار — لو البيانات
+        // المحفوظة قديمة أو غير موجودة نحدّثها في الخلفية (API عام بدون مفتاح).
+        for provider in ModelProvider.allCases where provider.hasLiveFreeCatalog {
+            if isStale(provider) {
+                Task { [weak self] in await self?.refresh(provider) }
+            }
+        }
+    }
+
+    /// البيانات المحفوظة للمزوّد غائبة أو أقدم من TTL التخزين المؤقت.
+    func isStale(_ provider: ModelProvider) -> Bool {
+        guard let fetched = lastFetched[provider] else { return true }
+        return Date().timeIntervalSince(fetched) > cacheTTL
     }
 
     // MARK: التحميل
 
     /// يجلب الموديلات من مزوّد معيّن. يُستدعى عند الضغط على زر "تحديث".
     func refresh(_ provider: ModelProvider) async {
-        // مزوّدات القائمة الثابتة (OpenRouter/Cerebras/SambaNova) نعرضها حتى قبل
+        // OpenRouter: نشغّل جلباً حياً لقائمة الموديلات المجانية "الفعليّة" من
+        // الـ API العام (بدون مفتاح). عند الفشل نُبقي القائمة المحفوظة/الثابتة.
+        if provider.hasLiveFreeCatalog {
+            await refreshLiveFree(provider)
+            return
+        }
+        // مزوّدات القائمة الثابتة (Cerebras/SambaNova) نعرضها حتى قبل
         // إدخال المفتاح كي يقارن المستخدم الحصة/السعر، ولا ننفذ GET /models.
         if provider.hasStaticCatalog {
             models[provider] = ModelCatalogParser.staticCatalog(for: provider)
@@ -376,6 +410,29 @@ final class ModelCatalog: ObservableObject {
             lastError[provider] = e.errorDescription ?? "فشل جلب الموديلات (HTTP \(e.status))"
         } catch {
             lastError[provider] = error.localizedDescription
+        }
+    }
+
+    /// جلب حياً لقائمة OpenRouter المجانية (endpoint عام بلا مفتاح).
+    /// لا نُبدي للمستخدم إلا ما هو فعلاً مجاني الآن — القائمة المحفوظة تبقى
+    /// كاحتياط إذا فشل الجلب (Offline مثلاً).
+    private func refreshLiveFree(_ provider: ModelProvider) async {
+        loading.insert(provider)
+        defer { loading.remove(provider) }
+        do {
+            let entries = try await ModelCatalogParser.openRouterFreeLive()
+            guard !entries.isEmpty else {
+                lastError[provider] = "OpenRouter لم يُرجع موديلات مجانية حالياً — القائمة المحفوظة معروضة. جرّب التحديث لاحقاً."
+                return
+            }
+            models[provider] = entries
+            lastError[provider] = nil
+            lastFetched[provider] = Date()
+            saveCache()
+        } catch let e as APIError {
+            lastError[provider] = "تعذر تحديث قائمة OpenRouter المجانية (HTTP \(e.status)). القائمة المحفوظة معروضة — قد تكون قديمة."
+        } catch {
+            lastError[provider] = "تعذر تحديث قائمة OpenRouter المجانية (تحقق من الإنترنت). القائمة المحفوظة معروضة — قد تكون قديمة."
         }
     }
 
@@ -761,59 +818,124 @@ enum ModelCatalogParser {
 
     // MARK: OpenRouter (موديلات :free مجانية بالكامل — بدون فيزا)
     // https://openrouter.ai/api/v1/chat/completions  ·  الموديلات المنتهية بـ :free مجانية
+    //
+    // ⚠️ هام: تشكيل الموديلات المجانية على OpenRouter يتغيّر باستمرار (موديلات
+    // تُضاف وموديلات :free تُسحب — مثل Llama 3.3 وQwen3 Coder وGemma 3 التي أُوقفت
+    // نسخها المجانية). لذلك هذه القائمة المحفوظة "احتياطي" يُستخدم فقط قبل أول
+    // تحديث أو أثناء انقطاع الإنترنت؛ الشاشة تجلب القائمة الفعلية الحيّة من الـ API
+    // العام (openRouterFreeLive) وتعرض ما هو مجاني فعلاً الآن.
+    // آخر تحقق لكل موديل أدناه من API OpenRouter الرسمي: 2026-08-24.
     static func openRouter() -> [ModelEntry] {
         [
-            ModelEntry(rawID: "meta-llama/llama-3.3-70b-instruct:free",
-                       displayName: "Llama 3.3 70B (free)",
+            ModelEntry(rawID: "google/gemma-4-31b-it:free",
+                       displayName: "Gemma 4 31B (free)",
                        provider: .openRouter,
                        capabilities: [.translation, .chat],
-                       contextWindow: 131072,
-                       isMultimodal: false,
+                       contextWindow: 262144,
+                       isMultimodal: true,
                        supportsArabic: true,
-                       descriptionAR: "موديل Meta مفتوح قوي للترجمة السياقية متعددة اللغات. مجاني بالكامل.",
+                       descriptionAR: "موديل Google المفتوح (Gemma 4) — سياق 262K ومتعدد اللغات بما فيها العربية. مجاني بالكامل.",
                        recommended: true,
-                       recommendedReasonAR: "الخيار الافتراضي — أفضل توازن جودة سياقية للترجمة بدون فيزا."),
-            ModelEntry(rawID: "deepseek/deepseek-chat-v3.1:free",
-                       displayName: "DeepSeek V3.1 (free)",
-                       provider: .openRouter,
-                       capabilities: [.translation, .chat],
-                       contextWindow: 163840,
-                       isMultimodal: false,
-                       supportsArabic: true,
-                       descriptionAR: "DeepSeek ممتاز للسياق العربي. (قد يتغيّر التوفر — جرّبه).",
-                       recommended: true,
-                       recommendedReasonAR: "بديل قوي للسياق العربي عند توفر نسخة free."),
-            ModelEntry(rawID: "qwen/qwen3-coder:free",
-                       displayName: "Qwen3 Coder (free)",
+                       recommendedReasonAR: "الخيار الافتراضي الحالي — مجاني ومستقر وجيد للترجمة السياقية."),
+            ModelEntry(rawID: "nvidia/nemotron-3-super-120b-a12b:free",
+                       displayName: "Nemotron 3 Super 120B (free)",
                        provider: .openRouter,
                        capabilities: [.translation, .chat],
                        contextWindow: 262144,
                        isMultimodal: false,
                        supportsArabic: true,
-                       descriptionAR: "Qwen متعدد اللغات بسياق طويل جداً؛ جيد للدفعات الكبيرة.",
+                       descriptionAR: "موديل NVIDIA مفتوح 120B (MoE) — استدلال قوي وسياق 262K. مجاني بالكامل.",
                        recommended: true,
-                       recommendedReasonAR: "سياق ضخم لدفعات ترجمة طويلة بطلب واحد."),
-            ModelEntry(rawID: "google/gemma-3-27b-it:free",
-                       displayName: "Gemma 3 27B (free)",
+                       recommendedReasonAR: "بديل قوي بالسياق الكبير — مجاني بالكامل."),
+            ModelEntry(rawID: "nvidia/nemotron-3-ultra-550b-a55b:free",
+                       displayName: "Nemotron 3 Ultra 550B (free)",
                        provider: .openRouter,
                        capabilities: [.translation, .chat],
-                       contextWindow: 131072,
+                       contextWindow: 1000000,
                        isMultimodal: false,
                        supportsArabic: true,
-                       descriptionAR: "موديل Google مفتوح سريع للترجمة اليومية.",
-                       recommended: false,
-                       recommendedReasonAR: nil),
-            ModelEntry(rawID: "openai/gpt-oss-120b:free",
-                       displayName: "GPT-OSS 120B (free)",
+                       descriptionAR: "أكبر الموديلات المجانية (550B MoE) بسياق مليون token — للدفعات الضخمة.",
+                       recommended: true,
+                       recommendedReasonAR: "سياق ضخم (1M) لدفعات ترجمة طويلة جداً بطلب واحد."),
+            ModelEntry(rawID: "nvidia/nemotron-3-nano-30b-a3b:free",
+                       displayName: "Nemotron 3 Nano 30B (free)",
                        provider: .openRouter,
                        capabilities: [.translation, .chat],
-                       contextWindow: 131072,
+                       contextWindow: 256000,
                        isMultimodal: false,
                        supportsArabic: true,
-                       descriptionAR: "موديل OpenAI مفتوح المصدر؛ جودة عالية. (موديل تفكير — قد ينتج JSON أحياناً داخل وسوم تفكير).",
+                       descriptionAR: "أصغر موديلات Nemotron — الأسرع والأخف، كافٍ للترجمة البسيطة.",
                        recommended: false,
-                       recommendedReasonAR: "جرّبه بحذر: قد يلفّ JSON في وسوم تفكير؛ Llama 3.3 أكثر استقراراً لـ JSON.")
+                       recommendedReasonAR: nil)
         ]
+    }
+
+    // MARK: جلب حياً لقائمة OpenRouter المجانية (API عام بدون مفتاح)
+    //
+    // GET /api/v1/models عام ويعيد كل الموديلات مع أسعارها. نُبقي فقط ما هو
+    // مجاني فعلياً الآن: معرّف ينتهي بـ :free وسعر إدخال/إخراج = 0 ومخرج نصي.
+    // هذا يحل مشكلة "القائمة الثابتة تصبح قديمة": لو OpenRouter أضاف نسخة :free
+    // من Qwen3 (أو أي موديل) ستظهر تلقائياً هنا بعد التحديث.
+    static func openRouterFreeLive() async throws -> [ModelEntry] {
+        let (data, _) = try await HTTP.withRetry(attempts: 2, baseDelay: 2) {
+            try await HTTP.request("GET", "https://openrouter.ai/api/v1/models", timeout: 45)
+        }
+        return parseOpenRouterFree(data)
+    }
+
+    static func parseOpenRouterFree(_ data: Data) -> [ModelEntry] {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = json["data"] as? [[String: Any]] else { return [] }
+        var out: [ModelEntry] = []
+        for m in raw {
+            guard let id = m["id"] as? String, id.hasSuffix(":free") else { continue }
+            guard let pricing = m["pricing"] as? [String: Any],
+                  HTTP.num(pricing["prompt"]) == 0,
+                  HTTP.num(pricing["completion"]) == 0 else { continue }
+            let arch = m["architecture"] as? [String: Any]
+            let modality = ((arch?["modality"] as? String) ?? "").lowercased()
+            // نريد موديلات دردشة (مخرجه نص) — نخرج التوليد الصوتي/الصور/التضمين.
+            guard modality.hasSuffix("->text") else { continue }
+            let lc = id.lowercased()
+            let excluded = ["embedding", "embed", "rerank", "tts", "speech", "whisper",
+                            "asr", "image", "video", "flux", "sdxl", "kolors", "seedream"]
+            guard !excluded.contains(where: lc.contains) else { continue }
+            let name = (m["name"] as? String) ?? id
+            let context = (m["context_length"] as? Int) ?? 0
+            let (rec, reason) = recommendOpenRouterFree(id: id)
+            out.append(ModelEntry(rawID: id,
+                                  displayName: name,
+                                  provider: .openRouter,
+                                  capabilities: [.translation, .chat],
+                                  contextWindow: context > 0 ? context : nil,
+                                  isMultimodal: modality != "text->text",
+                                  supportsArabic: true,
+                                  descriptionAR: m["description"] as? String,
+                                  recommended: rec,
+                                  recommendedReasonAR: reason))
+        }
+        // الموصى بها أولاً، ثم الأكبر سياقاً — ترتيب ثابت ومفهوم للمستخدم.
+        return out.sorted { a, b in
+            if a.recommended != b.recommended { return a.recommended }
+            let ca = a.contextWindow ?? 0, cb = b.contextWindow ?? 0
+            if ca != cb { return ca > cb }
+            return a.rawID < b.rawID
+        }
+    }
+
+    /// ترشيح موديل مجاني حي حسب عائلات مجرّبة في الترجمة السياقية (بما فيها العربية).
+    private static func recommendOpenRouterFree(id: String) -> (Bool, String?) {
+        let lc = id.lowercased()
+        if lc.contains("gemma") { return (true, "موديل Google المفتوح — متعدد اللغات قوي بما فيها العربية. مجاني بالكامل.") }
+        if lc.contains("deepseek") { return (true, "DeepSeek — ممتاز للسياق العربي. مجاني بالكامل.") }
+        if lc.contains("qwen") { return (true, "Qwen — متعدد اللغات وقوي بالعربية؛ نسخة مجانية متاحة على OpenRouter الآن.") }
+        if lc.contains("llama") { return (true, "Meta Llama — ترجمة متعددة اللغات. مجاني بالكامل.") }
+        if lc.contains("nemotron") { return (true, "NVIDIA Nemotron — استدلال قوي وسياق ضخم مجاني.") }
+        if lc.contains("gpt-oss") { return (false, "موديل OpenAI المفتوح — قد يلفّ JSON في وسوم تفكير؛ جرّبه بحذر.") }
+        if lc.contains("mistral") || lc.contains("hermes") || lc.contains("minimax") || lc.contains("kimi") || lc.contains("glm") || lc.contains("longcat") {
+            return (true, "موديل متعدد اللغات مجاني — جرّبه للترجمة السياقية.")
+        }
+        return (false, nil)
     }
 
     // MARK: Cerebras (مليون token/يوم مجاناً — بدون فيزا، سريع جداً)

@@ -97,7 +97,7 @@ struct SettingsView: View {
                     APIKeyRow(title: "مفتاح OpenRouter",
                               placeholder: "sk-or-v1-...",
                               keyID: "openrouter",
-                              hint: "للترجمة: موديلات تنتهي بـ :free مجانية بالكامل (Llama 3.3 70B وغيره). التسجيل بالبريد/GitHub بدون فيزا. 50 طلب/يوم مجاناً.")
+                              hint: "للترجمة: الموديلات المجانية (‎:free) — التطبيق يجلب قائمتهم الحيّة تلقائياً فيعكس ما هو مجاني فعلاً الآن. التسجيل بالبريد/GitHub بدون فيزا. 50 طلب/يوم مجاناً.")
                     APIKeyRow(title: "مفتاح Cerebras",
                               placeholder: "csk-...",
                               keyID: "cerebras",
