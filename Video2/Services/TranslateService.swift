@@ -77,12 +77,10 @@ enum TranslateService {
                                        source: source, target: target, videoTitle: videoTitle)
         case .deepL:
             return try await deepLBatch(batch, source: source, target: target)
-        case .siliconflow:
-            return try await siliconFlowBatch(batch, config: config, contextTail: contextTail,
-                                              source: source, target: target, videoTitle: videoTitle)
-        case .qwenMT:
-            return try await qwenMTBatch(batch, config: config, contextTail: contextTail,
-                                         source: source, target: target, videoTitle: videoTitle)
+        case .openRouter, .cerebras, .sambaNova:
+            return try await openAIChatBatch(provider: resolved(provider: config.provider),
+                                             batch: batch, config: config, contextTail: contextTail,
+                                             source: source, target: target, videoTitle: videoTitle)
         case .auto:
             throw APIError(status: 0, body: "لا يوجد مزود ترجمة مفعّل")
         }
@@ -92,9 +90,12 @@ enum TranslateService {
     static func resolved(provider: TranslatorKind) -> TranslatorKind {
         switch provider {
         case .auto:
+            // ترتيب الأفضلية: Gemini (جودة سياقية) ثم Groq ثم المزودات المجانية الجديدة.
             if KeychainStore.has("gemini") { return .gemini }
             if KeychainStore.has("groq") { return .groqLLM }
-            if KeychainStore.has("siliconflow") { return .siliconflow }
+            if KeychainStore.has("openrouter") { return .openRouter }
+            if KeychainStore.has("cerebras") { return .cerebras }
+            if KeychainStore.has("sambanova") { return .sambaNova }
             if KeychainStore.has("deepl") { return .deepL }
             return .auto
         default:
@@ -112,8 +113,9 @@ enum TranslateService {
         case .gemini: return "Gemini"
         case .groqLLM: return "Groq LLM"
         case .deepL: return "DeepL"
-        case .siliconflow: return "SiliconFlow"
-        case .qwenMT: return "Qwen-MT / DashScope"
+        case .openRouter: return "OpenRouter"
+        case .cerebras: return "Cerebras"
+        case .sambaNova: return "SambaNova"
         case .auto: return "—"
         }
     }
@@ -163,9 +165,14 @@ enum TranslateService {
     /// الموديل الافتراضي الحالي. نعتمد اسماً ثابتاً بدلاً من موديلات 2.0
     /// المتوقفة، لكننا نتحقق من الموديلات المتاحة فعلياً لكل مفتاح عند الحاجة.
     static let defaultGeminiModel = "gemini-3.7-flash"
-    /// Qwen-MT Flash هو الموديل الافتراضي للمزوّد المتخصص؛ الاختيار لا يحدث
-    /// تلقائياً في وضع Auto لأن DashScope مزوّد/مفتاح مستقلان.
-    static let defaultQwenMTModel = "qwen-mt-flash"
+
+    // المزودات الجديدة المتوافقة مع OpenAI — كلها بدون فيزا ولها شريحة مجانية.
+    /// موديلات OpenRouter التي تنتهي بـ :free مجانية بالكامل (50 طلب/يوم بلا شحن).
+    static let defaultOpenRouterModel = "meta-llama/llama-3.3-70b-instruct:free"
+    /// Cerebras: مليون token/يوم مجاناً؛ Llama 3.3 70B توازن قوي للترجمة السياقية.
+    static let defaultCerebrasModel = "llama3.1-70b"
+    /// SambaNova: DeepSeek V3.2 ممتاز للسياق العربي ويعمل ضمن رصيد 5$ المجاني.
+    static let defaultSambaNovaModel = "DeepSeek-V3.2"
 
     private static let preferredGeminiModels = [
         "gemini-3.7-flash",
@@ -564,40 +571,86 @@ enum TranslateService {
         return parseLines(rawJSON: text, batch: batch)
     }
 
-    // MARK: SiliconFlow
+    // MARK: مزوّدات متوافقة مع OpenAI (OpenRouter / Cerebras / SambaNova)
 
-    private static func siliconFlowBatch(_ batch: Batch,
-                                         config: Config,
-                                         contextTail: [(String, String)],
-                                         source: SubLang,
-                                         target: SubLang,
-                                         videoTitle: String) async throws -> [String] {
-        guard let key = KeychainStore.get("siliconflow") else {
-            throw APIError(status: 401, body: "أدخل مفتاح SiliconFlow من الإعدادات")
+    /// كلها بدون فيزا وترجع JSON بصيغة choices[0].message.content تماماً مثل Groq.
+    /// لا نرسل response_format لأن بعض الموديلات المجانية لا تدعمها فترفض الطلب؛
+    /// البرومبت صريح بطلب JSON وparseLines متسامح مع أسوار ``` والنص الخام.
+    private struct OpenAICompatSpec {
+        let label: String
+        let keyID: String
+        let url: String
+        let defaultModel: String
+        let extraHeaders: [String: String]
+    }
+
+    private static func spec(for provider: TranslatorKind) -> OpenAICompatSpec? {
+        switch provider {
+        case .openRouter:
+            // HTTP-Referer وX-Title اختيارية لكنها ممارسة جيدة وتظهر التطبيق في
+            // لوحة OpenRouter. مفتاح يبدأ بـ sk-or- ويسجَّل بالبريد/GitHub بدون فيزا.
+            return OpenAICompatSpec(
+                label: "OpenRouter",
+                keyID: "openrouter",
+                url: "https://openrouter.ai/api/v1/chat/completions",
+                defaultModel: defaultOpenRouterModel,
+                extraHeaders: ["HTTP-Referer": "https://github.com/ahcrazy20-tech/video2",
+                               "X-Title": "Video2"])
+        case .cerebras:
+            return OpenAICompatSpec(
+                label: "Cerebras",
+                keyID: "cerebras",
+                url: "https://api.cerebras.ai/v1/chat/completions",
+                defaultModel: defaultCerebrasModel,
+                extraHeaders: [:])
+        case .sambaNova:
+            return OpenAICompatSpec(
+                label: "SambaNova",
+                keyID: "sambanova",
+                url: "https://api.sambanova.ai/v1/chat/completions",
+                defaultModel: defaultSambaNovaModel,
+                extraHeaders: [:])
+        default:
+            return nil
         }
-        let model = config.model.isEmpty ? "deepseek-ai/DeepSeek-V3.2" : config.model
+    }
+
+    private static func openAIChatBatch(provider: TranslatorKind,
+                                        batch: Batch,
+                                        config: Config,
+                                        contextTail: [(String, String)],
+                                        source: SubLang,
+                                        target: SubLang,
+                                        videoTitle: String) async throws -> [String] {
+        guard let spec = spec(for: provider) else {
+            throw APIError(status: 0, body: "مزوّد ترجمة غير مدعوم")
+        }
+        guard let key = KeychainStore.get(spec.keyID) else {
+            throw APIError(status: 401, body: "أدخل مفتاح \(spec.label) من الإعدادات")
+        }
+        let model = config.model.isEmpty ? spec.defaultModel : config.model
         let body: [String: Any] = [
             "model": model,
             "temperature": config.temperature,
-            "response_format": ["type": "json_object"],
             "messages": [
                 ["role": "system", "content": systemPrompt(source: source, target: target, videoTitle: videoTitle)],
                 ["role": "user", "content": userPrompt(batch: batch, contextTail: contextTail)]
             ]
         ]
         let payload = try JSONSerialization.data(withJSONObject: body)
+        var headers = ["Authorization": "Bearer \(KeychainStore.normalized(key))",
+                       "Content-Type": "application/json"]
+        for (k, v) in spec.extraHeaders { headers[k] = v }
         let (data, _) = try await HTTP.withRetry(attempts: 5, baseDelay: 6) {
-            try await SiliconFlowAPI.request("POST",
-                                                path: "/chat/completions",
-                                                key: key,
-                                                headers: ["Content-Type": "application/json"],
-                                                body: payload,
-                                                timeout: 180)
+            try await HTTP.request("POST", spec.url,
+                                   headers: headers,
+                                   body: payload,
+                                   timeout: 180)
         }
         let json = HTTP.json(from: data)
         if let err = json["error"] as? [String: Any] {
             let msg = (err["message"] as? String) ?? "خطأ غير معروف"
-            throw APIError(status: 0, body: "SiliconFlow: \(msg)")
+            throw APIError(status: 0, body: "\(spec.label): \(msg)")
         }
         var text = ""
         if let choices = json["choices"] as? [[String: Any]],
@@ -606,61 +659,9 @@ enum TranslateService {
             text = content
         }
         guard !text.isEmpty else {
-            throw APIError(status: 0, body: "استجابة SiliconFlow فارغة")
+            throw APIError(status: 0, body: "استجابة \(spec.label) فارغة")
         }
         return parseLines(rawJSON: text, batch: batch)
-    }
-
-    // MARK: DashScope / Qwen-MT
-
-    /// نستخدم وضع الـ custom prompt الموثق لـ Qwen-MT عبر user message واحد،
-    /// ونضع فيه تعليمات الحفاظ على معرفات السطور. بذلك يبقى ترتيب SRT آمناً،
-    /// وتبقى آخر السطور المترجمة في السياق، من دون خلطه مع translation_options.
-    private static func qwenMTBatch(_ batch: Batch,
-                                    config: Config,
-                                    contextTail: [(String, String)],
-                                    source: SubLang,
-                                    target: SubLang,
-                                    videoTitle: String) async throws -> [String] {
-        guard let key = KeychainStore.get("dashscope") else {
-            throw APIError(status: 401, body: "أدخل مفتاح DashScope / Qwen-MT من الإعدادات")
-        }
-        let model = config.model.isEmpty ? defaultQwenMTModel : config.model
-        let prompt = """
-        \(systemPrompt(source: source, target: target, videoTitle: videoTitle))
-
-        \(userPrompt(batch: batch, contextTail: contextTail))
-        """
-        let body: [String: Any] = [
-            "model": model,
-            "messages": [["role": "user", "content": prompt]]
-        ]
-        let payload = try JSONSerialization.data(withJSONObject: body)
-        let (data, _) = try await HTTP.withRetry(attempts: 3, baseDelay: 4) {
-            try await DashScopeAPI.request("POST",
-                                           path: "/chat/completions",
-                                           key: key,
-                                           headers: ["Content-Type": "application/json"],
-                                           body: payload,
-                                           timeout: 90)
-        }
-        let json = HTTP.json(from: data)
-        if let err = json["error"] as? [String: Any] {
-            let msg = (err["message"] as? String) ?? "خطأ غير معروف"
-            throw APIError(status: 0, body: "Qwen-MT: \(msg)")
-        }
-        guard let choices = json["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any],
-              let text = message["content"] as? String,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw APIError(status: 0, body: "استجابة Qwen-MT فارغة")
-        }
-        let lines = parseLines(rawJSON: text, batch: batch)
-        guard lines.contains(where: { !$0.isEmpty }) else {
-            throw APIError(status: 0,
-                           body: "Qwen-MT لم يحافظ على JSON السطور. جرّب Qwen-MT Flash أو موديل Gemini/SiliconFlow آخر.")
-        }
-        return lines
     }
 
     // MARK: DeepL
@@ -738,72 +739,5 @@ enum TranslateService {
         }
         // بنفس ترتيب الدفعة، وسقوط للنص الأصلي عند غياب الترجمة
         return batch.cueIDs.map { map[$0] ?? "" }
-    }
-}
-
-// MARK: - DashScope / Qwen-MT endpoint
-
-/// Qwen-MT يستخدم واجهة OpenAI-compatible من Alibaba Cloud Model Studio.
-/// مفتاح Beijing ومفتاح Singapore مختلفان، لذلك لا نحاول نقل النص تلقائياً بين
-/// النطاقات: المستخدم يختار رابط الـ base URL المطابق لمفتاحه في الإعدادات.
-enum DashScopeAPI {
-    static let baseURLPreferenceKey = "dashscope.api.base"
-    static let defaultBaseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-
-    static var configuredBaseURL: String {
-        let raw = UserDefaults.standard.string(forKey: baseURLPreferenceKey) ?? defaultBaseURL
-        return normalizedBaseURL(raw) ?? defaultBaseURL
-    }
-
-    /// يعيد رابطاً آمناً صالحاً أو nil. نرفض HTTP عمداً لأن هذا الرابط يحمل
-    /// مفتاح API ونصوص الترجمة؛ لا يوجد استثناء ضمن التطبيق لبروكسي غير مشفّر.
-    static func validatedBaseURL(_ raw: String) -> String? {
-        normalizedBaseURL(raw)
-    }
-
-    static func saveBaseURL(_ raw: String) {
-        let value = normalizedBaseURL(raw) ?? defaultBaseURL
-        UserDefaults.standard.set(value, forKey: baseURLPreferenceKey)
-    }
-
-    static var endpointHintAR: String {
-        let host = URL(string: configuredBaseURL)?.host?.lowercased() ?? ""
-        if host.contains("ap-southeast") || host.contains("intl") {
-            return "المنطقة الدولية / Singapore"
-        }
-        if host.contains("cn-beijing") || host == "dashscope.aliyuncs.com" {
-            return "China (Beijing)"
-        }
-        return "رابط مخصص من Model Studio"
-    }
-
-    static func request(_ method: String,
-                        path: String,
-                        key: String,
-                        headers: [String: String] = [:],
-                        body: Data? = nil,
-                        timeout: Double = 300) async throws -> (Data, HTTPURLResponse) {
-        var allHeaders = headers
-        allHeaders["Authorization"] = "Bearer \(KeychainStore.normalized(key))"
-        let url = configuredBaseURL + (path.hasPrefix("/") ? path : "/\(path)")
-        return try await HTTP.request(method, url, headers: allHeaders, body: body, timeout: timeout)
-    }
-
-    private static func normalizedBaseURL(_ raw: String) -> String? {
-        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let route = value.range(of: "/chat/completions", options: [.caseInsensitive]) {
-            value = String(value[..<route.lowerBound])
-        }
-        while value.hasSuffix("/") { value.removeLast() }
-        guard let components = URLComponents(string: value),
-              components.scheme?.lowercased() == "https",
-              let host = components.host, !host.isEmpty,
-              components.user == nil,
-              components.password == nil,
-              components.query == nil,
-              components.fragment == nil else {
-            return nil
-        }
-        return value
     }
 }

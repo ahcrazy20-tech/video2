@@ -430,10 +430,12 @@ struct NewTranslationView: View {
             return ModelSelection.selected(purpose: "translator", provider: .gemini, fallback: TranslateService.defaultGeminiModel)
         case .groqLLM:
             return ModelSelection.selected(purpose: "translator", provider: .groq, fallback: "openai/gpt-oss-120b")
-        case .siliconflow:
-            return ModelSelection.selected(purpose: "translator", provider: .siliconflow, fallback: "deepseek-ai/DeepSeek-V3.2")
-        case .qwenMT:
-            return ModelSelection.selected(purpose: "translator", provider: .dashscope, fallback: TranslateService.defaultQwenMTModel)
+        case .openRouter:
+            return ModelSelection.selected(purpose: "translator", provider: .openRouter, fallback: TranslateService.defaultOpenRouterModel)
+        case .cerebras:
+            return ModelSelection.selected(purpose: "translator", provider: .cerebras, fallback: TranslateService.defaultCerebrasModel)
+        case .sambaNova:
+            return ModelSelection.selected(purpose: "translator", provider: .sambaNova, fallback: TranslateService.defaultSambaNovaModel)
         case .deepL: return "DeepL API"
         case .auto: return "—"
         }
