@@ -1,59 +1,84 @@
 import Foundation
 import AVFoundation
 
+/// بوابة تسلسلية غير متزامنة: تشغّل مهمة واحدة فقط في كل مرة
+/// بدون حجب أي thread (الـ wait الحاسم يسبب deadlocks مع async).
+final class AsyncSerialGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var running = false
+
+    func run<T: Sendable>(_ body: @Sendable () async throws -> T) async rethrows -> T {
+        let gotToken = takeToken()
+        if !gotToken {
+            // دوري بعد غيري — انتظر حتى يُمرَّر الطوق
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                lock.lock()
+                waiters.append(c)
+                lock.unlock()
+            }
+        }
+        defer { releaseToken() }
+        return try await body()
+    }
+
+    private func takeToken() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if running { return false }
+        running = true
+        return true
+    }
+
+    private func releaseToken() {
+        lock.lock()
+        var next: CheckedContinuation<Void, Never>? = nil
+        if let w = waiters.first {
+            waiters.removeFirst()
+            next = w
+        } else {
+            running = false
+        }
+        lock.unlock()
+        // الطوق مُمرَّر: المنتظر التالي ينفّذ body (running يظل true بدله)
+        next?.resume()
+    }
+}
+
 /// تحويل النص إلى كلام باستخدام صوت الجهاز (AVSpeechSynthesizer).
 /// يُستخدم كاحتياطي تلقائي عند فشل Edge TTS أو أي مزود سحابي.
 enum LocalTTS {
 
-    /// بوابة تسلسلية — تضمن تشغيل صوت جهاز واحد فقط في كل مرة.
-    /// تشغيل عدة AVAudioEngine/AVSpeechSynthesizer بالتوازي (التوازي الافتراضي
-    /// للدبلجة = 3) يسبب تعارض جلسة الصوت وانهيار غير قابل للالتقاط على iOS،
-    /// وهذا كان سبب الكراش عند بدء الدبلجة.
-    private static let gate = DispatchQueue(label: "com.video2.localtts", qos: .userInitiated)
+    /// بوابة تسلسلية — AVSpeechSynthesizer وAVAudioEngine غير آمنين للتشغيل
+    /// المتوازي (تعارض جلسة الصوت يسبب انهياراً غير قابل للالتقاط على iOS).
+    private static let gate = AsyncSerialGate()
 
     /// يولّد ملف صوتي (.m4a) باستخدام صوت الجهاز ويعيد مدته بالثواني.
     static func synthesizeToFile(text: String,
                                  voice: DubbingVoice,
                                  outputURL: URL) async throws -> Double {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Double, Error>) in
-            gate.async {
-                let group = DispatchGroup()
-                group.enter()
-                var result: Result<Double, Error>?
-                Task {
-                    do {
-                        let d = try await Self.realSynthesize(text: text, voice: voice, outputURL: outputURL)
-                        result = .success(d)
-                    } catch {
-                        result = .failure(error)
-                    }
-                    group.leave()
-                }
-                group.wait() // يمنع تشغيل تركيبتين في نفس الوقت
-                switch result! {
-                case .success(let d): cont.resume(returning: d)
-                case .failure(let e): cont.resume(throwing: e)
-                }
-            }
+        try await gate.run {
+            try await Self.realSynthesize(text: text, voice: voice, outputURL: outputURL)
         }
     }
 
-    /// التوليد الفعلي — يُستدعى داخل البوابة التسلسلية فقط.
+    /// التوليد الفعلي — يُنفَّذ حصراً على MainActor: AVSpeechSynthesizer
+    /// غير آمن من خيط ثانوي (كان سبب الكراش المتقطع عند الدبلجة)، والبوابة
+    /// فوقه تضمن عدم تراكب تركيبين.
+    @MainActor
     private static func realSynthesize(text: String,
                                        voice: DubbingVoice,
                                        outputURL: URL) async throws -> Double {
         // تهيئة جلسة الصوت على MainActor (مطلوب قبل تشغيل AVAudioEngine)
-        await MainActor.run {
-            #if os(iOS)
-            let session = AVAudioSession.sharedInstance()
-            do {
-                try session.setCategory(.playback, mode: .spokenAudio, options: [.mixWithOthers])
-                try session.setActive(true, options: .notifyOthersOnDeactivation)
-            } catch {
-                // نتجاهل أخطاء الجلسة ونكمل — المحرك قد يعمل رغم ذلك
-            }
-            #endif
+        #if os(iOS)
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .spokenAudio, options: [.mixWithOthers])
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            // نتجاهل أخطاء الجلسة ونكمل — المحرك قد يعمل رغم ذلك
         }
+        #endif
 
         let wavURL = outputURL.deletingPathExtension().appendingPathExtension("wav")
         if FileManager.default.fileExists(atPath: wavURL.path) {
@@ -79,32 +104,26 @@ enum LocalTTS {
         utterance.pitchMultiplier = voice.gender == .female ? 1.05 : 0.95
         utterance.volume = 1.0
 
-        let (duration, _) = await withCheckedContinuation { (cont: CheckedContinuation<(Double, Bool), Never>) in
-            var resumed = false
-            let finish: () -> Void = {
-                guard !resumed else { return }
-                resumed = true
-                recorder.stop()
-                let asset = AVURLAsset(url: wavURL)
-                let d = CMTimeGetSeconds(asset.duration)
-                let final = d.isFinite && d > 0 ? d : Self.estimateDuration(for: text)
-                cont.resume(returning: (final, true))
+        let state = SpeechState()
+        state.recorder = recorder
+        state.wavURL = wavURL
+        state.fallback = estimateDuration(for: text)
+
+        let duration: Double
+        do {
+            duration = await withCheckedContinuation { (cont: CheckedContinuation<Double, Never>) in
+                state.continuation = cont
+                synth.delegate = state
+                // حارس زمني: لو لم ينتهِ النطق خلال 90 ثانية نكمل رغم ذلك
+                // لتفادي تعليق الدبلجة بالكامل (النطق الفعلي أقل بكثير عادةً).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 90) { [weak state] in
+                    state?.finish()
+                }
+                synth.speak(utterance)
             }
-            let delegate = SpeechDelegate()
-            delegate.onFinish = finish
-            synth.delegate = delegate
-            // حارس زمني: لو لم ينتهِ النطق خلال 60 ثانية نكمل رغم ذلك
-            // لتفادي تعليق الدبلجة بالكامل.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 60) {
-                guard !resumed else { return }
-                resumed = true
-                recorder.stop()
-                let asset = AVURLAsset(url: wavURL)
-                let d = CMTimeGetSeconds(asset.duration)
-                let final = d.isFinite && d > 0 ? d : Self.estimateDuration(for: text)
-                cont.resume(returning: (final, false))
-            }
-            synth.speak(utterance)
+        } catch {
+            recorder.stop()
+            throw DubbingError.localSynthesisFailed
         }
 
         // تحويل WAV → M4A (AAC) لتوافق AVFoundation واقتصاد الحجم
@@ -117,6 +136,43 @@ enum LocalTTS {
         try? FileManager.default.removeItem(at: wavURL)
 
         return duration
+    }
+
+    /// حالة النطق + مندوب AVSpeechSynthesizer.
+    /// المندوب والحارس الزمني يُستدعيان معاً من خيط Main (المرسل من
+    /// realSynthesize على MainActor)، فلا حاجة لقفل.
+    private final class SpeechState: NSObject, AVSpeechSynthesizerDelegate {
+        var continuation: CheckedContinuation<Double, Never>?
+        weak var recorder: SpeechRecorder?
+        var wavURL = URL(fileURLWithPath: "/")
+        var fallback: Double = 1
+        private var resumed = false
+
+        /// يُستدعى من المندوب أو الحارس الزمني — مرة واحدة فقط.
+        func finish() {
+            guard !resumed, let cont = continuation else { return }
+            resumed = true
+            continuation = nil
+            recorder?.stop()
+            // تأخير قصير لضمان كتابة آخر buffer قبل قراءة مدة الملف
+            let url = wavURL
+            let fb = fallback
+            Task {
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                let asset = AVURLAsset(url: url)
+                let d = CMTimeGetSeconds(asset.duration)
+                let final = d.isFinite && d > 0 ? d : fb
+                cont.resume(returning: final)
+            }
+        }
+
+        func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+            finish()
+        }
+
+        func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+            finish()
+        }
     }
 
     /// أفضل صوت للجهاز يطابق اللغة/الجنس المطلوب
@@ -150,7 +206,7 @@ enum LocalTTS {
         }
     }
 
-    /// تقدير تقريبي للمدة بناءً على طول النص (كلمة/ثانية)
+    /// تقدير تقريبي لمدة النص بناءً على طول النص (كلمة/ثانية)
     private static func estimateDuration(for text: String) -> Double {
         let words = text.split(separator: " ").count
         // العربي: ~2.5 كلمة/ثانية، اللاتيني: ~2.0 كلمة/ثانية
@@ -190,45 +246,48 @@ enum LocalTTS {
 // MARK: - مسجل الصوت
 
 /// يستخدم AVAudioEngine + AVAudioFile لتسجيل مخرجات AVSpeechSynthesizer.
+/// يُنشأ ويُوقف على MainActor فقط (نفس خيط تركيب الـ tap).
 private final class SpeechRecorder {
     private let engine = AVAudioEngine()
     private var audioFile: AVAudioFile?
+    private var tapped = false
     private let bufferSize: AVAudioFrameCount = 4096
 
     func start(writingTo url: URL) throws {
         let format = engine.outputNode.inputFormat(forBus: 0)
+        // صيغة صفرية (جهاز صوت غير متاح/جلسة معطلة) تسبب NSException داخل
+        // AVAudioFile/installTap — نلقي خطأ قابلاً للالتقاط بدل الكراش.
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw DubbingError.localSynthesisFailed
+        }
         audioFile = try AVAudioFile(forWriting: url,
-                                   settings: format.settings,
-                                   commonFormat: format.commonFormat,
-                                   interleaved: format.isInterleaved)
+                                    settings: format.settings,
+                                    commonFormat: format.commonFormat,
+                                    interleaved: format.isInterleaved)
         engine.outputNode.installTap(onBus: 0, bufferSize: bufferSize, format: format) { [weak self] buffer, _ in
             try? self?.audioFile?.write(from: buffer)
         }
-        try engine.start()
+        tapped = true
+        do {
+            try engine.start()
+        } catch {
+            if tapped {
+                engine.outputNode.removeTap(onBus: 0)
+                tapped = false
+            }
+            audioFile = nil
+            throw DubbingError.localSynthesisFailed
+        }
     }
 
     func stop() {
-        engine.outputNode.removeTap(onBus: 0)
-        engine.stop()
+        if tapped {
+            engine.outputNode.removeTap(onBus: 0)
+            tapped = false
+        }
+        if engine.isRunning {
+            engine.stop()
+        }
         audioFile = nil
-    }
-}
-
-// MARK: - مندوب AVSpeechSynthesizer
-
-private final class SpeechDelegate: NSObject, AVSpeechSynthesizerDelegate {
-    var onFinish: (() -> Void)?
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        // تأخير بسيط لضمان كتابة آخر buffer قبل الإيقاف
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            self?.onFinish?()
-        }
-    }
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            self?.onFinish?()
-        }
     }
 }
