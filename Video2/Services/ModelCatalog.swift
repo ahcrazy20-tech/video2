@@ -58,6 +58,105 @@ struct ModelEntry: Identifiable, Codable, Hashable {
     /// هل نرشّحه لهذا التطبيق؟ (يأتي من مولّد داخلي بناءً على القدرات)
     let recommended: Bool
     let recommendedReasonAR: String?
+
+    /// بيانات السعر/الحصة مستقلة عن رد `/models`، لأن أغلب المزودين لا يعيدونها
+    /// من API. تُعرض في واجهة الاختيار حتى لا يوحي اسم "موصى به" بأنه مجاني.
+    var billing: ModelBillingInfo {
+        ModelBillingCatalog.info(provider: provider, model: rawID)
+    }
+}
+
+// MARK: - السعر والحصة الظاهرين للمستخدم
+
+enum ModelBillingKind: String, Hashable {
+    case free
+    case trialQuota
+    case paid
+    case accountDependent
+    case deprecated
+    case unknown
+
+    var titleAR: String {
+        switch self {
+        case .free: return "مجاني"
+        case .trialQuota: return "حصة مجانية مؤقتة"
+        case .paid: return "مدفوع"
+        case .accountDependent: return "حسب الحساب"
+        case .deprecated: return "متوقف/قديم"
+        case .unknown: return "السعر غير معروف"
+        }
+    }
+}
+
+struct ModelBillingInfo: Hashable {
+    let kind: ModelBillingKind
+    let detailAR: String
+}
+
+enum ModelBillingCatalog {
+    static func info(provider: ModelProvider, model: String) -> ModelBillingInfo {
+        let id = model.lowercased()
+        switch provider {
+        case .dashscope:
+            if id == "qwen-mt-flash" {
+                return ModelBillingInfo(kind: .trialQuota,
+                                        detailAR: "Flash: توازن السرعة والجودة. حصة تجربة حتى 1M token/90 يوماً عند الأهلية؛ بعدها حسب المنطقة والحساب.")
+            }
+            if id == "qwen-mt-plus" {
+                return ModelBillingInfo(kind: .trialQuota,
+                                        detailAR: "Plus: أعلى جودة للمجالات المهنية؛ حصة تجربة عند الأهلية ثم مدفوع. لا يدعم البث التدريجي.")
+            }
+            if id == "qwen-mt-lite" {
+                return ModelBillingInfo(kind: .accountDependent,
+                                        detailAR: "Lite: الأسرع للحالات البسيطة (31 لغة). راجع حصة/سعر حساب Model Studio.")
+            }
+            return ModelBillingInfo(kind: .accountDependent,
+                                    detailAR: "الحصة والسعر يعتمدان على المنطقة وحساب Model Studio.")
+
+        case .siliconflow:
+            if id.contains("hunyuan-mt-7b") {
+                return ModelBillingInfo(kind: .deprecated,
+                                        detailAR: "كان موديل ترجمة مجانياً، لكن SiliconFlow أعلن إيقافه؛ لا تعتمد عليه.")
+            }
+            if id.contains("deepseek-v3.2") {
+                return ModelBillingInfo(kind: .paid,
+                                        detailAR: "موديل مدفوع من رصيد SiliconFlow؛ راجع صفحة السعر الحالية قبل الاستخدام.")
+            }
+            if id.contains("qwen3.5-9b") {
+                return ModelBillingInfo(kind: .paid,
+                                        detailAR: "موديل مدفوع من رصيد SiliconFlow؛ قد يكون خياراً اقتصادياً، لكن السعر يتغير.")
+            }
+            if id.contains("qwen3.5-35b") || id.contains("qwen3.6-35b") || id.contains("qwen3.5-122b") || id.contains("qwen3.5-397b") {
+                return ModelBillingInfo(kind: .paid,
+                                        detailAR: "موديل مدفوع من رصيد SiliconFlow؛ تحقق من سعر الإدخال والإخراج الحاليين في لوحة المزود.")
+            }
+            if id.contains("qwen2.5") || id.contains("glm-4") {
+                return ModelBillingInfo(kind: .accountDependent,
+                                        detailAR: "إصدار أقدم؛ تحقق من توفره وسعره الحاليين قبل استخدامه في مهمة جديدة.")
+            }
+            return ModelBillingInfo(kind: .accountDependent,
+                                    detailAR: "ليس مجانياً بالضرورة؛ تحقّق من الرصيد والسعر في SiliconFlow.")
+
+        case .groq:
+            if id.contains("gpt-oss-120b") || id.contains("gpt-oss-20b") {
+                return ModelBillingInfo(kind: .accountDependent,
+                                        detailAR: "قد يكون ضمن شريحة محدودة أو مدفوعاً حسب مشروع Groq؛ راجع Limits والتسعير الحاليين.")
+            }
+            if id.contains("qwen3.6-27b") {
+                return ModelBillingInfo(kind: .accountDependent,
+                                        detailAR: "Preview محدود أو مدفوع حسب الحساب، وقد لا يظهر في كل المشاريع.")
+            }
+            return ModelBillingInfo(kind: .accountDependent,
+                                    detailAR: "الحدود والسعر يعتمدان على مشروع وخطة Groq.")
+
+        case .gemini:
+            return ModelBillingInfo(kind: .accountDependent,
+                                    detailAR: "لا توجد قيمة متبقية عبر API key؛ راجع AI Studio لمعرفة الحصة/الفوترة الفعلية.")
+        case .openaiCompat, .elevenlabs:
+            return ModelBillingInfo(kind: .unknown,
+                                    detailAR: "تحقّق من تسعير المزود وحسابه قبل الاستخدام.")
+        }
+    }
 }
 
 // MARK: - المزودون المدعومون في الكتالوج
@@ -66,6 +165,7 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
     case gemini       // Google Gemini
     case groq         // Groq (OpenAI-compatible)
     case siliconflow  // SiliconFlow (Qwen / DeepSeek / GLM / SenseVoice / CosyVoice)
+    case dashscope    // Alibaba Cloud Model Studio / Qwen-MT
     case openaiCompat // OpenAI-compatible (نحتفظ به للتوسعة)
     case elevenlabs   // ElevenLabs TTS (للدبلجة)
 
@@ -76,6 +176,7 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
         case .gemini: return "Google Gemini"
         case .groq: return "Groq"
         case .siliconflow: return "SiliconFlow"
+        case .dashscope: return "DashScope / Qwen-MT"
         case .openaiCompat: return "OpenAI Compatible"
         case .elevenlabs: return "ElevenLabs"
         }
@@ -86,6 +187,7 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
         case .gemini: return "sparkles"
         case .groq: return "bolt.fill"
         case .siliconflow: return "cpu.fill"
+        case .dashscope: return "character.bubble.fill"
         case .openaiCompat: return "link"
         case .elevenlabs: return "waveform.path.ecg"
         }
@@ -97,6 +199,7 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
         case .gemini: return "gemini"
         case .groq: return "groq"
         case .siliconflow: return "siliconflow"
+        case .dashscope: return "dashscope"
         case .openaiCompat: return nil
         case .elevenlabs: return "elevenlabs"
         }
@@ -117,7 +220,7 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
             return "https://api.groq.com/openai/v1/models"
         case .siliconflow:
             return "https://api.siliconflow.cn/v1/models"
-        case .openaiCompat, .elevenlabs:
+        case .dashscope, .openaiCompat, .elevenlabs:
             return nil
         }
     }
@@ -185,57 +288,68 @@ final class ModelCatalog: ObservableObject {
 
     private init() {
         loadCache()
+        // القائمة ثابتة وموثقة، لذلك نعرض Qwen-MT مباشرة حتى بلا مفتاح أو شبكة.
+        if models[.dashscope] == nil {
+            models[.dashscope] = ModelCatalogParser.dashscope()
+        }
     }
 
     // MARK: التحميل
 
     /// يجلب الموديلات من مزوّد معيّن. يُستدعى عند الضغط على زر "تحديث".
     func refresh(_ provider: ModelProvider) async {
-        guard let url = provider.modelsURL, provider.isAvailable else {
-            lastError[provider] = provider.isAvailable ? "هذا المزود لا يدعم جلب الموديلات تلقائياً." : "أدخل مفتاح المزود من الإعدادات أولاً."
+        // Qwen-MT له قائمة صغيرة ثابتة موثقة؛ نعرضها حتى قبل إدخال المفتاح كي
+        // يستطيع المستخدم مقارنة الحصة/السعر، ولا ننفذ GET /models غير موثق.
+        if provider == .dashscope {
+            models[provider] = ModelCatalogParser.dashscope()
+            lastError[provider] = nil
+            lastFetched[provider] = Date()
+            saveCache()
+            return
+        }
+
+        guard provider.isAvailable else {
+            lastError[provider] = "أدخل مفتاح المزود من الإعدادات أولاً."
             return
         }
         loading.insert(provider)
         defer { loading.remove(provider) }
+
+        guard let url = provider.modelsURL else {
+            lastError[provider] = "هذا المزود لا يدعم جلب الموديلات تلقائياً."
+            return
+        }
         do {
-            let headers: [String: String]
+            let entries: [ModelEntry]
             switch provider {
             case .gemini:
                 let key = KeychainStore.get("gemini") ?? ""
-                headers = ["x-goog-api-key": key]
                 let (data, _) = try await HTTP.withRetry(attempts: 2) {
-                    try await HTTP.request("GET", url, headers: headers, timeout: 30)
+                    try await HTTP.request("GET", url,
+                                           headers: ["x-goog-api-key": key], timeout: 30)
                 }
-                let entries = ModelCatalogParser.gemini(data: data)
-                models[provider] = entries
-                lastError[provider] = nil
-                lastFetched[provider] = Date()
-                saveCache()
+                entries = ModelCatalogParser.gemini(data: data)
             case .groq:
                 let key = KeychainStore.get("groq") ?? ""
-                headers = ["Authorization": "Bearer \(key)"]
                 let (data, _) = try await HTTP.withRetry(attempts: 2) {
-                    try await HTTP.request("GET", url, headers: headers, timeout: 30)
+                    try await HTTP.request("GET", url,
+                                           headers: ["Authorization": "Bearer \(key)"], timeout: 30)
                 }
-                let entries = ModelCatalogParser.groq(data: data)
-                models[provider] = entries
-                lastError[provider] = nil
-                lastFetched[provider] = Date()
-                saveCache()
+                entries = ModelCatalogParser.groq(data: data)
             case .siliconflow:
                 let key = KeychainStore.get("siliconflow") ?? ""
-                headers = [:]
                 let (data, _) = try await HTTP.withRetry(attempts: 2) {
                     try await SiliconFlowAPI.request("GET", path: "/models", key: key, timeout: 30)
                 }
-                let entries = ModelCatalogParser.siliconflow(data: data)
-                models[provider] = entries
-                lastError[provider] = nil
-                lastFetched[provider] = Date()
-                saveCache()
-            case .openaiCompat, .elevenlabs:
+                entries = ModelCatalogParser.siliconflow(data: data)
+            case .dashscope, .openaiCompat, .elevenlabs:
                 lastError[provider] = "هذا المزود لا يدعم جلب الموديلات تلقائياً."
+                return
             }
+            models[provider] = entries
+            lastError[provider] = nil
+            lastFetched[provider] = Date()
+            saveCache()
         } catch let e as APIError {
             lastError[provider] = e.errorDescription ?? "فشل جلب الموديلات (HTTP \(e.status))"
         } catch {
@@ -321,9 +435,312 @@ final class ModelCatalog: ObservableObject {
     }
 }
 
+// MARK: - الرصيد والحدود لكل مزود
+
+/// لا نخمّن المتبقي: نعرضه فقط عندما يعيده المزود عبر API. بعض المزودين (Gemini
+/// وDashScope) لا يوفّرون هذا الرقم بمفتاح API عادي، لذلك نعرض مسار اللوحة بوضوح.
+enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
+    case gemini, groq, siliconflow, deepL, dashscope
+
+    var id: String { rawValue }
+
+    var titleAR: String {
+        switch self {
+        case .gemini: return "Gemini"
+        case .groq: return "Groq"
+        case .siliconflow: return "SiliconFlow"
+        case .deepL: return "DeepL"
+        case .dashscope: return "DashScope / Qwen-MT"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .gemini: return "sparkles"
+        case .groq: return "bolt.fill"
+        case .siliconflow: return "cpu.fill"
+        case .deepL: return "character.book.closed.fill"
+        case .dashscope: return "character.bubble.fill"
+        }
+    }
+
+    var keyID: String {
+        switch self {
+        case .gemini: return "gemini"
+        case .groq: return "groq"
+        case .siliconflow: return "siliconflow"
+        case .deepL: return "deepl"
+        case .dashscope: return "dashscope"
+        }
+    }
+
+    var consoleURL: URL? {
+        switch self {
+        case .gemini: return URL(string: "https://aistudio.google.com/usage")
+        case .groq: return URL(string: "https://console.groq.com/settings/limits")
+        case .siliconflow: return URL(string: "https://cloud.siliconflow.com/")
+        case .deepL: return URL(string: "https://www.deepl.com/your-account/usage")
+        // رابط المنطقة (Beijing/Singapore) يختلف من حساب لآخر، فلا نفتح رابطاً خاطئاً.
+        case .dashscope: return nil
+        }
+    }
+}
+
+enum ProviderUsageStatus: Hashable {
+    case ready
+    case manual
+    case notConfigured
+    case failed
+
+    var titleAR: String {
+        switch self {
+        case .ready: return "محدّث"
+        case .manual: return "من لوحة المزود"
+        case .notConfigured: return "لا يوجد مفتاح"
+        case .failed: return "تعذر التحديث"
+        }
+    }
+}
+
+struct ProviderUsageSnapshot: Identifiable, Hashable {
+    var id: String { provider.rawValue }
+    let provider: UsageProvider
+    let status: ProviderUsageStatus
+    let headlineAR: String
+    let detailAR: String
+    let updatedAt: Date?
+}
+
+@MainActor
+final class ProviderUsageStore: ObservableObject {
+    static let shared = ProviderUsageStore()
+
+    @Published private(set) var snapshots: [UsageProvider: ProviderUsageSnapshot] = [:]
+    @Published private(set) var loading: Set<UsageProvider> = []
+
+    private init() {}
+
+    func snapshot(for provider: UsageProvider) -> ProviderUsageSnapshot {
+        // لا نعرض رصيد مفتاح حُذف أو استُبدل للتو.
+        guard KeychainStore.has(provider.keyID) else { return defaultSnapshot(for: provider) }
+        return snapshots[provider] ?? defaultSnapshot(for: provider)
+    }
+
+    func invalidate(keyID: String) {
+        guard let provider = UsageProvider.allCases.first(where: { $0.keyID == keyID }) else { return }
+        snapshots.removeValue(forKey: provider)
+    }
+
+    func refreshAll() async {
+        for provider in UsageProvider.allCases {
+            await refresh(provider)
+        }
+    }
+
+    func refresh(_ provider: UsageProvider) async {
+        guard let key = KeychainStore.get(provider.keyID) else {
+            snapshots[provider] = ProviderUsageSnapshot(provider: provider,
+                                                         status: .notConfigured,
+                                                         headlineAR: "أدخل مفتاح \(provider.titleAR) أولاً",
+                                                         detailAR: "لن يُرسل التطبيق أي طلب حتى تحفظ المفتاح في Keychain.",
+                                                         updatedAt: nil)
+            return
+        }
+        loading.insert(provider)
+        defer { loading.remove(provider) }
+
+        do {
+            let snapshot: ProviderUsageSnapshot
+            switch provider {
+            case .deepL:
+                snapshot = try await fetchDeepLUsage(key: key)
+            case .siliconflow:
+                snapshot = try await fetchSiliconFlowBalance(key: key)
+            case .groq:
+                snapshot = try await fetchGroqLimits(key: key)
+            case .gemini:
+                snapshot = ProviderUsageSnapshot(
+                    provider: .gemini,
+                    status: .manual,
+                    headlineAR: "المتبقي لا يرسله Gemini عبر API key",
+                    detailAR: "افتح Google AI Studio > Usage لمعرفة الحصة اليومية/الفوترة الفعلية. لا نعرض رقماً تخمينياً.",
+                    updatedAt: Date())
+            case .dashscope:
+                snapshot = ProviderUsageSnapshot(
+                    provider: .dashscope,
+                    status: .manual,
+                    headlineAR: "Qwen-MT: راجع Free Quota في Model Studio",
+                    detailAR: "الحصة التجريبية — إن كانت مؤهلة — تصل حتى 1M token/90 يوماً لكل موديل (إدخال وإخراج معاً). المتبقي الدقيق لا توفره واجهة API بالمفتاح؛ فعّل Free Quota Only لمنع الدفع بعد نفادها.",
+                    updatedAt: Date())
+            }
+            snapshots[provider] = snapshot
+        } catch let error as APIError where provider == .deepL && error.status == 456 {
+            snapshots[provider] = ProviderUsageSnapshot(
+                provider: provider,
+                status: .ready,
+                headlineAR: "DeepL: انتهت حصة 500,000 حرف للشهر الحالي",
+                detailAR: "يعيد DeepL الرمز 456 عند نفاد الحصة المجانية الشهرية؛ تتجدد حسب دورة الحساب.",
+                updatedAt: Date())
+        } catch let error as APIError {
+            snapshots[provider] = ProviderUsageSnapshot(
+                provider: provider,
+                status: .failed,
+                headlineAR: "تعذر تحديث \(provider.titleAR) (HTTP \(error.status))",
+                detailAR: error.errorDescription ?? "تحقق من المفتاح والاتصال ثم أعد التحديث.",
+                updatedAt: Date())
+        } catch {
+            snapshots[provider] = ProviderUsageSnapshot(
+                provider: provider,
+                status: .failed,
+                headlineAR: "تعذر تحديث \(provider.titleAR)",
+                detailAR: "\(error.localizedDescription)",
+                updatedAt: Date())
+        }
+    }
+
+    private func defaultSnapshot(for provider: UsageProvider) -> ProviderUsageSnapshot {
+        if KeychainStore.has(provider.keyID) {
+            return ProviderUsageSnapshot(provider: provider,
+                                         status: .manual,
+                                         headlineAR: "اضغط تحديث لقراءة الرصيد/الحدود",
+                                         detailAR: "لا نحتفظ برصيد قديم حتى لا نعرض قيمة غير دقيقة.",
+                                         updatedAt: nil)
+        }
+        return ProviderUsageSnapshot(provider: provider,
+                                     status: .notConfigured,
+                                     headlineAR: "لا يوجد مفتاح محفوظ",
+                                     detailAR: "أدخل مفتاح \(provider.titleAR) ثم حدّث الحالة.",
+                                     updatedAt: nil)
+    }
+
+    private func fetchDeepLUsage(key: String) async throws -> ProviderUsageSnapshot {
+        let (data, _) = try await HTTP.request(
+            "GET", "https://api-free.deepl.com/v2/usage",
+            headers: ["Authorization": "DeepL-Auth-Key \(key)"], timeout: 30)
+        let json = HTTP.json(from: data)
+        guard let used = HTTP.num(json["character_count"]),
+              let limit = HTTP.num(json["character_limit"]) else {
+            throw APIError(status: 0, body: "استجابة DeepL لا تحتوي على character_count/character_limit")
+        }
+        let remaining = max(0, limit - used)
+        return ProviderUsageSnapshot(
+            provider: .deepL,
+            status: .ready,
+            headlineAR: "متبقٍ \(integer(remaining)) من \(integer(limit)) حرف",
+            detailAR: "المستهلك هذا الشهر: \(integer(used)) حرف. هذه قيمة الحساب الفعلية من DeepL.",
+            updatedAt: Date())
+    }
+
+    private func fetchSiliconFlowBalance(key: String) async throws -> ProviderUsageSnapshot {
+        let (data, _) = try await SiliconFlowAPI.request("GET", path: "/user/info", key: key, timeout: 30)
+        let json = HTTP.json(from: data)
+        guard let account = json["data"] as? [String: Any] else {
+            throw APIError(status: 0, body: "استجابة SiliconFlow لا تحتوي على بيانات الحساب")
+        }
+        let total = HTTP.num(account["totalBalance"])
+            ?? HTTP.num(account["balance"])
+            ?? HTTP.num(account["chargeBalance"])
+        guard let total else {
+            throw APIError(status: 0, body: "SiliconFlow لم يعد رصيد الحساب")
+        }
+        let charge = HTTP.num(account["chargeBalance"])
+        let bonus = HTTP.num(account["balance"])
+        var detail = "هذه قيمة الرصيد الفعلية كما أعادها SiliconFlow؛ راجع العملة/وحدة الرصيد في لوحة الحساب."
+        if let charge, let bonus {
+            detail = "مدفوع: \(balance(charge)) · رصيد/مكافآت: \(balance(bonus)). راجع وحدة العملة في لوحة SiliconFlow."
+        }
+        return ProviderUsageSnapshot(
+            provider: .siliconflow,
+            status: .ready,
+            headlineAR: "الرصيد الكلي: \(balance(total))",
+            detailAR: detail,
+            updatedAt: Date())
+    }
+
+    private func fetchGroqLimits(key: String) async throws -> ProviderUsageSnapshot {
+        let (_, response) = try await HTTP.request(
+            "GET", "https://api.groq.com/openai/v1/models",
+            headers: ["Authorization": "Bearer \(key)"], timeout: 30)
+        let remainingRequests = response.value(forHTTPHeaderField: "x-ratelimit-remaining-requests")
+        let requestLimit = response.value(forHTTPHeaderField: "x-ratelimit-limit-requests")
+        let remainingTokens = response.value(forHTTPHeaderField: "x-ratelimit-remaining-tokens")
+        let tokenLimit = response.value(forHTTPHeaderField: "x-ratelimit-limit-tokens")
+        let resetRequests = response.value(forHTTPHeaderField: "x-ratelimit-reset-requests")
+
+        guard let remainingRequests, let requestLimit else {
+            return ProviderUsageSnapshot(
+                provider: .groq,
+                status: .manual,
+                headlineAR: "Groq لم يُعد رؤوس الحد لهذه العملية",
+                detailAR: "المفتاح اتصل بنجاح؛ راجع Limits في لوحة Groq لمعرفة المتبقي الفعلي.",
+                updatedAt: Date())
+        }
+        let tokenLine: String
+        if let remainingTokens, let tokenLimit {
+            tokenLine = "متبقٍ الآن \(remainingTokens)/\(tokenLimit) token في الدقيقة."
+        } else {
+            tokenLine = "راجع لوحة Groq لحد token/دقيقة."
+        }
+        let resetLine = resetRequests.map { "يتجدد حد الطلبات خلال \($0)." } ?? "نافذة التجدد يحددها Groq."
+        return ProviderUsageSnapshot(
+            provider: .groq,
+            status: .ready,
+            headlineAR: "متبقٍ حالياً \(remainingRequests)/\(requestLimit) طلب",
+            detailAR: "\(tokenLine) \(resetLine) هذه حدود rate وليست رصيداً شهرياً/مالياً.",
+            updatedAt: Date())
+    }
+
+    private func integer(_ value: Double) -> String {
+        Int(value.rounded()).formatted()
+    }
+
+    private func balance(_ value: Double) -> String {
+        String(format: "%.2f", value)
+    }
+}
+
 // MARK: - محللات الاستجابات
 
 enum ModelCatalogParser {
+
+    // MARK: DashScope / Qwen-MT
+
+    /// لا تعتمد هذه القائمة على GET /models لأن واجهة Qwen-MT الموثقة تضمن هذه
+    /// الموديلات الثلاثة فقط، بينما وصول كل حساب/منطقة يُتحقق منه بزر اختبار المفتاح.
+    static func dashscope() -> [ModelEntry] {
+        [
+            ModelEntry(rawID: "qwen-mt-flash",
+                       displayName: "Qwen-MT Flash",
+                       provider: .dashscope,
+                       capabilities: [.translation],
+                       contextWindow: nil,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "ترجمة متخصصة لـ 92 لغة؛ الخيار الافتراضي للترجمة المصاحبة.",
+                       recommended: true,
+                       recommendedReasonAR: "أفضل توازن بين الجودة والسرعة والكلفة للترجمة المصاحبة."),
+            ModelEntry(rawID: "qwen-mt-plus",
+                       displayName: "Qwen-MT Plus",
+                       provider: .dashscope,
+                       capabilities: [.translation],
+                       contextWindow: nil,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "نسخة الجودة الأعلى للوثائق والمجالات المهنية؛ أبطأ ولا تدعم البث التدريجي.",
+                       recommended: true,
+                       recommendedReasonAR: "اختره عندما تكون الجودة المتخصصة أهم من السرعة."),
+            ModelEntry(rawID: "qwen-mt-lite",
+                       displayName: "Qwen-MT Lite",
+                       provider: .dashscope,
+                       capabilities: [.translation],
+                       contextWindow: nil,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "أسرع نسخة للحالات البسيطة والحساسة للزمن؛ تغطي 31 لغة.",
+                       recommended: true,
+                       recommendedReasonAR: "خيار السرعة القصوى، وليس الخيار الأول للسياق المعقد.")
+        ]
+    }
 
     // MARK: Gemini
     // https://ai.google.dev/api/models#method:-models.list

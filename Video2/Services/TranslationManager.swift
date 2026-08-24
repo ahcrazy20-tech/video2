@@ -520,6 +520,9 @@ final class TranslationManager: ObservableObject {
             case .siliconflow:
                 translatorModel = ModelSelection.selected(purpose: "translator", provider: .siliconflow,
                                                           fallback: "deepseek-ai/DeepSeek-V3.2")
+            case .qwenMT:
+                translatorModel = ModelSelection.selected(purpose: "translator", provider: .dashscope,
+                                                          fallback: TranslateService.defaultQwenMTModel)
             case .deepL:
                 translatorModel = "DeepL API"
             case .auto:

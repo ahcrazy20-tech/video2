@@ -91,7 +91,9 @@ struct ModelPickerView: View {
     }
 
     @ViewBuilder private var content: some View {
-        if !provider.isAvailable {
+        // Qwen-MT قائمة موثقة ثابتة؛ نسمح بمقارنة موديلاتها وحصصها قبل حفظ
+        // المفتاح، بينما يبقى التشغيل/اختبار المفتاح محمياً في الإعدادات.
+        if !provider.isAvailable && provider != .dashscope {
             missingKeyView
         } else if let error = catalog.lastError[provider], catalog.models(for: provider).isEmpty {
             errorView(error)
@@ -164,6 +166,15 @@ struct ModelPickerView: View {
                 .pickerStyle(.menu)
 
                 Toggle("⭐ الموصى بها للبرنامج فقط", isOn: $onlyRecommended)
+            }
+
+            Section("السعر والحصة") {
+                Label("كل موديل يعرض حالته: مجاني، حصة محدودة، مدفوع، أو حسب الحساب.", systemImage: "creditcard")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Label("المتبقي الحقيقي يظهر في الإعدادات ← الرصيد والحدود بعد تحديثه.", systemImage: "gauge.with.dots.needle.50percent")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if let lastFetched = catalog.lastFetched[provider] {
@@ -309,6 +320,11 @@ private struct ModelRow: View {
                             .font(.caption2)
                             .foregroundStyle(V2Theme.gold)
                     }
+                    ModelBillingPill(info: entry.billing)
+                    Text(entry.billing.detailAR)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 6) {
                         ForEach(entry.capabilities.prefix(4), id: \.self) { cap in
                             Label(cap.titleAR, systemImage: cap.systemImage)
@@ -329,5 +345,39 @@ private struct ModelRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct ModelBillingPill: View {
+    let info: ModelBillingInfo
+
+    var body: some View {
+        Label(info.kind.titleAR, systemImage: icon)
+            .font(.system(size: 10, weight: .semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .foregroundStyle(color)
+            .background(color.opacity(0.12), in: Capsule())
+    }
+
+    private var icon: String {
+        switch info.kind {
+        case .free: return "gift.fill"
+        case .trialQuota: return "timer"
+        case .paid: return "creditcard.fill"
+        case .accountDependent: return "person.crop.circle.badge.questionmark"
+        case .deprecated: return "exclamationmark.triangle.fill"
+        case .unknown: return "questionmark.circle"
+        }
+    }
+
+    private var color: Color {
+        switch info.kind {
+        case .free: return .green
+        case .trialQuota: return V2Theme.gold
+        case .paid: return .orange
+        case .accountDependent, .unknown: return .secondary
+        case .deprecated: return .red
+        }
     }
 }

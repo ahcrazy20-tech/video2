@@ -80,6 +80,9 @@ enum TranslateService {
         case .siliconflow:
             return try await siliconFlowBatch(batch, config: config, contextTail: contextTail,
                                               source: source, target: target, videoTitle: videoTitle)
+        case .qwenMT:
+            return try await qwenMTBatch(batch, config: config, contextTail: contextTail,
+                                         source: source, target: target, videoTitle: videoTitle)
         case .auto:
             throw APIError(status: 0, body: "لا يوجد مزود ترجمة مفعّل")
         }
@@ -110,6 +113,7 @@ enum TranslateService {
         case .groqLLM: return "Groq LLM"
         case .deepL: return "DeepL"
         case .siliconflow: return "SiliconFlow"
+        case .qwenMT: return "Qwen-MT / DashScope"
         case .auto: return "—"
         }
     }
@@ -159,6 +163,9 @@ enum TranslateService {
     /// الموديل الافتراضي الحالي. نعتمد اسماً ثابتاً بدلاً من موديلات 2.0
     /// المتوقفة، لكننا نتحقق من الموديلات المتاحة فعلياً لكل مفتاح عند الحاجة.
     static let defaultGeminiModel = "gemini-3.7-flash"
+    /// Qwen-MT Flash هو الموديل الافتراضي للمزوّد المتخصص؛ الاختيار لا يحدث
+    /// تلقائياً في وضع Auto لأن DashScope مزوّد/مفتاح مستقلان.
+    static let defaultQwenMTModel = "qwen-mt-flash"
 
     private static let preferredGeminiModels = [
         "gemini-3.7-flash",
@@ -604,6 +611,58 @@ enum TranslateService {
         return parseLines(rawJSON: text, batch: batch)
     }
 
+    // MARK: DashScope / Qwen-MT
+
+    /// نستخدم وضع الـ custom prompt الموثق لـ Qwen-MT عبر user message واحد،
+    /// ونضع فيه تعليمات الحفاظ على معرفات السطور. بذلك يبقى ترتيب SRT آمناً،
+    /// وتبقى آخر السطور المترجمة في السياق، من دون خلطه مع translation_options.
+    private static func qwenMTBatch(_ batch: Batch,
+                                    config: Config,
+                                    contextTail: [(String, String)],
+                                    source: SubLang,
+                                    target: SubLang,
+                                    videoTitle: String) async throws -> [String] {
+        guard let key = KeychainStore.get("dashscope") else {
+            throw APIError(status: 401, body: "أدخل مفتاح DashScope / Qwen-MT من الإعدادات")
+        }
+        let model = config.model.isEmpty ? defaultQwenMTModel : config.model
+        let prompt = """
+        \(systemPrompt(source: source, target: target, videoTitle: videoTitle))
+
+        \(userPrompt(batch: batch, contextTail: contextTail))
+        """
+        let body: [String: Any] = [
+            "model": model,
+            "messages": [["role": "user", "content": prompt]]
+        ]
+        let payload = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await HTTP.withRetry(attempts: 3, baseDelay: 4) {
+            try await DashScopeAPI.request("POST",
+                                           path: "/chat/completions",
+                                           key: key,
+                                           headers: ["Content-Type": "application/json"],
+                                           body: payload,
+                                           timeout: 90)
+        }
+        let json = HTTP.json(from: data)
+        if let err = json["error"] as? [String: Any] {
+            let msg = (err["message"] as? String) ?? "خطأ غير معروف"
+            throw APIError(status: 0, body: "Qwen-MT: \(msg)")
+        }
+        guard let choices = json["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let text = message["content"] as? String,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw APIError(status: 0, body: "استجابة Qwen-MT فارغة")
+        }
+        let lines = parseLines(rawJSON: text, batch: batch)
+        guard lines.contains(where: { !$0.isEmpty }) else {
+            throw APIError(status: 0,
+                           body: "Qwen-MT لم يحافظ على JSON السطور. جرّب Qwen-MT Flash أو موديل Gemini/SiliconFlow آخر.")
+        }
+        return lines
+    }
+
     // MARK: DeepL
 
     private static func deepLBatch(_ batch: Batch,
@@ -679,5 +738,72 @@ enum TranslateService {
         }
         // بنفس ترتيب الدفعة، وسقوط للنص الأصلي عند غياب الترجمة
         return batch.cueIDs.map { map[$0] ?? "" }
+    }
+}
+
+// MARK: - DashScope / Qwen-MT endpoint
+
+/// Qwen-MT يستخدم واجهة OpenAI-compatible من Alibaba Cloud Model Studio.
+/// مفتاح Beijing ومفتاح Singapore مختلفان، لذلك لا نحاول نقل النص تلقائياً بين
+/// النطاقات: المستخدم يختار رابط الـ base URL المطابق لمفتاحه في الإعدادات.
+enum DashScopeAPI {
+    static let baseURLPreferenceKey = "dashscope.api.base"
+    static let defaultBaseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+    static var configuredBaseURL: String {
+        let raw = UserDefaults.standard.string(forKey: baseURLPreferenceKey) ?? defaultBaseURL
+        return normalizedBaseURL(raw) ?? defaultBaseURL
+    }
+
+    /// يعيد رابطاً آمناً صالحاً أو nil. نرفض HTTP عمداً لأن هذا الرابط يحمل
+    /// مفتاح API ونصوص الترجمة؛ لا يوجد استثناء ضمن التطبيق لبروكسي غير مشفّر.
+    static func validatedBaseURL(_ raw: String) -> String? {
+        normalizedBaseURL(raw)
+    }
+
+    static func saveBaseURL(_ raw: String) {
+        let value = normalizedBaseURL(raw) ?? defaultBaseURL
+        UserDefaults.standard.set(value, forKey: baseURLPreferenceKey)
+    }
+
+    static var endpointHintAR: String {
+        let host = URL(string: configuredBaseURL)?.host?.lowercased() ?? ""
+        if host.contains("ap-southeast") || host.contains("intl") {
+            return "المنطقة الدولية / Singapore"
+        }
+        if host.contains("cn-beijing") || host == "dashscope.aliyuncs.com" {
+            return "China (Beijing)"
+        }
+        return "رابط مخصص من Model Studio"
+    }
+
+    static func request(_ method: String,
+                        path: String,
+                        key: String,
+                        headers: [String: String] = [:],
+                        body: Data? = nil,
+                        timeout: Double = 300) async throws -> (Data, HTTPURLResponse) {
+        var allHeaders = headers
+        allHeaders["Authorization"] = "Bearer \(KeychainStore.normalized(key))"
+        let url = configuredBaseURL + (path.hasPrefix("/") ? path : "/\(path)")
+        return try await HTTP.request(method, url, headers: allHeaders, body: body, timeout: timeout)
+    }
+
+    private static func normalizedBaseURL(_ raw: String) -> String? {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let route = value.range(of: "/chat/completions", options: [.caseInsensitive]) {
+            value = String(value[..<route.lowerBound])
+        }
+        while value.hasSuffix("/") { value.removeLast() }
+        guard let components = URLComponents(string: value),
+              components.scheme?.lowercased() == "https",
+              let host = components.host, !host.isEmpty,
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil else {
+            return nil
+        }
+        return value
     }
 }
