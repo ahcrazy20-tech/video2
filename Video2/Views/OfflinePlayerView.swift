@@ -27,6 +27,16 @@ final class OfflinePlayerModel: ObservableObject {
     @Published var subtitleText: String = ""
     @Published var autoSpeak = false
 
+    // الدبلجة — تُشغَّل بدل الصوت الأصلي مع مزامنة مستمرة
+    @Published var hasDub = false
+    @Published var dubOn = false
+    private var dubPlayer: AVPlayer?
+    private var dubEndObs: NSObjectProtocol?
+    private var dubFinished = false
+
+    // كتم الصوت
+    @Published var mutedUser = false
+
     // الترجمة
     var origCues: [SubCue] = []
     var trCues: [SubCue] = []
@@ -60,6 +70,8 @@ final class OfflinePlayerModel: ObservableObject {
         layer = pl
         fill = false
         duration = video.duration ?? 0
+        let savedRate = UserDefaults.standard.float(forKey: "player.rate")
+        rate = savedRate > 0 ? savedRate : 1
         if AVPictureInPictureController.isPictureInPictureSupported() {
             pip = AVPictureInPictureController(playerLayer: pl)
         } else {
@@ -98,7 +110,7 @@ final class OfflinePlayerModel: ObservableObject {
             endObs = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
                 guard let self else { return }
                 if self.looping {
-                    self.player.seek(to: .zero)
+                    self.seek(to: 0)
                     self.player.play()
                 } else {
                     self.isPlaying = false
@@ -108,10 +120,12 @@ final class OfflinePlayerModel: ObservableObject {
         } catch {
             flash(t("pl.prep"))
         }
+        setupDub()
         timeObs = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] t in
             guard let self else { return }
             self.current = t.seconds
             self.updateSubtitle(at: t.seconds)
+            self.syncDub()
             if let d = self.player.currentItem?.duration.seconds, d.isFinite, d > 0 {
                 self.duration = d
             } else if let known = self.video.duration, known > 0 {
@@ -127,7 +141,10 @@ final class OfflinePlayerModel: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = false
         if let timeObs { player.removeTimeObserver(timeObs) }
         if let endObs { NotificationCenter.default.removeObserver(endObs) }
+        if let dubEndObs { NotificationCenter.default.removeObserver(dubEndObs) }
         player.pause()
+        dubPlayer?.pause()
+        dubPlayer = nil
         sleepWork?.cancel()
         MainActor.assumeIsolated { SpeechNarrator.shared.stop() }
         teardownRemoteCommands()
@@ -139,6 +156,7 @@ final class OfflinePlayerModel: ObservableObject {
         isPlaying = true
         scheduleHide()
         publishNowPlaying(force: true)
+        if dubOn, !dubFinished { dubPlayer?.play() }
     }
 
     func pause() {
@@ -147,6 +165,7 @@ final class OfflinePlayerModel: ObservableObject {
         showChrome = true
         MainActor.assumeIsolated { SpeechNarrator.shared.stop() }
         publishNowPlaying(force: true)
+        if dubOn { dubPlayer?.pause() }
     }
 
     func toggle() {
@@ -157,6 +176,10 @@ final class OfflinePlayerModel: ObservableObject {
         let t = min(max(0, seconds), max(duration, 0.1))
         player.seek(to: CMTime(seconds: t, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
         current = t
+        // الدبلجة: نقفز معها فوراً (الفرق الأكبر يتصحّح عبر syncDub)
+        if dubOn, let dp = dubPlayer {
+            dp.seek(to: CMTime(seconds: t, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        }
     }
 
     func skip(_ delta: Double) {
@@ -166,6 +189,7 @@ final class OfflinePlayerModel: ObservableObject {
 
     func setRate(_ r: Float) {
         rate = r
+        UserDefaults.standard.set(r, forKey: "player.rate")
         if isPlaying { player.rate = r }
         flash(String(format: "\(t("pl.speed")) ×%.2g", r))
     }
@@ -174,6 +198,124 @@ final class OfflinePlayerModel: ObservableObject {
         fill.toggle()
         layer.videoGravity = fill ? .resizeAspectFill : .resizeAspect
         flash(fill ? t("pl.fill") : t("pl.fit"))
+    }
+
+    // MARK: الدبلجة
+
+    /// يجهّز مشغّل الدبلجة إذا كان الفيديو معه ملف دبلجة محفوظ
+    private func setupDub() {
+        guard let rel = video.dubbedAudioPath,
+              FileManager.default.fileExists(atPath: LibraryStore.documents.appendingPathComponent(rel).path) else { return }
+        let url = LibraryStore.documents.appendingPathComponent(rel)
+        let dp = AVPlayer(url: url)
+        dp.actionAtItemEnd = .pause
+        dubPlayer = dp
+        hasDub = true
+        dubEndObs = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime,
+                                                            object: dp.currentItem, queue: .main) { [weak self] _ in
+            // الدبلجة انتهت (أقصر من الفيديو) — الصوت الأصلي يرجع تلقائياً
+            guard let self else { return }
+            self.dubFinished = true
+            self.dubOn = false
+            self.applyMute()
+        }
+        // تفعيل تلقائي: الهدف من الدبلجة هو مشاهدة الفيديو بها
+        dubOn = true
+        if video.lastPosition > 1 {
+            dp.seek(to: CMTime(seconds: video.lastPosition, preferredTimescale: 600))
+        }
+        dp.play()
+        applyMute()
+        flash(t("pl.dub.on"))
+    }
+
+    /// يحافظ على مزامنة الدبلجة مع الفيديو (من المراقب الدوري 0.25ث)
+    private func syncDub() {
+        guard dubOn, !dubFinished,
+              let dp = dubPlayer,
+              let item = dp.currentItem, item.status == .readyToPlay else { return }
+        let d = item.currentTime().seconds
+        let m = current
+        if d.isFinite, m.isFinite, abs(d - m) > 0.8 {
+            dp.seek(to: CMTime(seconds: m, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        }
+        if isPlaying, dp.rate == 0 {
+            dp.play()
+        } else if !isPlaying, dp.rate != 0 {
+            dp.pause()
+        }
+    }
+
+    func toggleDub() {
+        guard let dp = dubPlayer else { return }
+        dubOn.toggle()
+        if dubOn {
+            dubFinished = false
+            let t = CMTime(seconds: current, preferredTimescale: 600)
+            dp.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
+            if isPlaying { dp.play() }
+        } else {
+            dp.pause()
+        }
+        applyMute()
+        flash(dubOn ? t("pl.dub.on") : t("pl.dub.off"))
+    }
+
+    /// كتم الصوت الأصلي أثناء تشغيل الدبلجة
+    private func applyMute() {
+        player.muted = mutedUser || (dubOn && !dubFinished)
+    }
+
+    // MARK: كتم الصوت
+
+    func toggleMute() {
+        mutedUser.toggle()
+        applyMute()
+        flash(mutedUser ? t("pl.mute") : t("pl.unmute"))
+    }
+
+    // MARK: لقطة
+
+    func snapshot() {
+        let url: URL
+        if video.kind == .hls || video.localURL.pathExtension.lowercased() == "m3u8" {
+            guard let u = try? LocalFileServer.shared.playbackURL(for: video) else {
+                flash(t("pl.snapshot.fail"))
+                return
+            }
+            url = u
+        } else {
+            url = video.localURL
+        }
+        let asset = AVURLAsset(url: url)
+        let gen = AVAssetImageGenerator(asset: asset)
+        gen.appliesPreferredTrackTransform = true
+        gen.maximumSize = CGSize(width: 1920, height: 1080)
+        let t = CMTime(seconds: current, preferredTimescale: 600)
+        Task {
+            do {
+                let (cg, _) = try await gen.image(at: t)
+                let img = UIImage(cgImage: cg)
+                UIImageWriteToSavedPhotosAlbum(img, nil, nil, nil)
+                flash(t("pl.snapshot.saved"))
+            } catch {
+                flash(t("pl.snapshot.fail"))
+            }
+        }
+    }
+
+    // MARK: دوران الشاشة
+
+    var isLandscapeNow: Bool {
+        UIScreen.main.bounds.width > UIScreen.main.bounds.height
+    }
+
+    func rotate() {
+        // التطبيق مسموح له بالوضع الأفقي في Info.plist — ده الطريقة المعتمدة
+        // للتبديل البرمجي (تطبيقات TrollStore غير معرّضة لمراجعة App Store)
+        let target: UIInterfaceOrientation = isLandscapeNow ? .portrait : .landscapeRight
+        UIDevice.current.setValue(target.rawValue, forKey: "orientation")
+        flash(isLandscapeNow ? t("pl.portrait") : t("pl.landscape"))
     }
 
     func startSleep(_ minutes: Int) {
@@ -415,7 +557,7 @@ struct OfflinePlayerView: View {
     @StateObject private var vm: OfflinePlayerModel
     @State private var dragStart: Double?
     @State private var showSpeed = false
-    @State private var showSleep = false
+    @State private var showAirPlay = false
     @State private var showSearch = false
 
     init(video: SavedVideo) {
@@ -463,13 +605,40 @@ struct OfflinePlayerView: View {
             }
             Button(lang.t("nav.cancel"), role: .cancel) {}
         }
-         .confirmationDialog(lang.t("pl.sleep"), isPresented: $showSleep, titleVisibility: .visible) {
-            Button("15 min") { vm.startSleep(15) }
-            Button("30 min") { vm.startSleep(30) }
-            Button("45 min") { vm.startSleep(45) }
-            Button("60 min") { vm.startSleep(60) }
-            Button(lang.t("pl.sleep.off")) { vm.startSleep(0) }
-            Button(lang.t("nav.cancel"), role: .cancel) {}
+        .sheet(isPresented: $showAirPlay) {
+            VStack(spacing: 12) {
+                AirPlayPicker()
+                    .frame(height: 44)
+                Button(lang.t("nav.close")) { showAirPlay = false }
+                    .font(.caption.bold())
+            }
+            .padding(20)
+            .presentationDetents([.height(120)])
+        }
+    }
+
+    /// قائمة "المزيد" — مميزات ثانوية في مكان واحد عشان الشريط العلوي يفضل مرتب
+    private var moreMenu: some View {
+        Menu {
+            Menu(lang.t("pl.sleep")) {
+                Button("15 min") { vm.startSleep(15) }
+                Button("30 min") { vm.startSleep(30) }
+                Button("45 min") { vm.startSleep(45) }
+                Button("60 min") { vm.startSleep(60) }
+                Button(lang.t("pl.sleep.off")) { vm.startSleep(0) }
+            }
+            Button { vm.snapshot() } label: { Label(lang.t("pl.snapshot"), systemImage: "camera") }
+            Button { showAirPlay = true } label: { Label(lang.t("pl.airplay"), systemImage: "dot.radiowaves.left.and.right") }
+            Button { vm.rotate() } label: {
+                Label(vm.isLandscapeNow ? lang.t("pl.portrait") : lang.t("pl.landscape"), systemImage: "rotate.right")
+            }
+            if !(video.kind == .hls || video.localURL.pathExtension.lowercased() == "m3u8") {
+                ShareLink(item: video.localURL) {
+                    Label(lang.t("pl.share"), systemImage: "square.and.arrow.up")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle").padding(8)
         }
     }
 
@@ -545,7 +714,14 @@ struct OfflinePlayerView: View {
                                 .padding(8)
                         }
                     }
-                    Button { showSleep = true } label: { Image(systemName: "moon.zzz").padding(8) }
+                    if vm.hasDub {
+                        Button { vm.toggleDub() } label: {
+                            Image(systemName: vm.dubOn ? "waveform.circle.fill" : "waveform.circle")
+                                .padding(8)
+                        }
+                        .foregroundStyle(vm.dubOn ? V2Theme.gold : Color.white)
+                    }
+                    moreMenu
                     Button {
                         vm.locked = true
                         vm.showChrome = true
@@ -581,6 +757,10 @@ struct OfflinePlayerView: View {
                     HStack {
                         Button { showSpeed = true } label: {
                             Text(vm.rate == 1 ? lang.t("pl.speed.label") : String(format: "×%.2g", vm.rate)).font(.caption.bold())
+                        }
+                        Button { vm.toggleMute() } label: {
+                            Image(systemName: vm.mutedUser ? "speaker.slash.fill" : "speaker.wave.3.fill")
+                                .font(.caption.bold())
                         }
                         Spacer()
                         if vm.hasSubtitles {
@@ -678,4 +858,15 @@ private extension MPVolumeView {
             sl.value = value
         }
     }
+}
+
+// MARK: - اختيار جهاز AirPlay
+
+struct AirPlayPicker: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let v = AVRoutePickerView()
+        v.artworkImageView.isHidden = true
+        return v
+    }
+    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
 }

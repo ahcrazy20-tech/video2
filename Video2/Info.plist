@@ -38,6 +38,8 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>لحفظ لقطات الفيديو في ألبوم الصور</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
