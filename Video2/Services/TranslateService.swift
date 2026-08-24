@@ -4,6 +4,13 @@ import Foundation
 
 enum TranslateService {
 
+    /// يحتفظ باسم المزود في رسالة المهمة؛ أخطاء استخراج HLS تُعرض من
+    /// AudioPipeline بينما هذه الرسالة تخص Gemini فقط.
+    private struct GeminiServiceError: LocalizedError {
+        let detail: String
+        var errorDescription: String? { "Gemini: \(detail)" }
+    }
+
     struct Batch {
         var startIndex: Int   // فهرس أول جملة في الدفعة داخل مصفوفة الجمل الكاملة
         var cueIDs: [Int]
@@ -149,6 +156,271 @@ enum TranslateService {
 
     // MARK: Gemini
 
+    /// الموديل الافتراضي الحالي. نعتمد اسماً ثابتاً بدلاً من موديلات 2.0
+    /// المتوقفة، لكننا نتحقق من الموديلات المتاحة فعلياً لكل مفتاح عند الحاجة.
+    static let defaultGeminiModel = "gemini-3.7-flash"
+
+    private static let preferredGeminiModels = [
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite"
+    ]
+
+    /// يقبل القيم التي كانت تُخزن في الإصدارات السابقة مثل `models/...`
+    /// أو رابط generateContent ويعيد اسم الموديل فقط.
+    static func normalizedGeminiModel(_ value: String) -> String {
+        var model = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let decoded = model.removingPercentEncoding { model = decoded }
+        if let range = model.range(of: "/models/") {
+            model = String(model[range.upperBound...])
+        }
+        if model.hasPrefix("models/") {
+            model = String(model.dropFirst("models/".count))
+        }
+        if let query = model.firstIndex(of: "?") {
+            model = String(model[..<query])
+        }
+        if let action = model.range(of: ":generateContent", options: [.caseInsensitive]) {
+            model = String(model[..<action.lowerBound])
+        }
+        return model.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// موديلات Gemini 2.0 أُوقفت نهائياً، لذلك لا نرسلها إلى API حتى لو
+    /// بقيت محفوظة على جهاز المستخدم من إصدار قديم.
+    static func isRetiredGeminiModel(_ value: String) -> Bool {
+        let model = normalizedGeminiModel(value).lowercased()
+        return model.hasPrefix("gemini-2.0-") || model.hasPrefix("gemini-1.")
+    }
+
+    private static func selectedGeminiModel() -> String {
+        let selected = ModelSelection.selected(purpose: "translator",
+                                               provider: .gemini,
+                                               fallback: defaultGeminiModel)
+        let normalized = normalizedGeminiModel(selected)
+        return normalized.isEmpty || isRetiredGeminiModel(normalized) ? defaultGeminiModel : normalized
+    }
+
+    private static func geminiEndpoint(model: String) -> String {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "generativelanguage.googleapis.com"
+        components.path = "/v1beta/models/\(normalizedGeminiModel(model)):generateContent"
+        return components.url?.absoluteString
+            ?? "https://generativelanguage.googleapis.com/v1beta/models/\(defaultGeminiModel):generateContent"
+    }
+
+    private static func geminiModelsEndpoint(pageToken: String? = nil) -> String {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "generativelanguage.googleapis.com"
+        components.path = "/v1beta/models"
+        var items = [URLQueryItem(name: "pageSize", value: "100")]
+        if let pageToken, !pageToken.isEmpty {
+            items.append(URLQueryItem(name: "pageToken", value: pageToken))
+        }
+        components.queryItems = items
+        return components.url?.absoluteString ?? "https://generativelanguage.googleapis.com/v1beta/models"
+    }
+
+    private static func geminiHeaders(key: String) -> [String: String] {
+        ["Content-Type": "application/json", "x-goog-api-key": key]
+    }
+
+    private static func requestGemini(model: String,
+                                      key: String,
+                                      payload: Data,
+                                      attempts: Int,
+                                      timeout: Double) async throws -> (Data, HTTPURLResponse) {
+        try await HTTP.withRetry(attempts: attempts, baseDelay: 4) {
+            try await HTTP.request("POST", geminiEndpoint(model: model),
+                                   headers: geminiHeaders(key: key),
+                                   body: payload,
+                                   timeout: timeout)
+        }
+    }
+
+    /// يقرأ قائمة الموديلات المتاحة لنفس المفتاح. وجود المفتاح وحده لا يكفي:
+    /// قد يكون موديل قديم موجوداً في الإعدادات لكنه غير مسموح لهذا المشروع.
+    private static func availableGeminiModels(key: String) async throws -> [String] {
+        var pageToken: String?
+        var found: [String] = []
+        var seen = Set<String>()
+
+        for _ in 0..<5 {
+            // نلتقط نسخة ثابتة لأن withRetry يستدعي closure بشكل غير متزامن.
+            let tokenForRequest = pageToken
+            let endpoint = geminiModelsEndpoint(pageToken: tokenForRequest)
+            let (data, _) = try await HTTP.withRetry(attempts: 2, baseDelay: 1) {
+                try await HTTP.request("GET", endpoint,
+                                       headers: ["x-goog-api-key": key],
+                                       timeout: 30)
+            }
+            let json = HTTP.json(from: data)
+            let models = json["models"] as? [[String: Any]] ?? []
+            for item in models {
+                guard let rawName = item["name"] as? String else { continue }
+                let methods = (item["supportedGenerationMethods"] as? [String] ?? [])
+                    + (item["supportedActions"] as? [String] ?? [])
+                let supportsGeneration = methods.contains {
+                    $0.replacingOccurrences(of: "_", with: "").lowercased() == "generatecontent"
+                }
+                guard supportsGeneration else { continue }
+                let model = normalizedGeminiModel(rawName)
+                guard !model.isEmpty, seen.insert(model.lowercased()).inserted else { continue }
+                found.append(model)
+            }
+            pageToken = json["nextPageToken"] as? String
+            if pageToken == nil || pageToken?.isEmpty == true { break }
+        }
+        return found
+    }
+
+    private static func isTextTranslationModel(_ model: String) -> Bool {
+        let lower = model.lowercased()
+        let unsupportedMarkers = ["image", "imagen", "veo", "embedding", "tts", "live", "audio", "omni", "robotics"]
+        return !unsupportedMarkers.contains { lower.contains($0) }
+    }
+
+    private static func replacementGeminiModels(available: [String], excluding: String) -> [String] {
+        let excluded = normalizedGeminiModel(excluding).lowercased()
+        let usable = available.filter {
+            let normalized = normalizedGeminiModel($0)
+            return normalized.lowercased() != excluded && isTextTranslationModel(normalized)
+        }
+        var result: [String] = []
+        for preferred in preferredGeminiModels {
+            if let model = usable.first(where: { $0.caseInsensitiveCompare(preferred) == .orderedSame }) {
+                result.append(model)
+            }
+        }
+        let remaining = usable.filter { candidate in
+            !result.contains { $0.caseInsensitiveCompare(candidate) == .orderedSame }
+        }.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        result.append(contentsOf: remaining)
+        return result
+    }
+
+    private static func saveRecoveredGeminiModel(_ model: String) {
+        let clean = normalizedGeminiModel(model)
+        guard !clean.isEmpty else { return }
+        ModelSelection.save(clean, purpose: "translator", provider: .gemini)
+        // يبقى هذا المفتاح للتوافق مع النسخ السابقة من التطبيق.
+        UserDefaults.standard.set(clean, forKey: "gemini.model")
+    }
+
+    private static func modelUnavailableError(model: String, original: APIError) -> APIError {
+        let detail = original.body
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = detail.isEmpty ? "" : " تفاصيل Gemini: \(String(detail.prefix(220)))"
+        return APIError(status: 404,
+                        body: "Gemini: الموديل \(model) غير متاح لهذا المفتاح أو أُوقف. حاول التطبيق تلقائياً اختيار موديل حديث من قائمة حسابك ولم يجد بديلاً صالحاً. افتح اختيار موديل Gemini وحدّث القائمة.\(suffix)")
+    }
+
+    /// ينفذ الطلب بالموديل المختار، وعند 404 خاص بالموديل يقرأ قائمة الحساب
+    /// ويجرب موديلات النص الحديثة واحداً واحداً. بهذه الطريقة لا تسقط مهمة
+    /// كبيرة لمجرد أن Google أوقفت اسماً قديماً للموديل.
+    private static func requestGeminiWithRecovery(requestedModel: String,
+                                                   key: String,
+                                                   payload: Data,
+                                                   attempts: Int,
+                                                   timeout: Double) async throws -> (data: Data, response: HTTPURLResponse, model: String) {
+        let initial = normalizedGeminiModel(requestedModel).isEmpty ? defaultGeminiModel : normalizedGeminiModel(requestedModel)
+        do {
+            let (data, response) = try await requestGemini(model: initial, key: key,
+                                                            payload: payload, attempts: attempts, timeout: timeout)
+            return (data, response, initial)
+        } catch let firstError as APIError where firstError.status == 404 {
+            let replacements: [String]
+            do {
+                replacements = replacementGeminiModels(available: try await availableGeminiModels(key: key),
+                                                       excluding: initial)
+            } catch {
+                throw modelUnavailableError(model: initial, original: firstError)
+            }
+            var lastNotFound = firstError
+            for candidate in replacements {
+                do {
+                    let (data, response) = try await requestGemini(model: candidate, key: key,
+                                                                    payload: payload, attempts: attempts, timeout: timeout)
+                    saveRecoveredGeminiModel(candidate)
+                    return (data, response, candidate)
+                } catch let error as APIError where error.status == 404 {
+                    lastNotFound = error
+                    continue
+                }
+            }
+            throw modelUnavailableError(model: initial, original: lastNotFound)
+        }
+    }
+
+    /// اختبار حقيقي لـ generateContent، وليس مجرد ListModels. هذا يمنع أن يظهر
+    /// "المفتاح يعمل" بينما الموديل المحفوظ نفسه يعيد 404 عند الترجمة.
+    static func verifyGeminiKey(_ rawKey: String) async -> String {
+        let key = KeychainStore.normalized(rawKey)
+        guard !key.isEmpty else { return "⚠️ اكتب مفتاح Gemini أولاً" }
+        let original = selectedGeminiModel()
+        let probe: [String: Any] = [
+            "contents": [["role": "user", "parts": [["text": "Reply only with OK."]]]],
+            "generationConfig": ["maxOutputTokens": 8]
+        ]
+        do {
+            let payload = try JSONSerialization.data(withJSONObject: probe)
+            let (_, _, usedModel) = try await requestGeminiWithRecovery(requestedModel: original,
+                                                                          key: key,
+                                                                          payload: payload,
+                                                                          attempts: 2,
+                                                                          timeout: 45)
+            if usedModel.caseInsensitiveCompare(original) == .orderedSame {
+                return "✅ مفتاح Gemini والموديل \(usedModel) يعملان بنجاح"
+            }
+            return "✅ المفتاح يعمل — تم استبدال الموديل غير المتاح \(original) تلقائياً بـ \(usedModel)"
+        } catch let error as APIError {
+            let body = error.body.lowercased()
+            if error.status == 401 || (error.status == 400 && (body.contains("api key") || body.contains("api_key"))) {
+                return "❌ مفتاح Gemini غير صحيح أو غير مفعّل للمشروع"
+            }
+            if error.status == 403 {
+                return "❌ مفتاح Gemini لا يملك صلاحية استخدام الموديل أو أن الخطة/المنطقة مقيّدة (403)"
+            }
+            if error.status == 429 {
+                return "⚠️ المفتاح يعمل لكن وصل إلى حد Gemini مؤقتاً (429)"
+            }
+            let detail = error.body.replacingOccurrences(of: "\n", with: " ")
+            return "❌ تعذر تشغيل Gemini: \(String(detail.prefix(260)))"
+        } catch {
+            return "⚠️ تعذر الاتصال بـ Gemini — تحقق من الإنترنت ثم أعد الاختبار"
+        }
+    }
+
+    /// فحص خفيف قبل استخراج HLS الطويل؛ إن كان الموديل القديم غير متاح نبدله
+    /// الآن بدلاً من اكتشاف 404 بعد رفع/تحويل الفيديو بالكامل.
+    static func preflightGeminiModel() async throws -> String {
+        guard let key = KeychainStore.get("gemini") else {
+            throw GeminiServiceError(detail: "أدخل مفتاح Gemini من الإعدادات")
+        }
+        let probe: [String: Any] = [
+            "contents": [["role": "user", "parts": [["text": "Reply only with OK."]]]],
+            "generationConfig": ["maxOutputTokens": 8]
+        ]
+        let payload = try JSONSerialization.data(withJSONObject: probe)
+        do {
+            let result = try await requestGeminiWithRecovery(requestedModel: selectedGeminiModel(),
+                                                              key: key,
+                                                              payload: payload,
+                                                              attempts: 2,
+                                                              timeout: 45)
+            return result.model
+        } catch {
+            throw GeminiServiceError(detail: error.localizedDescription)
+        }
+    }
+
     private static func geminiBatch(_ batch: Batch,
                                     config: Config,
                                     contextTail: [(String, String)],
@@ -156,10 +428,9 @@ enum TranslateService {
                                     target: SubLang,
                                     videoTitle: String) async throws -> [String] {
         guard let key = KeychainStore.get("gemini") else {
-            throw APIError(status: 401, body: "أدخل مفتاح Gemini من الإعدادات")
+            throw GeminiServiceError(detail: "أدخل مفتاح Gemini من الإعدادات")
         }
-        let model = config.model.isEmpty ? "gemini-2.5-flash" : config.model
-        let url = "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent?key=\(key)"
+        let model = normalizedGeminiModel(config.model).isEmpty ? defaultGeminiModel : normalizedGeminiModel(config.model)
         let body: [String: Any] = [
             "system_instruction": ["parts": [["text": systemPrompt(source: source, target: target, videoTitle: videoTitle)]]],
             "contents": [["role": "user", "parts": [["text": userPrompt(batch: batch, contextTail: contextTail)]]]],
@@ -170,17 +441,24 @@ enum TranslateService {
             ] as [String: Any]
         ]
         let payload = try JSONSerialization.data(withJSONObject: body)
-        let (data, resp) = try await HTTP.withRetry(attempts: 5, baseDelay: 6) {
-            try await HTTP.request("POST", url,
-                                   headers: ["Content-Type": "application/json"],
-                                   body: payload,
-                                   timeout: 180)
+        let data: Data
+        let response: HTTPURLResponse
+        do {
+            let result = try await requestGeminiWithRecovery(requestedModel: model,
+                                                              key: key,
+                                                              payload: payload,
+                                                              attempts: 5,
+                                                              timeout: 180)
+            data = result.data
+            response = result.response
+        } catch {
+            throw GeminiServiceError(detail: error.localizedDescription)
         }
         // Gemini أحياناً يرجع 200 لكن بدون "candidates" بسبب فلترة الأمان — نرمي برسالة واضحة
         let json = HTTP.json(from: data)
         if let err = json["error"] as? [String: Any] {
             let msg = (err["message"] as? String) ?? "خطأ غير معروف"
-            let code = (err["code"] as? Int) ?? resp.statusCode
+            let code = (err["code"] as? Int) ?? response.statusCode
             throw APIError(status: code, body: "Gemini: \(msg)")
         }
         var text = ""
