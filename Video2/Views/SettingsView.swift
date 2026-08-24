@@ -10,7 +10,6 @@ struct SettingsView: View {
 
     @AppStorage("stt.provider") private var sttProviderRaw: String = STTProviderKind.auto.rawValue
     @AppStorage("tr.provider") private var translatorRaw: String = TranslatorKind.auto.rawValue
-    @AppStorage("gemini.model") private var geminiModel: String = "gemini-2.5-flash"
     @AppStorage("stt.concurrency") private var sttConcurrency: Int = 3
     @AppStorage("dl.maxHeight") private var downloadMaxHeight: Int = 0
     @AppStorage("tts.edge") private var preferEdgeTTS: Bool = true
@@ -94,7 +93,7 @@ struct SettingsView: View {
                     APIKeyRow(title: "مفتاح Gemini",
                               placeholder: "AIza...",
                               keyID: "gemini",
-                              hint: "للترجمة النصية السياقية — شريحة مجانية سخية.")
+                              hint: "للترجمة النصية السياقية. زر الاختبار يختبر GenerateContent والموديل المختار فعلياً، لا المفتاح فقط.")
                     APIKeyRow(title: "مفتاح SiliconFlow",
                               placeholder: "sk-...",
                               keyID: "siliconflow",
@@ -122,7 +121,7 @@ struct SettingsView: View {
                      APIKeyRow(title: "مفتاح CloudConvert",
                               placeholder: "cc-...",
                               keyID: "cloudconvert",
-                              hint: "تحويل HLS إلى MP4 عبر الإنترنت — 25 تحويل مجاني يومياً (خيار احتياطي).")
+                              hint: "تحويل HLS عند الحاجة فقط. للتشغيل تأكد من تفعيل task.read و task.write في مفتاح CloudConvert.")
                     APIKeyRow(title: "مفتاح ffmpeg-api.com",
                               placeholder: "من لوحة التحكم",
                               keyID: "ffmpegapi",
@@ -312,7 +311,7 @@ struct SettingsView: View {
     private var displayedTranslatorModel: String {
         switch resolvedTranslator {
         case .gemini:
-            return ModelSelection.selected(purpose: "translator", provider: .gemini, fallback: geminiModel)
+            return ModelSelection.selected(purpose: "translator", provider: .gemini, fallback: TranslateService.defaultGeminiModel)
         case .groqLLM:
             return ModelSelection.selected(purpose: "translator", provider: .groq, fallback: "openai/gpt-oss-120b")
         case .siliconflow:
@@ -488,6 +487,10 @@ struct APIKeyRow: View {
 enum KeyTester {
     static func verify(provider: String, key: String) async -> String {
         let key = KeychainStore.normalized(key)
+        if provider == "gemini" {
+            return await TranslateService.verifyGeminiKey(key)
+        }
+
         if provider == "siliconflow" {
             do {
                 _ = try await SiliconFlowAPI.request("GET", path: "/models", key: key, timeout: 30)
@@ -509,8 +512,6 @@ enum KeyTester {
         case "groq":
             url = "https://api.groq.com/openai/v1/models"
             headers = ["Authorization": "Bearer \(key)"]
-        case "gemini":
-            url = "https://generativelanguage.googleapis.com/v1beta/models?key=\(key)"
         case "siliconflow":
             url = "https://api.siliconflow.cn/v1/models"
             headers = ["Authorization": "Bearer \(key)"]
@@ -529,8 +530,8 @@ enum KeyTester {
         case "speechmatics":
             url = "https://asr.api.speechmatics.com/v2/user"
             headers = ["api-key": key]
-               case "cloudconvert":
-            url = "https://api.cloudconvert.com/v2/user"
+        case "cloudconvert":
+            url = "https://api.cloudconvert.com/v2/jobs?per_page=1"
             headers = ["Authorization": "Bearer \(key)"]
         case "ffmpegapi":
             url = "https://api.ffmpeg-api.com/"
@@ -541,6 +542,9 @@ enum KeyTester {
         do {
             let (_, resp) = try await HTTP.request("GET", url, headers: headers, timeout: 30)
             _ = resp
+            if provider == "cloudconvert" {
+                return "✅ مفتاح CloudConvert يعمل (تم التحقق من task.read). فعّل task.write أيضاً للتحويل."
+            }
             return "✅ المفتاح يعمل بنجاح"
         } catch let e as APIError {
             if e.status == 403 {
@@ -557,7 +561,7 @@ enum KeyTester {
                 return "❌ المفتاح غير صحيح أو منتهي (401)"
             }
             if e.status == 404 {
-                return "✅ المفتاح مقبول (تجاوز المصادقة)"
+                return "⚠️ المسار أو المورد غير موجود (404) — هذا لا يؤكد أن المفتاح يعمل. أعد الاختبار بعد تحديث التطبيق."
             }
             if e.status == 429 {
                 return "⚠️ المفتاح يعمل لكن وصلت لحد الطلبات مؤقتاً — جرب بعد دقيقة"

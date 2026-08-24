@@ -47,7 +47,7 @@ enum ModelCapability: String, Codable, CaseIterable, Identifiable {
 
 struct ModelEntry: Identifiable, Codable, Hashable {
     var id: String { rawID }
-    let rawID: String                // المعرّف الفعلي المُرسل للـ API (مثل "gemini-2.0-flash" أو "openai/gpt-oss-120b")
+    let rawID: String                // المعرّف الفعلي المُرسل للـ API (مثل "gemini-3.7-flash" أو "openai/gpt-oss-120b")
     let displayName: String          // اسم وصفي معروض للمستخدم
     let provider: ModelProvider      // المزود
     let capabilities: [ModelCapability]
@@ -131,16 +131,36 @@ enum ModelSelection {
     }
 
     static func selected(purpose: String, provider: ModelProvider, fallback: String) -> String {
-        if let value = UserDefaults.standard.string(forKey: key(purpose: purpose, provider: provider)), !value.isEmpty {
-            return value
+        func normalized(_ value: String) -> String {
+            provider == .gemini ? TranslateService.normalizedGeminiModel(value) : value
+        }
+        func usable(_ value: String) -> String? {
+            let clean = normalized(value)
+            guard !clean.isEmpty else { return nil }
+            if provider == .gemini, TranslateService.isRetiredGeminiModel(clean) {
+                // Gemini 2.0 أُوقف؛ نرحّل الاختيار المخزن حتى لا يكرر التطبيق 404.
+                let replacement = TranslateService.defaultGeminiModel
+                save(replacement, purpose: purpose, provider: provider)
+                if purpose == "translator" {
+                    UserDefaults.standard.set(replacement, forKey: "gemini.model")
+                }
+                return replacement
+            }
+            return clean
+        }
+
+        if let value = UserDefaults.standard.string(forKey: key(purpose: purpose, provider: provider)),
+           let selected = usable(value) {
+            return selected
         }
         // توافق مع الإصدارات السابقة، لكن فقط للمزوّد المطابق حتى لا يُرسل
         // موديل Gemini إلى SiliconFlow أو العكس.
         if provider == .gemini, purpose == "translator",
-           let legacy = UserDefaults.standard.string(forKey: "gemini.model"), !legacy.isEmpty {
-            return legacy
+           let legacy = UserDefaults.standard.string(forKey: "gemini.model"),
+           let selected = usable(legacy) {
+            return selected
         }
-        return fallback
+        return normalized(fallback)
     }
 
     static func save(_ model: String, purpose: String, provider: ModelProvider) {
@@ -182,11 +202,9 @@ final class ModelCatalog: ObservableObject {
             switch provider {
             case .gemini:
                 let key = KeychainStore.get("gemini") ?? ""
-                let sep = url.contains("?") ? "&" : "?"
-                let urlWithKey = "\(url)\(sep)key=\(key)"
-                headers = [:]
+                headers = ["x-goog-api-key": key]
                 let (data, _) = try await HTTP.withRetry(attempts: 2) {
-                    try await HTTP.request("GET", urlWithKey, headers: headers, timeout: 30)
+                    try await HTTP.request("GET", url, headers: headers, timeout: 30)
                 }
                 let entries = ModelCatalogParser.gemini(data: data)
                 models[provider] = entries
@@ -270,7 +288,15 @@ final class ModelCatalog: ObservableObject {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let cached = try? decoder.decode(CacheShape.self, from: data) else { return }
-        for (key, val) in cached.models { models[ModelProvider(rawValue: key) ?? .gemini] = val }
+        for (key, value) in cached.models {
+            let provider = ModelProvider(rawValue: key) ?? .gemini
+            // لا نعيد إظهار موديلات Gemini المتوقفة من cache قديم في قسم
+            // "موصى به"؛ اختيار محفوظ قديم يُرحّل في ModelSelection أيضاً.
+            let entries = provider == .gemini
+                ? value.filter { !TranslateService.isRetiredGeminiModel($0.rawID) }
+                : value
+            models[provider] = entries
+        }
         for (key, val) in cached.lastFetched { lastFetched[ModelProvider(rawValue: key) ?? .gemini] = val }
     }
 
@@ -307,8 +333,11 @@ enum ModelCatalogParser {
         var out: [ModelEntry] = []
         for m in raw {
             guard let name = m["name"] as? String else { continue }
-            // name comes like "models/gemini-2.0-flash"
-            let rawID = name.hasPrefix("models/") ? String(name.dropFirst("models/".count)) : name
+            // name comes like "models/gemini-3.7-flash"
+            let rawID = TranslateService.normalizedGeminiModel(name)
+            // هذه الأسماء لا تصلح لـ generateContent بعد إيقاف Gemini 2.0؛
+            // لا نعرضها حتى من ردود قائمة موديلات متأخرة.
+            guard !rawID.isEmpty, !TranslateService.isRetiredGeminiModel(rawID) else { continue }
             let displayName = (m["displayName"] as? String) ?? rawID
             let description = m["description"] as? String
             let methods = m["supportedGenerationMethods"] as? [String] ?? []
@@ -347,13 +376,15 @@ enum ModelCatalogParser {
 
     private static func recommendGemini(id: String, capabilities: [ModelCapability]) -> (Bool, String?) {
         let lc = id.lowercased()
-        if lc.contains("2.5-flash") { return (true, "الأحدث من Gemini — سرعة وجودة عاليتين للترجمة السياقية") }
-        if lc.contains("2.5-pro") { return (true, "الأقوى جودة — أبطأ قليلاً لكن أدق في الترجمات الطويلة") }
-        if lc.contains("2.0-flash") { return (true, "موثوق وسريع — مناسب للترجمة بالدفعات الكبيرة") }
-        if lc.contains("1.5-flash") { return (false, "لا يزال يعمل لكنه أقل جودة من 2.x") }
-        if lc.contains("1.5-pro") { return (false, "جودة قديمة — فضّل 2.5 إن أمكن") }
-        if lc.contains("exp") { return (false, "تجريبي — قد يكون غير مستقر") }
-        if lc.contains("nano") { return (false, "خفيف جداً — غير مناسب للترجمة السياقية الطويلة") }
+        guard capabilities.contains(.translation) else { return (false, nil) }
+        if lc.contains("3.7-flash") { return (true, "Gemini 3.7 Flash — أحدث خيار ثابت للترجمة السياقية") }
+        if lc.contains("3.6-flash") { return (true, "Gemini 3.6 Flash — سريع وقوي للدفعات الطويلة") }
+        if lc.contains("3.5-flash-lite") { return (true, "Gemini 3.5 Flash-Lite — أسرع وأوفر للترجمة بالدفعات") }
+        if lc.contains("3.5-flash") { return (true, "Gemini 3.5 Flash — خيار ثابت ومتوازن للترجمة") }
+        if lc.contains("3.1-flash-lite") { return (true, "Gemini 3.1 Flash-Lite — سريع واقتصادي للترجمة") }
+        if lc.contains("2.5-flash") { return (true, "Gemini 2.5 Flash — متاح لبعض المشاريع القديمة فقط") }
+        if lc.contains("2.5-pro") { return (true, "Gemini 2.5 Pro — جودة أعلى وأبطأ للترجمات الطويلة") }
+        if lc.contains("exp") || lc.contains("preview") { return (false, "تجريبي — قد يكون غير مستقر") }
         return (false, nil)
     }
 

@@ -88,110 +88,74 @@ enum AudioPipeline {
         return nil
     }
     
-    /// دمج .ts segments في ملف واحد
+    /// دمج .ts segments في ملف واحد. لا نقرأ الفيديو كله في الذاكرة، ولا نطبع
+    /// سطراً لكل segment لأن تسجيل آلاف السطور كان يبطئ التحويل الطويل نفسه.
     private static func mergeTS(segments: [String], baseFolder: URL) async throws -> URL {
-        print("[AudioPipeline] ═══ Merging TS segments...")
-        print("[AudioPipeline] Base folder: \(baseFolder.path)")
-        print("[AudioPipeline] Segments count: \(segments.count)")
-        
-        let out = FileManager.default.temporaryDirectory.appendingPathComponent("merge-\(UUID().uuidString).ts")
-        
+        print("[AudioPipeline] Merging \(segments.count) TS segments…")
+        let out = FileManager.default.temporaryDirectory
+            .appendingPathComponent("merge-\(UUID().uuidString).ts")
         guard FileManager.default.createFile(atPath: out.path, contents: nil) else {
-            print("[AudioPipeline] ❌ Failed to create merge file at: \(out.path)")
-            throw AudioPipelineError.exportFailed("تعذر إنشاء ملف مؤقت")
+            throw AudioPipelineError.exportFailed("تعذر إنشاء ملف مؤقت لدمج HLS")
         }
-        print("[AudioPipeline] ✅ Created merge file: \(out.path)")
-        
-        let fh = try FileHandle(forWritingTo: out)
-        defer { try? fh.close() }
-        
-        var totalBytes = 0
-        
-        for (index, segPath) in segments.enumerated() {
-            print("[AudioPipeline] Processing segment \(index + 1)/\(segments.count): \(segPath)")
-            
-            if Task.isCancelled { 
-                print("[AudioPipeline] ❌ Task cancelled")
-                try? FileManager.default.removeItem(at: out)
-                throw CancellationError() 
-            }
-            
-            do {
-                var segURL: URL
-                
-                if segPath.hasPrefix("/") {
-                    segURL = URL(fileURLWithPath: segPath)
-                    print("[AudioPipeline]   Absolute path")
-                } else if segPath.hasPrefix("http://") || segPath.hasPrefix("https://") {
-                    guard let u = URL(string: segPath) else {
-                        print("[AudioPipeline]   ❌ Invalid URL: \(segPath)")
-                        continue
+
+        do {
+            let handle = try FileHandle(forWritingTo: out)
+            defer { try? handle.close() }
+            var totalBytes = 0
+
+            for (index, segmentPath) in segments.enumerated() {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+                if index == 0 || index + 1 == segments.count || (index + 1).isMultiple(of: 100) {
+                    print("[AudioPipeline] HLS merge \(index + 1)/\(segments.count)")
+                }
+
+                let data: Data
+                if segmentPath.hasPrefix("http://") || segmentPath.hasPrefix("https://") {
+                    guard let remote = URL(string: segmentPath) else {
+                        throw AudioPipelineError.exportFailed("رابط HLS غير صالح: \(segmentPath)")
                     }
-                    segURL = u
-                    print("[AudioPipeline]   HTTP URL - downloading...")
-                    let (data, response) = try await URLSession.shared.data(from: segURL)
-                    if let httpResponse = response as? HTTPURLResponse {
-                        print("[AudioPipeline]   HTTP status: \(httpResponse.statusCode)")
-                        guard (200...299).contains(httpResponse.statusCode) else {
-                            print("[AudioPipeline]   ❌ HTTP error: \(httpResponse.statusCode)")
-                            continue
-                        }
+                    let (downloaded, response) = try await URLSession.shared.data(from: remote)
+                    guard let http = response as? HTTPURLResponse,
+                          (200...299).contains(http.statusCode) else {
+                        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                        throw AudioPipelineError.exportFailed("تعذر تنزيل جزء HLS — HTTP \(status)")
                     }
-                    fh.write(data)
-                    totalBytes += data.count
-                    print("[AudioPipeline]   ✅ Downloaded \(data.count / 1024) KB")
-                    continue
+                    data = downloaded
                 } else {
-                    segURL = baseFolder.appendingPathComponent(segPath)
-                    print("[AudioPipeline]   Relative path → \(segURL.path)")
-                }
-                
-                // تحقق إن الملف موجود
-                guard FileManager.default.fileExists(atPath: segURL.path) else {
-                    print("[AudioPipeline]   ❌ File not found: \(segURL.path)")
-                    
-                    // حاول نشوف الملفات الموجودة
-                    let dirPath = segURL.deletingLastPathComponent()
-                    if let contents = try? FileManager.default.contentsOfDirectory(atPath: dirPath.path) {
-                        print("[AudioPipeline]   Available files in \(dirPath.lastPathComponent):")
-                        for file in contents.prefix(5) {
-                            print("[AudioPipeline]     - \(file)")
-                        }
-                        if contents.count > 5 {
-                            print("[AudioPipeline]     ... and \(contents.count - 5) more")
-                        }
+                    let local = segmentPath.hasPrefix("/")
+                        ? URL(fileURLWithPath: segmentPath)
+                        : baseFolder.appendingPathComponent(segmentPath)
+                    guard FileManager.default.fileExists(atPath: local.path) else {
+                        throw AudioPipelineError.exportFailed("جزء HLS مفقود: \(local.lastPathComponent)")
                     }
-                    continue
+                    data = try Data(contentsOf: local, options: [.mappedIfSafe])
                 }
-                
-                // اقرأ البيانات
-                let data = try Data(contentsOf: segURL)
-                print("[AudioPipeline]   Read \(data.count / 1024) KB")
-                fh.write(data)
+                guard !data.isEmpty else {
+                    throw AudioPipelineError.exportFailed("جزء HLS فارغ: \(segmentPath)")
+                }
+                try handle.write(contentsOf: data)
                 totalBytes += data.count
-                print("[AudioPipeline]   ✅ Written")
-                
-            } catch {
-                print("[AudioPipeline]   ❌ Error: \(error.localizedDescription)")
-                continue
             }
-        }
-        
-        let finalSize = (try? out.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        print("[AudioPipeline] ✅ Merge complete: \(totalBytes / 1024 / 1024) MB (final size: \(finalSize / 1024 / 1024) MB)")
-        
-        guard totalBytes > 0 else {
+
+            guard totalBytes > 0 else {
+                throw AudioPipelineError.exportFailed("لم يتم دمج أي بيانات من HLS")
+            }
+            print("[AudioPipeline] HLS merge complete: \(totalBytes / 1024 / 1024) MB")
+            return out
+        } catch {
             try? FileManager.default.removeItem(at: out)
-            throw AudioPipelineError.exportFailed("لم يتم دمج أي بيانات من segments")
+            throw error
         }
-        
-        return out
     }
     
-    /// تحويل HLS عبر CloudConvert
-    private static func convertWithCloudConvert(m3u8URL: URL) async throws -> URL {
+    /// تحويل HLS عبر CloudConvert. في مسار الترجمة نطلب M4A فقط لأننا
+    /// نحتاج الصوت لا الفيديو؛ ذلك يتجنب إعادة ترميز وتنزيل ملف فيديو كامل.
+    private static func convertWithCloudConvert(m3u8URL: URL, outputFormat: String = "mp4") async throws -> URL {
+        let audioOnly = outputFormat.lowercased() == "m4a"
         print("[CloudConvert] ═══════════════════════════════════════")
-        print("[CloudConvert] Starting HLS → MP4")
+        print("[CloudConvert] Starting HLS → \(outputFormat.uppercased())")
         print("[CloudConvert] m3u8: \(m3u8URL.path)")
         
         guard let apiKey = cloudConvertKey() else {
@@ -254,21 +218,25 @@ enum AudioPipeline {
         createReq.timeoutInterval = 60
         
         // لا نمرّر input_format صراحةً — CloudConvert يحدّد صيغة الإدخال من امتداد
-        // الملف المرفوع (merge-*.ts)، وتمرير قيمة خاطئة يجعل مهمة التحويل تفشل.
+        // الملف المرفوع (merge-*.ts). في الترجمة نحول إلى M4A فقط: لا فيديو
+        // لإعادة ترميزه ولا ملف MP4 كبير لتنزيله بعد اكتمال التحويل.
+        var convertTask: [String: Any] = [
+            "operation": "convert",
+            "input": ["import"],
+            "output_format": outputFormat,
+            "engine": "ffmpeg",
+            "audio_codec": "aac"
+        ]
+        if !audioOnly {
+            convertTask["video_codec"] = "h264"
+        }
         let jobBody: [String: Any] = [
             "tasks": [
                 "import": ["operation": "import/upload"],
-                "convert": [
-                    "operation": "convert",
-                    "input": ["import"],
-                    "output_format": "mp4",
-                    "engine": "ffmpeg",
-                    "audio_codec": "aac",
-                    "video_codec": "h264"
-                ],
+                "convert": convertTask,
                 "export": ["operation": "export/url", "input": ["convert"], "multiple": false]
             ],
-            "tag": "video2-hls"
+            "tag": audioOnly ? "video2-hls-audio" : "video2-hls"
         ]
         createReq.httpBody = try JSONSerialization.data(withJSONObject: jobBody)
         
@@ -315,32 +283,36 @@ enum AudioPipeline {
             var req = URLRequest(url: jobURL)
             req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             let (data, resp) = try await URLSession.shared.data(for: req)
-            guard let hr = resp as? HTTPURLResponse, (200...299).contains(hr.statusCode) else {
-                throw AudioPipelineError.exportFailed("CloudConvert: فشل الحصول على تفاصيل job")
+            guard let hr = resp as? HTTPURLResponse else {
+                throw AudioPipelineError.exportFailed("CloudConvert: استجابة تفاصيل المهمة غير صالحة")
             }
-            guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                throw AudioPipelineError.exportFailed("CloudConvert: استجابة غير صالحة")
+            guard (200...299).contains(hr.statusCode) else {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                throw AudioPipelineError.exportFailed("CloudConvert: فشل قراءة تفاصيل المهمة — HTTP \(hr.statusCode) \(String(body.prefix(180)))")
             }
-            return j
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let job = json["data"] as? [String: Any] else {
+                throw AudioPipelineError.exportFailed("CloudConvert: تفاصيل المهمة غير صالحة")
+            }
+            return job
         }
         
-        // أحياناً تستغرق بيانات الرفع لحظة حتى تُجهّز — ننتظر حتى تظهر result.form
+        // في CloudConvert v2 توجد tasks مباشرة داخل data.tasks، لا داخل
+        // relationships. ننتظر لحظة فقط إن لم يُنشأ نموذج الرفع بعد.
         var formURL: URL?
         var formParams: [String: Any] = [:]
         let uploadWait = Date()
         while formURL == nil, Date().timeIntervalSince(uploadWait) < 30 {
-            let j = try await fetchJob()
-            guard let rel = j["relationships"] as? [String: Any],
-                  let tasks = rel["tasks"] as? [String: Any],
-                  let tData = tasks["data"] as? [[String: Any]],
-                  let up = tData.first(where: { $0["operation"] as? String == "import/upload" }),
-                  let form = (up["result"] as? [String: Any])?["form"] as? [String: Any],
-                  let us = form["url"] as? String,
-                  let u = URL(string: us) else {
+            let job = try await fetchJob()
+            guard let tasks = job["tasks"] as? [[String: Any]],
+                  let uploadTask = tasks.first(where: { $0["operation"] as? String == "import/upload" }),
+                  let form = (uploadTask["result"] as? [String: Any])?["form"] as? [String: Any],
+                  let urlString = form["url"] as? String,
+                  let url = URL(string: urlString) else {
                 try await Task.sleep(nanoseconds: 1_000_000_000)
                 continue
             }
-            formURL = u
+            formURL = url
             formParams = (form["parameters"] as? [String: Any]) ?? [:]
             print("[CloudConvert] ✅ Upload URL ready")
         }
@@ -417,68 +389,66 @@ enum AudioPipeline {
         while Date().timeIntervalSince(start) < 600 {
             var pollReq = URLRequest(url: jobURL)
             pollReq.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-            let (pollData, _) = try await URLSession.shared.data(for: pollReq)
-            
-            if let pj = try? JSONSerialization.jsonObject(with: pollData) as? [String: Any],
-               let pjd = pj["data"] as? [String: Any],
-               let status = pjd["status"] as? String {
-                
-                if status != lastStatus {
-                    print("[CloudConvert] Status: \(status)")
-                    lastStatus = status
-                }
-                
-                if status == "finished" {
-                    print("[CloudConvert] ✅ Conversion finished")
-                    
-                    if let rel = pj["relationships"] as? [String: Any],
-                       let tasks = rel["tasks"] as? [String: Any],
-                       let tData = tasks["data"] as? [[String: Any]] {
-                        
-                        for t in tData {
-                            if t["operation"] as? String == "export/url",
-                               let r = t["result"] as? [String: Any],
-                               let fs = r["files"] as? [[String: Any]],
-                               let f = fs.first, let dlURL = f["url"] as? String {
-                                
-                                print("[CloudConvert] Download URL: \(dlURL)")
-                                
-                                // تنزيل النتيجة
-                                guard let url = URL(string: dlURL) else {
-                                    print("[CloudConvert] ❌ Invalid download URL")
-                                    throw AudioPipelineError.exportFailed("CloudConvert: رابط تنزيل غير صالح")
-                                }
-                                
-                                print("[CloudConvert] Downloading result...")
-                                var dlReq = URLRequest(url: url)
-                                dlReq.timeoutInterval = 600
-                                let (dlData, _) = try await URLSession.shared.data(for: dlReq)
-                                
-                                let out = FileManager.default.temporaryDirectory
-                                    .appendingPathComponent("cc-\(UUID().uuidString).mp4")
-                                try dlData.write(to: out)
-                                
-                                let outSize = (try? out.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                                print("[CloudConvert] ✅ Downloaded: \(outSize / 1024 / 1024) MB")
-                                return out
-                            }
-                        }
-                    }
-                    
-                    print("[CloudConvert] ❌ No export/url task with files found")
-                    throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على رابط تنزيل")
-                }
-                
-                if status == "error" {
-                    print("[CloudConvert] ❌ Conversion failed with error")
-                    if let message = pjd["message"] as? String {
-                        print("[CloudConvert] Error message: \(message)")
-                        throw AudioPipelineError.exportFailed("CloudConvert: فشل التحويل — \(message)")
-                    }
-                    throw AudioPipelineError.exportFailed("CloudConvert: فشل التحويل")
-                }
+            let (pollData, pollResp) = try await URLSession.shared.data(for: pollReq)
+            guard let http = pollResp as? HTTPURLResponse else {
+                throw AudioPipelineError.exportFailed("CloudConvert: استجابة متابعة التحويل غير صالحة")
             }
-            
+            guard (200...299).contains(http.statusCode) else {
+                let body = String(data: pollData, encoding: .utf8) ?? ""
+                throw AudioPipelineError.exportFailed("CloudConvert: فشل متابعة التحويل — HTTP \(http.statusCode) \(String(body.prefix(180)))")
+            }
+            guard let response = try? JSONSerialization.jsonObject(with: pollData) as? [String: Any],
+                  let job = response["data"] as? [String: Any],
+                  let status = job["status"] as? String else {
+                throw AudioPipelineError.exportFailed("CloudConvert: حالة التحويل غير صالحة")
+            }
+
+            if status != lastStatus {
+                print("[CloudConvert] Status: \(status)")
+                lastStatus = status
+            }
+
+            if status == "finished" {
+                print("[CloudConvert] ✅ Conversion finished")
+                if let tasks = job["tasks"] as? [[String: Any]],
+                   let exportTask = tasks.first(where: { $0["operation"] as? String == "export/url" }),
+                   let result = exportTask["result"] as? [String: Any],
+                   let files = result["files"] as? [[String: Any]],
+                   let file = files.first,
+                   let downloadURL = file["url"] as? String,
+                   let url = URL(string: downloadURL) {
+                    print("[CloudConvert] Downloading result...")
+                    var request = URLRequest(url: url)
+                    request.timeoutInterval = 600
+                    // لا نجمع نتيجة التحويل (حتى M4A طويل) في Data بالذاكرة.
+                    let (temporaryResult, downloadResponse) = try await URLSession.shared.download(for: request)
+                    guard let downloadHTTP = downloadResponse as? HTTPURLResponse,
+                          (200...299).contains(downloadHTTP.statusCode) else {
+                        let statusCode = (downloadResponse as? HTTPURLResponse)?.statusCode ?? 0
+                        throw AudioPipelineError.exportFailed("CloudConvert: فشل تنزيل النتيجة — HTTP \(statusCode)")
+                    }
+                    let out = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("cc-\(UUID().uuidString).\(outputFormat.lowercased())")
+                    try? FileManager.default.removeItem(at: out)
+                    try FileManager.default.moveItem(at: temporaryResult, to: out)
+                    let outSize = (try? out.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                    guard outSize > 0 else {
+                        throw AudioPipelineError.exportFailed("CloudConvert: ملف النتيجة فارغ")
+                    }
+                    print("[CloudConvert] ✅ Downloaded: \(outSize / 1024 / 1024) MB")
+                    return out
+                }
+                throw AudioPipelineError.exportFailed("CloudConvert: لم يتم العثور على رابط تنزيل")
+            }
+
+            if status == "error" {
+                var message = job["message"] as? String
+                if message == nil, let tasks = job["tasks"] as? [[String: Any]] {
+                    message = tasks.first(where: { $0["status"] as? String == "error" })?["message"] as? String
+                }
+                throw AudioPipelineError.exportFailed("CloudConvert: فشل التحويل — \(message ?? "خطأ غير معروف")")
+            }
+
             try await Task.sleep(nanoseconds: 5_000_000_000)
         }
         
@@ -540,17 +510,28 @@ enum AudioPipeline {
         }
         print("[ffmpeg-api] ✅ Processing done")
 
-        // 4) نزّل النتيجة
-        let (dlData, _) = try await HTTP.request("GET", dlURL, headers: [:], timeout: 600)
+        // 4) نزّل النتيجة إلى القرص مباشرةً؛ هذا مسار احتياطي وقد تكون النتيجة MP4 كبيرة.
+        guard let resultURL = URL(string: dlURL) else {
+            throw AudioPipelineError.exportFailed("ffmpeg-api: رابط تنزيل غير صالح")
+        }
+        var downloadRequest = URLRequest(url: resultURL)
+        downloadRequest.timeoutInterval = 600
+        let (temporaryResult, downloadResponse) = try await URLSession.shared.download(for: downloadRequest)
+        guard let downloadHTTP = downloadResponse as? HTTPURLResponse,
+              (200...299).contains(downloadHTTP.statusCode) else {
+            let status = (downloadResponse as? HTTPURLResponse)?.statusCode ?? 0
+            throw AudioPipelineError.exportFailed("ffmpeg-api: فشل تنزيل النتيجة — HTTP \(status)")
+        }
         let out = FileManager.default.temporaryDirectory.appendingPathComponent("ffmpeg-api-\(UUID().uuidString).mp4")
-        try dlData.write(to: out)
+        try? FileManager.default.removeItem(at: out)
+        try FileManager.default.moveItem(at: temporaryResult, to: out)
         let sz = (try? out.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         print("[ffmpeg-api] ✅ Downloaded \(sz / 1024 / 1024) MB")
         return out
     }
 
     // MARK: ═══════════════════════════════════════════════════════════
-    // MARK: تحويل HLS إلى MP4 — 3 طرق
+    // MARK: تحويل HLS إلى وسائط — صوت محلي ثم بدائل MP4
     // ═════════════════════════════════════════════════════════════════
 
     /// يقتطع URI المُهيّئ (EXT-X-MAP) من قائمة m3u8 — ضروري لـ fMP4/CMAF.
@@ -568,9 +549,45 @@ enum AudioPipeline {
         return nil
     }
 
-    static func exportHLSToTempMP4(_ url: URL) async throws -> URL {
+    /// محاولة سريعة قبل أي رفع سحابي: نخدم HLS المحلي عبر localhost ثم نستخدم
+    /// AVFoundation لتصدير الصوت فقط. إذا لم يدعم الجهاز/الحاوية هذا المسار،
+    /// يستدعي المستدعي CloudConvert وffmpeg كاحتياطيين كما كان سابقاً.
+    private static func exportLocalHLSAudio(_ playlist: URL) async throws -> URL {
+        let servedPlaylist = try LocalFileServer.shared.hlsURL(forPlaylist: playlist)
+        let asset = AVURLAsset(url: servedPlaylist)
+        let exportable = try await asset.load(.isExportable)
+        guard exportable else {
+            throw AudioPipelineError.exportFailed("HLS المحلي غير قابل للتصدير عبر AVFoundation")
+        }
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        guard !audioTracks.isEmpty else {
+            throw AudioPipelineError.noAudioTrack
+        }
+        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A),
+              session.supportedFileTypes.contains(.m4a) else {
+            throw AudioPipelineError.exportFailed("لا يدعم الجهاز تصدير صوت M4A لهذا البث")
+        }
+
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hls-local-audio-\(UUID().uuidString).m4a")
+        try? FileManager.default.removeItem(at: output)
+        session.outputURL = output
+        session.outputFileType = .m4a
+        session.shouldOptimizeForNetworkUse = true
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            session.exportAsynchronously { continuation.resume() }
+        }
+        guard session.status == .completed,
+              ((try? output.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0 else {
+            try? FileManager.default.removeItem(at: output)
+            throw AudioPipelineError.exportFailed(session.error?.localizedDescription ?? "تعذر تصدير صوت HLS محلياً")
+        }
+        return output
+    }
+
+    private static func exportHLSToTempMedia(_ url: URL, outputFormat: String) async throws -> URL {
         print("[AudioPipeline] ═══════════════════════════════════════")
-        print("[AudioPipeline] Starting HLS → MP4 conversion")
+        print("[AudioPipeline] Starting HLS → \(outputFormat.uppercased()) conversion")
         print("[AudioPipeline] URL: \(url.path)")
         
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -630,7 +647,7 @@ enum AudioPipeline {
         if hasCloudConvertKey {
             print("[AudioPipeline] ═══ Trying CloudConvert API (MPEG-TS)...")
             do {
-                let result = try await convertWithCloudConvert(m3u8URL: url)
+                let result = try await convertWithCloudConvert(m3u8URL: url, outputFormat: outputFormat)
                 print("[AudioPipeline] ✅ CloudConvert succeeded!")
                 return result
             } catch {
@@ -682,7 +699,17 @@ enum AudioPipeline {
         if !cloudErrors.isEmpty {
             throw AudioPipelineError.exportFailed("تعذّر التحويل عبر خدمات السحابة:\n" + cloudErrors.joined(separator: "\n"))
         }
-        throw AudioPipelineError.exportFailed("تعذّر تحويل HLS إلى MP4: لا توجد خدمة تحويل متاحة.")
+        throw AudioPipelineError.exportFailed("تعذّر تحويل HLS إلى \(outputFormat.uppercased()): لا توجد خدمة تحويل متاحة.")
+    }
+
+    /// تحويل كامل إلى MP4 — يستخدم عند التصدير أو التحويل اليدوي فقط.
+    static func exportHLSToTempMP4(_ url: URL) async throws -> URL {
+        try await exportHLSToTempMedia(url, outputFormat: "mp4")
+    }
+
+    /// مسار الترجمة: نطلب الصوت فقط من السحابة لتجنب تنزيل فيديو محوّل كامل.
+    private static func exportHLSToTempAudio(_ url: URL) async throws -> URL {
+        try await exportHLSToTempMedia(url, outputFormat: "m4a")
     }
 
     // MARK: ── الطريقة 1 (fMP4/CMAF): دمج init.mp4 + m4s ثم إعادة تصدير ──
@@ -1105,21 +1132,42 @@ enum AudioPipeline {
         let manifestURL = dir.appendingPathComponent("chunks.json")
 
         var sourceURL = videoURL
-        // شريط التقدم داخل مرحلة الاستخراج: تحويل HLS (سحابي، قد يستغرق دقائق
-        // لبث طويل) يستهلك النصف الأول، وقراءة/تقطيع الصوت النصف الثاني —
-        // حتى لا يبدو الشريط مجمّداً وقتاً طويلاً في "استخراج الصوت".
+        // شريط التقدم داخل مرحلة الاستخراج: HLS MPEG-TS يحتاج معالجة إضافية.
+        // نطلب M4A فقط من CloudConvert بدلاً من MP4 كامل، لذلك لا نعيد ترميز
+        // الفيديو ولا ننزله ثانية من السحابة لمجرد تفريغ الصوت.
         var progressBase: Double = 0
         var progressSpan: Double = 1
         if videoURL.pathExtension.lowercased() == "m3u8" {
-            let cached = dir.appendingPathComponent("hls-source.mp4")
-            if !FileManager.default.fileExists(atPath: cached.path) {
+            let audioCache = dir.appendingPathComponent("hls-source.m4a")
+            let videoCache = dir.appendingPathComponent("hls-source.mp4")
+            let cached: URL
+            if FileManager.default.fileExists(atPath: audioCache.path) {
+                cached = audioCache
+            } else if FileManager.default.fileExists(atPath: videoCache.path) {
+                // توافق مع المهام التي بدأت قبل هذا التحديث.
+                cached = videoCache
+            } else {
                 progress(0.02)
-                let tmp = try await exportHLSToTempMP4(videoURL)
-                do { try FileManager.default.moveItem(at: tmp, to: cached) }
-                catch { try? FileManager.default.copyItem(at: tmp, to: cached) }
+                let temporary: URL
+                do {
+                    print("[AudioPipeline] ═══ Trying local HLS → M4A (no cloud upload)...")
+                    temporary = try await exportLocalHLSAudio(videoURL)
+                    print("[AudioPipeline] ✅ Local HLS audio export succeeded")
+                } catch {
+                    // هذا المسار اختياري: بعض HLS/إصدارات AVFoundation لا تقرأ
+                    // MPEG-TS المحلي. نبقي كل بدائل CloudConvert وffmpeg عاملة.
+                    print("[AudioPipeline] ⚠️ Local HLS audio export failed: \(error.localizedDescription) — using cloud fallback")
+                    temporary = try await exportHLSToTempAudio(videoURL)
+                }
+                let ext = temporary.pathExtension.lowercased() == "m4a" ? "m4a" : "mp4"
+                let destination = dir.appendingPathComponent("hls-source.\(ext)")
+                try? FileManager.default.removeItem(at: destination)
+                do { try FileManager.default.moveItem(at: temporary, to: destination) }
+                catch { try FileManager.default.copyItem(at: temporary, to: destination) }
+                cached = destination
             }
             guard FileManager.default.fileExists(atPath: cached.path) else {
-                throw AudioPipelineError.exportFailed("فقد الملف المحوّل")
+                throw AudioPipelineError.exportFailed("فقد ملف HLS الصوتي المحوّل")
             }
             sourceURL = cached
             progressBase = 0.4

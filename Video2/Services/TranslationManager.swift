@@ -245,6 +245,19 @@ final class TranslationManager: ObservableObject {
         }
 
         do {
+            // نتأكد من Gemini قبل أي استخراج HLS طويل. بعض مفاتيح المشاريع
+            // تحتفظ باسم موديل قديم في الإعدادات فيظهر 404 بعد دقائق من التحويل.
+            var verifiedGeminiModel: String?
+            if TranslateService.resolved(provider: job.translator) == .gemini {
+                setJob(jobID) { j in
+                    j.state = .preparing
+                    j.progress = min(max(j.progress, 0.01), 0.02)
+                    j.errorMessage = nil
+                }
+                saveIndex()
+                verifiedGeminiModel = try await TranslateService.preflightGeminiModel()
+            }
+
             // ——— المرحلة 1: الصوت (تُتخطى إذا كانت الجُمل جاهزة) ———
             if allCues.isEmpty {
                 setJob(jobID) { $0.state = .extracting; $0.progress = 0.02 }
@@ -498,8 +511,9 @@ final class TranslationManager: ObservableObject {
             let translatorModel: String
             switch resolvedTranslator {
             case .gemini:
-                translatorModel = ModelSelection.selected(purpose: "translator", provider: .gemini,
-                                                          fallback: "gemini-2.5-flash")
+                translatorModel = verifiedGeminiModel
+                    ?? ModelSelection.selected(purpose: "translator", provider: .gemini,
+                                               fallback: TranslateService.defaultGeminiModel)
             case .groqLLM:
                 translatorModel = ModelSelection.selected(purpose: "translator", provider: .groq,
                                                           fallback: "openai/gpt-oss-120b")

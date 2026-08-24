@@ -63,58 +63,76 @@ final class CloudConvertService {
     
     // MARK: - التحويل الرئيسي
     
-    /// يحول ملف فيديو إلى MP4
+    /// يحول ملف فيديو إلى MP4. يبقى للتحويل/التصدير اليدوي للفيديو.
     func convertToMP4(
         inputFile: URL,
         apiKey: String? = nil,
         progress: @escaping (Double) -> Void = { _ in }
     ) async throws -> URL {
-        
+        try await convert(inputFile: inputFile,
+                          outputFormat: "mp4",
+                          apiKey: apiKey,
+                          progress: progress)
+    }
+
+    /// يحول الإدخال إلى M4A صوتي فقط. هذا هو المسار المناسب للتفريغ والترجمة.
+    func convertToM4A(
+        inputFile: URL,
+        apiKey: String? = nil,
+        progress: @escaping (Double) -> Void = { _ in }
+    ) async throws -> URL {
+        try await convert(inputFile: inputFile,
+                          outputFormat: "m4a",
+                          apiKey: apiKey,
+                          progress: progress)
+    }
+
+    private func convert(
+        inputFile: URL,
+        outputFormat: String,
+        apiKey: String?,
+        progress: @escaping (Double) -> Void
+    ) async throws -> URL {
         let key = apiKey ?? Self.apiKey()
         guard let apiKey = key, !apiKey.isEmpty else {
             throw CloudConvertError.missingAPIKey
         }
-        
+
         print("[CloudConvert] ═══════════════════════════════════════")
-        print("[CloudConvert] Starting conversion: \(inputFile.lastPathComponent)")
-        
+        print("[CloudConvert] Starting conversion to \(outputFormat.uppercased()): \(inputFile.lastPathComponent)")
         let fileSize = (try? inputFile.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         print("[CloudConvert] Input size: \(fileSize / 1024 / 1024) MB")
-        
-        // 1. إنشاء job
+
         progress(0.05)
-        let jobID = try await createJob(apiKey: apiKey)
+        let jobID = try await createJob(apiKey: apiKey, outputFormat: outputFormat)
         print("[CloudConvert] ✅ Job created: \(jobID)")
-        
-        // 2. الحصول على upload URL
+
         progress(0.10)
         let uploadInfo = try await getUploadURL(apiKey: apiKey, jobID: jobID)
         print("[CloudConvert] Upload URL ready")
-        
-        // 3. رفع الملف
+
         progress(0.15)
         try await uploadFile(fileURL: inputFile, uploadURL: uploadInfo.url, formParams: uploadInfo.params)
         print("[CloudConvert] ✅ File uploaded")
-        
-        // 4. انتظار التحويل
+
         progress(0.50)
         let downloadURL = try await waitForJob(apiKey: apiKey, jobID: jobID, maxWait: 600) { p in
             progress(0.50 + 0.40 * p)
         }
         print("[CloudConvert] ✅ Conversion complete")
-        
-        // 5. تنزيل النتيجة
+
         progress(0.92)
-        let outputFile = try await downloadResult(url: downloadURL, originalName: inputFile.deletingPathExtension().lastPathComponent)
+        let outputFile = try await downloadResult(url: downloadURL,
+                                                  originalName: inputFile.deletingPathExtension().lastPathComponent,
+                                                  outputExtension: outputFormat)
         print("[CloudConvert] ✅ Downloaded: \(outputFile.lastPathComponent)")
-        
         progress(1.0)
         return outputFile
     }
+
+    // MARK: - HLS → M4A
     
-    // MARK: - HLS → MP4
-    
-    /// يحول HLS (m3u8) إلى MP4 عبر CloudConvert
+    /// يحول HLS (m3u8) إلى M4A صوتي فقط لتفريغ/ترجمة أسرع.
     func convertHLS(
         m3u8URL: URL,
         apiKey: String? = nil,
@@ -122,7 +140,7 @@ final class CloudConvertService {
     ) async throws -> URL {
         
         print("[CloudConvert] ═══════════════════════════════════════")
-        print("[CloudConvert] HLS → MP4 conversion")
+        print("[CloudConvert] HLS → M4A audio conversion")
         
         guard FileManager.default.fileExists(atPath: m3u8URL.path) else {
             throw AudioPipelineError.exportFailed("ملف HLS غير موجود")
@@ -160,8 +178,8 @@ final class CloudConvertService {
         let mergedSize = (try? mergedTS.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         print("[CloudConvert] Merged TS: \(mergedSize / 1024 / 1024) MB")
         
-        // نحول الملف المدموج
-        let result = try await convertToMP4(
+        // نحتاج الصوت فقط للتفريغ، فلا نعيد ترميز أو ننزّل فيديو MP4 كاملاً.
+        let result = try await convertToM4A(
             inputFile: mergedTS,
             apiKey: apiKey,
             progress: { p in
@@ -174,7 +192,7 @@ final class CloudConvertService {
     
     // MARK: - Helper: إنشاء Job
     
-    private func createJob(apiKey: String) async throws -> String {
+    private func createJob(apiKey: String, outputFormat: String) async throws -> String {
         let url = URL(string: "https://api.cloudconvert.com/v2/jobs")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -182,25 +200,27 @@ final class CloudConvertService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 60
         
+        var convertTask: [String: Any] = [
+            "operation": "convert",
+            "input": ["task-import"],
+            "output_format": outputFormat,
+            "engine": "ffmpeg",
+            "engine_version": "latest"
+        ]
+        if outputFormat.lowercased() == "m4a" {
+            convertTask["audio_codec"] = "aac"
+        }
         let body: [String: Any] = [
             "tasks": [
-                "task-import": [
-                    "operation": "import/upload"
-                ],
-                "task-convert": [
-                    "operation": "convert",
-                    "input": ["task-import"],
-                    "output_format": "mp4",
-                    "engine": "ffmpeg",
-                    "engine_version": "latest"
-                ],
+                "task-import": ["operation": "import/upload"],
+                "task-convert": convertTask,
                 "task-export": [
                     "operation": "export/url",
                     "input": ["task-convert"],
                     "multiple": false
                 ]
             ],
-            "tag": "video2-app"
+            "tag": outputFormat.lowercased() == "m4a" ? "video2-audio" : "video2-app"
         ]
         
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -245,15 +265,16 @@ final class CloudConvertService {
             throw CloudConvertError.invalidResponse
         }
         
+        // CloudConvert v2 يعيد المهمة داخل data، والمهام داخل data.tasks.
+        // لا توجد طبقة JSON:API باسم relationships في هذه الاستجابة.
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let relationships = json["relationships"] as? [String: Any],
-              let tasks = relationships["tasks"] as? [String: Any],
-              let tasksData = tasks["data"] as? [[String: Any]] else {
+              let job = json["data"] as? [String: Any],
+              let tasks = job["tasks"] as? [[String: Any]] else {
             throw CloudConvertError.invalidResponse
         }
         
         // في CloudConvert v2 بيانات الرفع تظهر في result.form (وليس params.upload_url)
-        guard let uploadTask = tasksData.first(where: { $0["operation"] as? String == "import/upload" }),
+        guard let uploadTask = tasks.first(where: { $0["operation"] as? String == "import/upload" }),
               let taskID = uploadTask["id"] as? String,
               let form = (uploadTask["result"] as? [String: Any])?["form"] as? [String: Any],
               let urlStr = form["url"] as? String,
@@ -268,34 +289,47 @@ final class CloudConvertService {
     // MARK: - Helper: رفع الملف
     
     private func uploadFile(fileURL: URL, uploadURL: URL, formParams: [String: Any]) async throws {
-        let fileData = try Data(contentsOf: fileURL)
         let boundary = "Boundary-\(UUID().uuidString)"
-        
         var request = URLRequest(url: uploadURL)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 600
-        
-        var body = Data()
-        for (k, v) in formParams {
-            body.append("--\(boundary)\r\n".data(using: .utf8)!)
-            body.append("Content-Disposition: form-data; name=\"\(k)\"\r\n\r\n".data(using: .utf8)!)
-            body.append("\(v)\r\n".data(using: .utf8)!)
+
+        // نجمع multipart على القرص ثم نرفعه من ملف؛ Data(contentsOf:) لملف HLS
+        // طويل كانت قد تضاعف الذاكرة وتُسقط التطبيق.
+        let bodyURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cloudconvert-body-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: bodyURL) }
+        guard FileManager.default.createFile(atPath: bodyURL.path, contents: nil) else {
+            throw CloudConvertError.invalidResponse
         }
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileURL.lastPathComponent)\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
-        body.append(fileData)
-        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
-        
-        request.httpBody = body
-        
-        let (_, response) = try await URLSession.shared.data(for: request)
-        
+        let bodyHandle = try FileHandle(forWritingTo: bodyURL)
+        defer { try? bodyHandle.close() }
+        func write(_ string: String) throws {
+            try bodyHandle.write(contentsOf: Data(string.utf8))
+        }
+        for (key, value) in formParams {
+            try write("--\(boundary)\r\n")
+            try write("Content-Disposition: form-data; name=\"\(key)\"\r\n\r\n")
+            try write("\(value)\r\n")
+        }
+        try write("--\(boundary)\r\n")
+        try write("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileURL.lastPathComponent)\"\r\n")
+        try write("Content-Type: application/octet-stream\r\n\r\n")
+        let input = try FileHandle(forReadingFrom: fileURL)
+        defer { try? input.close() }
+        while true {
+            let chunk = input.readData(ofLength: 2 * 1024 * 1024)
+            if chunk.isEmpty { break }
+            try bodyHandle.write(contentsOf: chunk)
+        }
+        try write("\r\n--\(boundary)--\r\n")
+        try bodyHandle.close()
+
+        let (_, response) = try await URLSession.shared.upload(for: request, fromFile: bodyURL)
         guard let httpResp = response as? HTTPURLResponse else {
             throw CloudConvertError.invalidResponse
         }
-        
         guard (200...299).contains(httpResp.statusCode) else {
             throw CloudConvertError.uploadFailed(httpResp.statusCode)
         }
@@ -331,11 +365,9 @@ final class CloudConvertService {
             let status = jobData["status"] as? String ?? "unknown"
             
             if status == "finished" {
-                if let relationships = json["relationships"] as? [String: Any],
-                   let tasks = relationships["tasks"] as? [String: Any],
-                   let tasksData = tasks["data"] as? [[String: Any]] {
-                    
-                    for task in tasksData {
+                // CloudConvert v2: data.tasks مباشرة، وليس relationships.tasks.data.
+                if let tasks = jobData["tasks"] as? [[String: Any]] {
+                    for task in tasks {
                         if task["operation"] as? String == "export/url",
                            let result = task["result"] as? [String: Any],
                            let files = result["files"] as? [[String: Any]],
@@ -346,7 +378,6 @@ final class CloudConvertService {
                         }
                     }
                 }
-                
                 throw CloudConvertError.noResultURL
             }
             
@@ -367,24 +398,24 @@ final class CloudConvertService {
     
     // MARK: - Helper: تنزيل النتيجة
     
-    private func downloadResult(url downloadURL: String, originalName: String) async throws -> URL {
+    private func downloadResult(url downloadURL: String, originalName: String, outputExtension: String) async throws -> URL {
         guard let url = URL(string: downloadURL) else {
             throw CloudConvertError.noResultURL
         }
         
         var request = URLRequest(url: url)
         request.timeoutInterval = 600
-        
-        let (data, response) = try await URLSession.shared.data(for: request)
-        
+
+        // تنزيل الملف إلى القرص مباشرة بدلاً من وضع نتيجة تحويل كبيرة في الذاكرة.
+        let (temporaryURL, response) = try await URLSession.shared.download(for: request)
         guard let httpResp = response as? HTTPURLResponse, (200...299).contains(httpResp.statusCode) else {
-            throw CloudConvertError.uploadFailed(0)
+            throw CloudConvertError.uploadFailed((response as? HTTPURLResponse)?.statusCode ?? 0)
         }
-        
+
         let outputFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cloudconvert-\(UUID().uuidString)-\(originalName).mp4")
-        try data.write(to: outputFile)
-        
+            .appendingPathComponent("cloudconvert-\(UUID().uuidString)-\(originalName).\(outputExtension.lowercased())")
+        try? FileManager.default.removeItem(at: outputFile)
+        try FileManager.default.moveItem(at: temporaryURL, to: outputFile)
         return outputFile
     }
     

@@ -32,12 +32,22 @@ final class LocalFileServer {
     private(set) var port: UInt16 = 8765
     private let queue = DispatchQueue(label: "video2.httpserver", qos: .userInitiated)
 
+    /// عنوان HTTP محلي لملف HLS محفوظ. AVFoundation لا يدعم file:// للـ m3u8
+    /// لكنه يستطيع قراءة نفس الملفات عند تقديمها عبر localhost.
+    func hlsURL(forPlaylist playlist: URL) throws -> URL {
+        let folder = playlist.deletingLastPathComponent()
+        HLSPlaylistFix.ensureVOD(playlist: playlist)
+        try bind(root: folder)
+        // يقوم HLSDownloader بحفظ playlist النهائي بالاسم index.m3u8. إن كان
+        // الاسم مختلفاً نحافظ عليه بدلاً من افتراضه.
+        let path = playlist.lastPathComponent.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+            ?? "index.m3u8"
+        return URL(string: "http://127.0.0.1:\(port)/\(path)")!
+    }
+
     func playbackURL(for video: SavedVideo) throws -> URL {
         if video.kind == .hls || video.localURL.pathExtension.lowercased() == "m3u8" {
-            let folder = video.localURL.deletingLastPathComponent()
-            HLSPlaylistFix.ensureVOD(playlist: video.localURL)
-            try bind(root: folder)
-            return URL(string: "http://127.0.0.1:\(port)/index.m3u8")!
+            return try hlsURL(forPlaylist: video.localURL)
         }
         return video.localURL
     }

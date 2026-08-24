@@ -422,7 +422,7 @@ struct NewTranslationView: View {
     private var translatorModelName: String {
         switch resolvedTranslator {
         case .gemini:
-            return ModelSelection.selected(purpose: "translator", provider: .gemini, fallback: "gemini-2.5-flash")
+            return ModelSelection.selected(purpose: "translator", provider: .gemini, fallback: TranslateService.defaultGeminiModel)
         case .groqLLM:
             return ModelSelection.selected(purpose: "translator", provider: .groq, fallback: "openai/gpt-oss-120b")
         case .siliconflow:
