@@ -94,10 +94,15 @@ struct SettingsView: View {
                               placeholder: "AIza...",
                               keyID: "gemini",
                               hint: "للترجمة النصية السياقية. زر الاختبار يختبر GenerateContent والموديل المختار فعلياً، لا المفتاح فقط.")
+                    APIKeyRow(title: "مفتاح DashScope / Qwen-MT",
+                              placeholder: "sk-...",
+                              keyID: "dashscope",
+                              hint: "لمزوّد Qwen-MT المتخصص فقط. زر الاختبار يرسل طلباً قصيراً إلى الموديل المختار (Flash افتراضياً) وقد يستهلك عدداً صغيراً من tokens.")
+                    DashScopeEndpointRow()
                     APIKeyRow(title: "مفتاح SiliconFlow",
                               placeholder: "sk-...",
                               keyID: "siliconflow",
-                              hint: "Qwen 2.5 72B / DeepSeek V3 للترجمة، SenseVoice للتفريغ، CosyVoice للدبلجة. من siliconflow.cn — شريحة مجانية سخية.")
+                              hint: "DeepSeek/Qwen للترجمة، SenseVoice للتفريغ، وCosyVoice للدبلجة. الرصيد والتسعير حسب حساب SiliconFlow؛ يظهر الرصيد الفعلي في قسم الرصيد والحدود.")
                     APIKeyRow(title: "مفتاح ElevenLabs",
                               placeholder: "xi-api-key",
                               keyID: "elevenlabs",
@@ -133,6 +138,8 @@ struct SettingsView: View {
                         .font(.caption2)
                 }
 
+                ProviderUsageSection()
+
                 Section("تفضيلات التفريغ والترجمة") {
                     Picker("مزود التفريغ", selection: $sttProviderRaw) {
                         ForEach(STTProviderKind.allCases) { p in
@@ -160,6 +167,9 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                         modelNameLine(provider: resolvedTranslatorProviderName,
                                       model: displayedTranslatorModel)
+                        if let billing = displayedTranslatorBilling {
+                            modelBillingLine(billing)
+                        }
                         if let provider = translatorCatalogProvider {
                             modelPickerButton(title: "اختيار موديل \(provider.titleAR)",
                                               provider: provider,
@@ -292,6 +302,7 @@ struct SettingsView: View {
         case .gemini: return .gemini
         case .groqLLM: return .groq
         case .siliconflow: return .siliconflow
+        case .qwenMT: return .dashscope
         case .deepL, .auto: return nil
         }
     }
@@ -315,9 +326,29 @@ struct SettingsView: View {
         case .groqLLM:
             return ModelSelection.selected(purpose: "translator", provider: .groq, fallback: "openai/gpt-oss-120b")
         case .siliconflow:
-            return ModelSelection.selected(purpose: "translator", provider: .siliconflow, fallback: "Qwen/Qwen2.5-72B-Instruct")
+            return ModelSelection.selected(purpose: "translator", provider: .siliconflow, fallback: "deepseek-ai/DeepSeek-V3.2")
+        case .qwenMT:
+            return ModelSelection.selected(purpose: "translator", provider: .dashscope, fallback: TranslateService.defaultQwenMTModel)
         case .deepL: return "DeepL API"
         case .auto: return "—"
+        }
+    }
+
+    private var displayedTranslatorBilling: ModelBillingInfo? {
+        switch resolvedTranslator {
+        case .gemini:
+            return ModelBillingCatalog.info(provider: .gemini, model: displayedTranslatorModel)
+        case .groqLLM:
+            return ModelBillingCatalog.info(provider: .groq, model: displayedTranslatorModel)
+        case .siliconflow:
+            return ModelBillingCatalog.info(provider: .siliconflow, model: displayedTranslatorModel)
+        case .qwenMT:
+            return ModelBillingCatalog.info(provider: .dashscope, model: displayedTranslatorModel)
+        case .deepL:
+            return ModelBillingInfo(kind: .trialQuota,
+                                    detailAR: "DeepL API Free: حتى 500,000 حرف/شهر؛ المتبقي الحقيقي يظهر في قسم الرصيد والحدود.")
+        case .auto:
+            return nil
         }
     }
 
@@ -348,6 +379,29 @@ struct SettingsView: View {
         .background(V2Theme.card, in: RoundedRectangle(cornerRadius: 10))
     }
 
+    private func modelBillingLine(_ info: ModelBillingInfo) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(info.kind.titleAR)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(billingColor(info.kind))
+            Text(info.detailAR)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func billingColor(_ kind: ModelBillingKind) -> Color {
+        switch kind {
+        case .free: return .green
+        case .trialQuota: return V2Theme.gold
+        case .paid: return .orange
+        case .deprecated: return .red
+        case .accountDependent, .unknown: return .secondary
+        }
+    }
+
     private func modelPickerButton(title: String,
                                    provider: ModelProvider,
                                    purpose: ModelPickerView.ModelPurpose) -> some View {
@@ -372,6 +426,141 @@ struct SettingsView: View {
             Text(text)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+// MARK: - إعداد اتصال DashScope
+
+/// لا نستخدم رابطاً ثابتاً لكل الحسابات: مفاتيح Beijing وInternational/Singapore
+/// قد تكون منفصلة. يقبل الحقل HTTPS فقط حتى لا يخرج المفتاح أو نص الترجمة بلا تشفير.
+struct DashScopeEndpointRow: View {
+    @State private var endpoint = DashScopeAPI.configuredBaseURL
+    @State private var message: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("رابط DashScope API", systemImage: "network")
+                .font(.subheadline.weight(.semibold))
+            TextField("https://…/compatible-mode/v1", text: $endpoint)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .font(.footnote.monospaced())
+                .environment(\.layoutDirection, .leftToRight)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Button("حفظ الرابط") {
+                    guard let valid = DashScopeAPI.validatedBaseURL(endpoint) else {
+                        message = "❌ استخدم رابط HTTPS صالحاً بدون query أو /chat/completions."
+                        return
+                    }
+                    DashScopeAPI.saveBaseURL(valid)
+                    ProviderUsageStore.shared.invalidate(keyID: "dashscope")
+                    endpoint = valid
+                    message = "✅ حُفظ: \(DashScopeAPI.endpointHintAR)"
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                Spacer()
+                Text(DashScopeAPI.endpointHintAR)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Text("الصق Base URL الذي يظهر لحسابك في Qwen Cloud أو Model Studio. لا يُسمح بـ HTTP لحماية المفتاح والنص.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("International: https://dashscope-intl.aliyuncs.com/compatible-mode/v1\nSingapore: https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1\nBeijing: https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .environment(\.layoutDirection, .leftToRight)
+            if let message {
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(message.hasPrefix("✅") ? .green : .red)
+            }
+        }
+        .padding(.vertical, 2)
+        .onAppear { endpoint = DashScopeAPI.configuredBaseURL }
+    }
+}
+
+// MARK: - الرصيد والحدود
+
+struct ProviderUsageSection: View {
+    @ObservedObject private var usage = ProviderUsageStore.shared
+
+    var body: some View {
+        Section("الرصيد والحدود") {
+            Text("نعرض المتبقي فقط عندما يعيده المزود عبر API. لا يعني وجود شارة «مجاني» أن الاستخدام بلا حد أو بلا تكلفة بعد الحصة.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Button {
+                Task { await usage.refreshAll() }
+            } label: {
+                Label("تحديث الرصيد والحدود", systemImage: "arrow.clockwise")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+
+            ForEach(UsageProvider.allCases) { provider in
+                let snapshot = usage.snapshot(for: provider)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Label(provider.titleAR, systemImage: provider.systemImage)
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        if usage.loading.contains(provider) {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Button {
+                                Task { await usage.refresh(provider) }
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("تحديث \(provider.titleAR)")
+                        }
+                    }
+                    Text(snapshot.status.titleAR)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(statusColor(snapshot.status))
+                    Text(snapshot.headlineAR)
+                        .font(.caption)
+                    Text(snapshot.detailAR)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 10) {
+                        if let updatedAt = snapshot.updatedAt {
+                            Text("آخر تحديث ") + Text(updatedAt, style: .relative)
+                        }
+                        if let url = provider.consoleURL {
+                            Link(destination: url) {
+                                Label("فتح اللوحة", systemImage: "arrow.up.right.square")
+                            }
+                        } else if provider == .dashscope {
+                            Text("Model Studio → Free Quota")
+                        }
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 5)
+            }
+        }
+        .task {
+            await usage.refreshAll()
+        }
+    }
+
+    private func statusColor(_ status: ProviderUsageStatus) -> Color {
+        switch status {
+        case .ready: return .green
+        case .manual: return V2Theme.gold
+        case .notConfigured: return .secondary
+        case .failed: return .red
         }
     }
 }
@@ -425,6 +614,7 @@ struct APIKeyRow: View {
                     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else { return }
                     KeychainStore.set(trimmed, for: keyID)
+                    ProviderUsageStore.shared.invalidate(keyID: keyID)
                     value = ""
                     savedFlash = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { savedFlash = false }
@@ -435,6 +625,7 @@ struct APIKeyRow: View {
                 if stored {
                     Button(role: .destructive) {
                         KeychainStore.delete(keyID)
+                        ProviderUsageStore.shared.invalidate(keyID: keyID)
                         testResult = nil
                     } label: {
                         Image(systemName: "trash")
@@ -477,6 +668,7 @@ struct APIKeyRow: View {
             // مضبوط بينما لم يُحفظ في Keychain (وهو ما كان يمنع تحويل HLS).
             if result.hasPrefix("✅") {
                 KeychainStore.set(key, for: keyID)
+                ProviderUsageStore.shared.invalidate(keyID: keyID)
             }
         }
     }
@@ -489,6 +681,37 @@ enum KeyTester {
         let key = KeychainStore.normalized(key)
         if provider == "gemini" {
             return await TranslateService.verifyGeminiKey(key)
+        }
+
+        if provider == "dashscope" {
+            let model = ModelSelection.selected(purpose: "translator", provider: .dashscope,
+                                                fallback: TranslateService.defaultQwenMTModel)
+            let payload: [String: Any] = [
+                "model": model,
+                "messages": [["role": "user", "content": "Reply with OK."]]
+            ]
+            do {
+                let body = try JSONSerialization.data(withJSONObject: payload)
+                let (data, _) = try await DashScopeAPI.request(
+                    "POST", path: "/chat/completions", key: key,
+                    headers: ["Content-Type": "application/json"], body: body, timeout: 45)
+                let json = HTTP.json(from: data)
+                if let error = json["error"] as? [String: Any] {
+                    let message = error["message"] as? String ?? "خطأ غير معروف"
+                    return "⚠️ وصل DashScope لكن الموديل \(model) رفض الطلب: \(message)"
+                }
+                guard let choices = json["choices"] as? [[String: Any]], !choices.isEmpty else {
+                    return "⚠️ وصل DashScope لكن الاستجابة غير متوقعة — تحقق من رابط المنطقة والموديل."
+                }
+                return "✅ مفتاح DashScope والرابط والموديل \(model) تعمل"
+            } catch let e as APIError {
+                if e.status == 401 { return "❌ مفتاح DashScope غير صحيح أو لا يخص هذه المنطقة (401)" }
+                if e.status == 403 { return "❌ الحساب أو الموديل غير مسموح به في هذه المنطقة (403)" }
+                if e.status == 429 { return "⚠️ وصل DashScope لكن وصلت للحد مؤقتاً (429)" }
+                return "⚠️ فشل اختبار DashScope (HTTP \(e.status)) — راجع الرابط والمنطقة."
+            } catch {
+                return "⚠️ تعذر الاتصال بـ DashScope — تحقق من رابط HTTPS والإنترنت"
+            }
         }
 
         if provider == "siliconflow" {

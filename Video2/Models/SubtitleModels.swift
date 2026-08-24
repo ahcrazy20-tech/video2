@@ -151,7 +151,7 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
 // MARK: - مزودو الترجمة النصية
 
 enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
-    case auto, gemini, groqLLM, deepL, siliconflow
+    case auto, gemini, groqLLM, deepL, siliconflow, qwenMT
     var id: String { rawValue }
 
     var titleAR: String {
@@ -161,21 +161,24 @@ enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
         case .groqLLM: return "Groq LLM (GPT-OSS 120B — سريع جداً)"
         case .deepL: return "DeepL (500K حرف/شهر مجاناً)"
         case .siliconflow: return "SiliconFlow (Qwen / DeepSeek / GLM)"
+        case .qwenMT: return "Qwen-MT (DashScope — ترجمة متخصصة)"
         }
     }
 
     var detailAR: String {
         switch self {
         case .auto:
-            return "يفضّل Gemini عند توفر مفتاحه (شريحة مجانية سخية)، وإلا SiliconFlow (Qwen 72B ممتاز في العربية)، وإلا Groq."
+            return "يفضّل Gemini عند توفر مفتاحه، ثم Groq، ثم SiliconFlow. لاختيار DeepSeek V3.2 للسياق العربي اختر SiliconFlow صراحةً؛ حدود الاستخدام تختلف حسب الحساب."
         case .gemini:
-            return "ترجمة طبيعية تفهم السياق والمصطلحات، مناسبة للهندية والإنجليزية إلى العربية."
+            return "ترجمة طبيعية تفهم السياق والمصطلحات. للدفعات السريعة يضبط التطبيق التفكير المنخفض تلقائياً."
         case .groqLLM:
-            return "GPT-OSS 120B عبر Groq (بديل Llama 3.3 المنتهي) — سريع جداً بنفس مفتاح التفريغ."
+            return "GPT-OSS 120B أو Qwen 3.6 27B عبر Groq — سريعان جداً بنفس مفتاح التفريغ؛ التوفر والحدود حسب حساب Groq."
         case .deepL:
             return "DeepL — 500 ألف حرف/شهر مجاناً، جودة عالية للترجمة السياقية. يحتاج مفتاح DeepL (deepl)."
         case .siliconflow:
-            return "Qwen 2.5 72B / DeepSeek V3 / GLM-4 9B — موديلات صينية مفتوحة المصدر بترجمة عربية ممتازة وسعر منخفض. المفتاح: siliconflow."
+            return "DeepSeek V3.2 (الموصى به للسياق) أو Qwen 3.5 — موديلات قوية للترجمة العربية بسعر منخفض. المفتاح: siliconflow."
+        case .qwenMT:
+            return "Qwen-MT Flash موديل ترجمة متخصص لـ 92 لغة مع العربية. يستخدم مفتاح DashScope منفصل؛ اختره صراحةً لأنه مزود جديد للنصوص."
         }
     }
 
@@ -186,6 +189,7 @@ enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
         case .groqLLM: return "groq"
         case .deepL: return "deepl"
         case .siliconflow: return "siliconflow"
+        case .qwenMT: return "dashscope"
         }
     }
 }
@@ -269,6 +273,12 @@ struct TranslationJob: Identifiable, Codable, Hashable {
         case .transcribing:
             return totalChunks > 0 ? "التفريغ: \(doneChunks)/\(totalChunks) جزء" : "التفريغ…"
         case .translating:
+            // لا نعرض 0/N وحدها أثناء انتظار أول رد من المزود: هي صحيحة حسابياً
+            // لكنها توحي بأن المهمة علقت. مدير الترجمة يضع وصف الدفعة المرسلة هنا.
+            if let active = errorMessage,
+               active.contains("جارٍ إرسال") || active.contains("اكتملت الدفعة") {
+                return active
+            }
             return totalBatches > 0 ? "الترجمة: \(doneBatches)/\(totalBatches) دفعة" : "الترجمة…"
         default:
             return state.titleAR

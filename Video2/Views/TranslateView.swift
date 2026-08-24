@@ -87,6 +87,11 @@ struct TranslationJobRow: View {
         job.state == .done || job.state == .paused || job.state == .failed || job.state == .cancelled
     }
 
+    private func isLiveTranslationStatus(_ message: String) -> Bool {
+        job.state == .translating &&
+        (message.contains("جارٍ إرسال") || message.contains("اكتملت الدفعة"))
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
@@ -124,7 +129,7 @@ struct TranslationJobRow: View {
                 }
             }
 
-            if let message = job.errorMessage, !message.isEmpty {
+            if let message = job.errorMessage, !message.isEmpty, !isLiveTranslationStatus(message) {
                 Text(message)
                     .font(.caption2)
                     .foregroundStyle(job.state == .failed ? .red : .secondary)
@@ -426,7 +431,9 @@ struct NewTranslationView: View {
         case .groqLLM:
             return ModelSelection.selected(purpose: "translator", provider: .groq, fallback: "openai/gpt-oss-120b")
         case .siliconflow:
-            return ModelSelection.selected(purpose: "translator", provider: .siliconflow, fallback: "Qwen/Qwen2.5-72B-Instruct")
+            return ModelSelection.selected(purpose: "translator", provider: .siliconflow, fallback: "deepseek-ai/DeepSeek-V3.2")
+        case .qwenMT:
+            return ModelSelection.selected(purpose: "translator", provider: .dashscope, fallback: TranslateService.defaultQwenMTModel)
         case .deepL: return "DeepL API"
         case .auto: return "—"
         }
