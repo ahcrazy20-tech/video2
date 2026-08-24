@@ -352,28 +352,48 @@ enum AudioPipeline {
         
         // رفع الملف — يجب إرسال خانات الـ form الموقّعة مع الملف في حقل file (وإلا 401 Invalid Signature)
         print("[CloudConvert] Uploading file (\(size / 1024 / 1024) MB)...")
-        let fileData = try Data(contentsOf: merged)
         let boundary = "Boundary-\(UUID().uuidString)"
         var uploadReq = URLRequest(url: uploadURL)
         uploadReq.httpMethod = "POST"
         uploadReq.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         uploadReq.timeoutInterval = 600
-        
-        var body = Data()
-        for (k, v) in formParams {
-            body.append("--\(boundary)\r\n".data(using: .utf8)!)
-            body.append("Content-Disposition: form-data; name=\"\(k)\"\r\n\r\n".data(using: .utf8)!)
-            body.append("\(v)\r\n".data(using: .utf8)!)
+
+        // نبني body الرفع على القرص ونرفعه بـ upload(for:fromFile:) — تحميل
+        // الملف كاملاً في الذاكرة (Data(contentsOf:)) يُسقط التطبيق (OOM)
+        // مع البثوث الطويلة التي تُنتج ملفات مدمجة بالجيجابايت.
+        let bodyURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cc-body-\(UUID().uuidString).bin")
+        do {
+            FileManager.default.createFile(atPath: bodyURL.path, contents: nil)
+            let bodyFH = try FileHandle(forWritingTo: bodyURL)
+            func writeStr(_ s: String) throws {
+                guard let d = s.data(using: .utf8) else {
+                    throw AudioPipelineError.exportFailed("CloudConvert: ترميز غير صالح")
+                }
+                bodyFH.write(contentsOf: d)
+            }
+            for (k, v) in formParams {
+                try writeStr("--\(boundary)\r\n")
+                try writeStr("Content-Disposition: form-data; name=\"\(k)\"\r\n\r\n")
+                try writeStr("\(v)\r\n")
+            }
+            try writeStr("--\(boundary)\r\n")
+            try writeStr("Content-Disposition: form-data; name=\"file\"; filename=\"\(merged.lastPathComponent)\"\r\n")
+            try writeStr("Content-Type: application/octet-stream\r\n\r\n")
+            let inFH = try FileHandle(forReadingFrom: merged)
+            while true {
+                let chunk = inFH.readData(ofLength: 2 * 1024 * 1024)
+                if chunk.isEmpty { break }
+                bodyFH.write(contentsOf: chunk)
+            }
+            try inFH.close()
+            try writeStr("\r\n--\(boundary)--\r\n")
+            try bodyFH.close()
         }
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(merged.lastPathComponent)\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
-        body.append(fileData)
-        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
-        uploadReq.httpBody = body
-        
+        defer { try? FileManager.default.removeItem(at: bodyURL) }
+
         print("[CloudConvert] Sending upload request...")
-        let (_, uploadResp) = try await URLSession.shared.data(for: uploadReq)
+        let (_, uploadResp) = try await URLSession.shared.upload(for: uploadReq, fromFile: bodyURL)
         
         guard let uhr = uploadResp as? HTTPURLResponse else {
             print("[CloudConvert] ❌ Invalid upload response")
@@ -1085,20 +1105,26 @@ enum AudioPipeline {
         let manifestURL = dir.appendingPathComponent("chunks.json")
 
         var sourceURL = videoURL
+        // شريط التقدم داخل مرحلة الاستخراج: تحويل HLS (سحابي، قد يستغرق دقائق
+        // لبث طويل) يستهلك النصف الأول، وقراءة/تقطيع الصوت النصف الثاني —
+        // حتى لا يبدو الشريط مجمّداً وقتاً طويلاً في "استخراج الصوت".
+        var progressBase: Double = 0
+        var progressSpan: Double = 1
         if videoURL.pathExtension.lowercased() == "m3u8" {
             let cached = dir.appendingPathComponent("hls-source.mp4")
-            if FileManager.default.fileExists(atPath: cached.path) {
-                sourceURL = cached
-            } else {
+            if !FileManager.default.fileExists(atPath: cached.path) {
                 progress(0.02)
                 let tmp = try await exportHLSToTempMP4(videoURL)
                 do { try FileManager.default.moveItem(at: tmp, to: cached) }
                 catch { try? FileManager.default.copyItem(at: tmp, to: cached) }
-                sourceURL = cached
             }
-            guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            guard FileManager.default.fileExists(atPath: cached.path) else {
                 throw AudioPipelineError.exportFailed("فقد الملف المحوّل")
             }
+            sourceURL = cached
+            progressBase = 0.4
+            progressSpan = 0.6
+            progress(progressBase)
         }
 
         if let data = try? Data(contentsOf: manifestURL),
@@ -1132,6 +1158,7 @@ enum AudioPipeline {
         var chunkStartPTS: Double = 0
         var writer: AVAssetWriter? = nil
         var writerInput: AVAssetWriterInput? = nil
+        var lastProgressFrac: Double = 0
 
         func makeWriter(index: Int) throws -> (AVAssetWriter, AVAssetWriterInput) {
             let fn = singleFile ? "audio-full.m4a" : String(format: "chunk-%03d.m4a", index)
@@ -1165,6 +1192,15 @@ enum AudioPipeline {
                 w.startWriting(); w.startSession(atSourceTime: CMTime(seconds: pts, preferredTimescale: 600))
                 writer = w; writerInput = i
             }
+            // تقدم مستمر (لكل الوضعين: ملف واحد أو مقاطع) — شريط التقدم
+            // يتحرك مع الوقت الفعلي بدل الانتظار حتى نهاية الجزء.
+            if duration > 0 {
+                let frac = min(1.0, max(0.0, pts / duration))
+                if frac - lastProgressFrac >= 0.01 {
+                    lastProgressFrac = frac
+                    progress(progressBase + progressSpan * frac)
+                }
+            }
             if !singleFile && pts - chunkStartPTS >= effectiveChunkSeconds {
                 try await finishWriter()
                 chunks.append(AudioChunk(index: chunkIndex, fileName: String(format: "chunk-%03d.m4a", chunkIndex), start: chunkStartPTS, duration: pts - chunkStartPTS))
@@ -1172,9 +1208,15 @@ enum AudioPipeline {
                 let (w, i) = try makeWriter(index: chunkIndex)
                 w.startWriting(); w.startSession(atSourceTime: CMTime(seconds: pts, preferredTimescale: 600))
                 writer = w; writerInput = i
-                if duration > 0 { progress(min(0.98, pts / duration)) }
             }
+            // حارس ضد التعليق الأبدي: لو فشل writer (امتلاء التخزين/خطأ
+            // ترميز) تبقى isReadyForMoreMediaData=false إلى الأبد — نحوّلها
+            // إلى خطأ قابل للالتقاط بدل تجميد المهمة في "استخراج الصوت".
             while writerInput?.isReadyForMoreMediaData == false {
+                if let w = writer, w.status == .failed {
+                    reader.cancelReading()
+                    throw AudioPipelineError.writerFailed(w.error?.localizedDescription ?? "تعذر الكتابة إلى ملف الصوت — تحقق من مساحة التخزين")
+                }
                 try await Task.sleep(nanoseconds: 5_000_000)
                 if Task.isCancelled { reader.cancelReading(); try? await finishWriter(); throw CancellationError() }
             }

@@ -340,27 +340,35 @@ final class DubbingService: ObservableObject {
             throw DubbingError.compositionFailed
         }
 
-        var cursor = CMTime.zero
         var insertedAny = false
+        // حافة أمان: مدة المسار الصوتي الفعلي قد تكون أقصر بجزء من الثانية من
+        // مدة الحاوية (padding في MP3/M4A). الإدراج بمدة أطول من مسار المصدر
+        // يرفع NSInvalidArgumentException — استثناء Obj-C لا يلتقطه do/catch
+        // — ويسبب كراش التطبيق أثناء "دمج المقاطع".
+        let epsilon: CFTimeInterval = 0.02
         for item in generated {
             let asset = AVURLAsset(url: item.audioURL)
             guard let audioAssetTrack = asset.tracks(withMediaType: .audio).first else { continue }
-            let segmentDuration = asset.duration
+            // نقيّد المدة بمدة المسار الفعلي (وليس مدة الحاوية) دائماً
+            let sourceDuration = audioAssetTrack.timeRange.duration
             // تجاهل الملفات الفارغة/التالفة لتفادي بناء مسار زمني غير صالح
-            guard segmentDuration.seconds.isFinite, segmentDuration.seconds > 0 else { continue }
+            guard sourceDuration.seconds.isFinite, sourceDuration.seconds > epsilon else { continue }
 
-            let targetStart = item.cue.start
-            let targetEnd = item.cue.end
-            let targetDuration = max(0.2, targetEnd - targetStart)
+            let targetStart = max(0, item.cue.start)
+            let targetEnd = max(targetStart + 0.2, item.cue.end)
+            let targetDuration = targetEnd - targetStart
 
             let timeScale = CMTimeScale(600)
             let startTime = CMTime(seconds: targetStart, preferredTimescale: timeScale)
-            var insertedDuration = segmentDuration
-            if stretchToFit, segmentDuration.seconds > targetDuration * 1.05 {
+            var insertedDuration = sourceDuration
+            if stretchToFit, sourceDuration.seconds > targetDuration * 1.05 {
                 // تسريع الصوت ليتناسب مع التوقيت (محدود بمدة الجملة الأصلية)
-                let clamped = min(segmentDuration.seconds, max(0.1, targetDuration))
-                let scaled = CMTime(seconds: clamped, preferredTimescale: timeScale)
-                insertedDuration = scaled
+                let clamped = min(sourceDuration.seconds, max(0.1, targetDuration))
+                insertedDuration = CMTime(seconds: clamped, preferredTimescale: timeScale)
+            }
+            // لا نسمح أبداً بتجاوز مدة المصدر (هذا كان سبب الكراش)
+            if insertedDuration.seconds > sourceDuration.seconds - epsilon {
+                insertedDuration = CMTime(seconds: max(0.1, sourceDuration.seconds - epsilon), preferredTimescale: timeScale)
             }
             guard insertedDuration.seconds.isFinite, insertedDuration.seconds > 0 else { continue }
 
@@ -369,10 +377,10 @@ final class DubbingService: ObservableObject {
                 try audioTrack.insertTimeRange(timeRange, of: audioAssetTrack, at: startTime)
                 insertedAny = true
             } catch {
-                // لو فشل الإدراج (تداخل مثلاً)، ضعه متتالياً بعد المؤشر الحالي
+                // لو فشل الإدراج عند موضع الجملة (تداخل مثلاً)، ضعه في نهاية المسار
+                let fallbackAt = audioTrack.timeRange.duration
                 do {
-                    try audioTrack.insertTimeRange(timeRange, of: audioAssetTrack, at: cursor)
-                    cursor = CMTimeAdd(cursor, insertedDuration)
+                    try audioTrack.insertTimeRange(timeRange, of: audioAssetTrack, at: fallbackAt)
                     insertedAny = true
                 } catch {
                     // تجاهل هذه الجملة إن تعذّر إدراجها تماماً
@@ -386,21 +394,29 @@ final class DubbingService: ObservableObject {
         if FileManager.default.fileExists(atPath: outputURL.path) {
             try? FileManager.default.removeItem(at: outputURL)
         }
-        guard let exporter = AVAssetExportSession(asset: composition,
-                                                  presetName: AVAssetExportPresetAppleM4A) else {
+        let compatible = AVAssetExportSession.exportPresets(compatibleWith: composition)
+        var exporter = compatible.contains(AVAssetExportPresetAppleM4A)
+            ? AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A)
+            : AVAssetExportSession(asset: composition)
+        guard let exp = exporter, exp.supportedFileTypes.contains(.m4a) else {
             throw DubbingError.exportFailed
         }
-        exporter.outputURL = outputURL
-        exporter.outputFileType = .m4a
-        exporter.shouldOptimizeForNetworkUse = false
+        exp.outputURL = outputURL
+        exp.outputFileType = .m4a
+        exp.shouldOptimizeForNetworkUse = false
 
         // iOS 16 — استخدم exportAsynchronously مع continuation
         let result: AVAssetExportSession.Status = try await withCheckedThrowingContinuation { cont in
-            exporter.exportAsynchronously {
-                cont.resume(returning: exporter.status)
+            exp.exportAsynchronously {
+                cont.resume(returning: exp.status)
             }
         }
         if result != .completed {
+            throw DubbingError.exportFailed
+        }
+        // تحقق نهائي من الملف المصدَّر قبل اعتبار الدبلجة ناجحة
+        let outSize = (try? outputURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard FileManager.default.fileExists(atPath: outputURL.path), outSize > 0 else {
             throw DubbingError.exportFailed
         }
         return outputURL
