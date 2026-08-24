@@ -178,7 +178,7 @@ enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
         case .deepL:
             return "DeepL — 500 ألف حرف/شهر مجاناً، جودة عالية للترجمة السياقية. يحتاج مفتاح DeepL (deepl)."
         case .openRouter:
-            return "Llama 3.3 70B وغيره — موديلات تنتهي بـ :free بدون فيزا نهائياً. 50 طلب/يوم (1000 بعد شحن 10$ اختياري)."
+            return "قائمة حيّة من الموديلات المجانية (‎:free) — التطبيق يقرأ ما هو مجاني فعلاً الآن بدون فيزا نهائياً. 50 طلب/يوم (1000 بعد شحن 10$ اختياري)."
         case .cerebras:
             return "مليون token يومياً مجاناً وسريع جداً. Llama 3.3 70B / Qwen3 / GLM. بدون فيزا."
         case .sambaNova:

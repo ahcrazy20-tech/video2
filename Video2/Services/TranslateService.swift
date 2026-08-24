@@ -168,7 +168,10 @@ enum TranslateService {
 
     // المزودات الجديدة المتوافقة مع OpenAI — كلها بدون فيزا ولها شريحة مجانية.
     /// موديلات OpenRouter التي تنتهي بـ :free مجانية بالكامل (50 طلب/يوم بلا شحن).
-    static let defaultOpenRouterModel = "meta-llama/llama-3.3-70b-instruct:free"
+    /// الافتراضي الحالي مُتحقق منه مجاني ونشط على OpenRouter (2026-08-24).
+    /// تشكيل الموديلات المجانية على OpenRouter يتغيّر باستمرار؛ لو توقف هذا
+    /// الموديل يُعالجه الاسترداد التلقائي في openAIChatBatch (يبديل بنسخة حية).
+    static let defaultOpenRouterModel = "google/gemma-4-31b-it:free"
     /// Cerebras: مليون token/يوم مجاناً؛ Llama 3.3 70B توازن قوي للترجمة السياقية.
     static let defaultCerebrasModel = "llama3.1-70b"
     /// SambaNova: DeepSeek V3.2 ممتاز للسياق العربي ويعمل ضمن رصيد 5$ المجاني.
@@ -628,24 +631,35 @@ enum TranslateService {
         guard let key = KeychainStore.get(spec.keyID) else {
             throw APIError(status: 401, body: "أدخل مفتاح \(spec.label) من الإعدادات")
         }
-        let model = config.model.isEmpty ? spec.defaultModel : config.model
-        let body: [String: Any] = [
-            "model": model,
-            "temperature": config.temperature,
-            "messages": [
-                ["role": "system", "content": systemPrompt(source: source, target: target, videoTitle: videoTitle)],
-                ["role": "user", "content": userPrompt(batch: batch, contextTail: contextTail)]
-            ]
-        ]
-        let payload = try JSONSerialization.data(withJSONObject: body)
+        let model: String
+        if provider == .openRouter {
+            // خط أمان مزدوج: لا نرسل الدفعة لموديل OpenRouter مدفوع (مثل Qwen3 أو
+            // أي إصدار أحدث بدون :free) بقصد أو بخلل — ولو بقيت قيمة قديمة
+            // محفوظة على الجهاز — طالما يوجد موديل مجاني نستخدمه.
+            model = config.model.hasSuffix(":free") ? config.model : spec.defaultModel
+        } else {
+            model = config.model.isEmpty ? spec.defaultModel : config.model
+        }
         var headers = ["Authorization": "Bearer \(KeychainStore.normalized(key))",
                        "Content-Type": "application/json"]
         for (k, v) in spec.extraHeaders { headers[k] = v }
-        let (data, _) = try await HTTP.withRetry(attempts: 5, baseDelay: 6) {
-            try await HTTP.request("POST", spec.url,
-                                   headers: headers,
-                                   body: payload,
-                                   timeout: 180)
+        let data: Data
+        do {
+            data = try await openAICompatRequest(spec: spec, headers: headers, model: model,
+                                                 config: config, batch: batch, contextTail: contextTail,
+                                                 source: source, target: target, videoTitle: videoTitle)
+        } catch let error as APIError where provider == .openRouter && error.status == 404 {
+            // الموديل المختار لم يعد مُقدَّماً على OpenRouter (قائمتهم المجانية
+            // تدور: نسخ :free قديمة تُسحب). نقرأ القائمة الحية الآن، نبدل بنسخة
+            // مجانية نشطة، ونعيد نفس الدفعة — فلا تموت مهمة طويلة في منتصف الفيديو.
+            guard let recovered = await openRouterLiveFreeModel(excluding: model) else {
+                throw APIError(status: 404,
+                               body: "OpenRouter: الموديل \(model) لم يعد متاحاً ولم نجد بديلاً مجانياً حياً الآن. افتح اختيار موديل OpenRouter من الإعدادات واضغط تحديث.")
+            }
+            ModelSelection.save(recovered, purpose: "translator", provider: .openRouter)
+            data = try await openAICompatRequest(spec: spec, headers: headers, model: recovered,
+                                                 config: config, batch: batch, contextTail: contextTail,
+                                                 source: source, target: target, videoTitle: videoTitle)
         }
         let json = HTTP.json(from: data)
         if let err = json["error"] as? [String: Any] {
@@ -662,6 +676,44 @@ enum TranslateService {
             throw APIError(status: 0, body: "استجابة \(spec.label) فارغة")
         }
         return parseLines(rawJSON: text, batch: batch)
+    }
+
+    /// يبني جسم الطلب وينفذه مع إعادة المحاولة — مفصول عن openAIChatBatch
+    /// حتى يُعاد بناءه بنسخة موديل مختلفة عند الاسترداد التلقائي.
+    private static func openAICompatRequest(spec: OpenAICompatSpec,
+                                            headers: [String: String],
+                                            model: String,
+                                            config: Config,
+                                            batch: Batch,
+                                            contextTail: [(String, String)],
+                                            source: SubLang,
+                                            target: SubLang,
+                                            videoTitle: String) async throws -> Data {
+        let body: [String: Any] = [
+            "model": model,
+            "temperature": config.temperature,
+            "messages": [
+                ["role": "system", "content": systemPrompt(source: source, target: target, videoTitle: videoTitle)],
+                ["role": "user", "content": userPrompt(batch: batch, contextTail: contextTail)]
+            ]
+        ]
+        let payload = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await HTTP.withRetry(attempts: 5, baseDelay: 6) {
+            try await HTTP.request("POST", spec.url,
+                                   headers: headers,
+                                   body: payload,
+                                   timeout: 180)
+        }
+        return data
+    }
+
+    /// يختار من الموديلات المجانية "الحية" الآن على OpenRouter (API عام بلا
+    /// مفتاح) بديلاً لموديل لم يعد متاحاً. الموصى بها أولاً (ترتيب القائمة
+    /// جاهز: موصى بها ثم الأكبر سياقاً).
+    private static func openRouterLiveFreeModel(excluding: String) async -> String? {
+        guard let entries = try? await ModelCatalogParser.openRouterFreeLive() else { return nil }
+        let available = entries.filter { $0.rawID != excluding }
+        return available.first(where: { $0.recommended })?.rawID ?? available.first?.rawID
     }
 
     // MARK: DeepL

@@ -83,8 +83,11 @@ struct ModelPickerView: View {
         // النص العربي نفسه يظل يُرسم RTL تلقائياً بواسطة Unicode.
         .environment(\.layoutDirection, .leftToRight)
         .task {
-            // اجلب الموديلات تلقائياً عند الفتح إذا لم تكن محفوظة أو انتهت صلاحيتها
-            if catalog.models(for: provider).isEmpty {
+            // اجلب الموديلات تلقائياً عند الفتح إذا لم تكن محفوظة.
+            // OpenRouter: قائمته المجانية تتغيّر باستمرار — لو القائمة
+            // المحفوظة قديمة (> TTL) نحدّثها لنعرض ما هو مجاني فعلياً الآن.
+            if catalog.models(for: provider).isEmpty
+                || (provider.hasLiveFreeCatalog && catalog.isStale(provider)) {
                 await catalog.refresh(provider)
             }
         }
