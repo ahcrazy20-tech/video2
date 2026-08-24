@@ -511,115 +511,172 @@ enum STTService {
     static func sttaiTranscribe(audioURL: URL,
                                 language: SubLang,
                                 apiKey: String) async throws -> STTResult {
-        let (upData, _) = try await HTTP.withRetry(attempts: 3) {
-            try await HTTP.uploadFile("https://api.stt.ai/v1/upload",
-                                      fileURL: audioURL,
-                                      headers: ["Authorization": "Bearer \(apiKey)",
-                                                "Content-Type": "audio/mpeg"])
-        }
-        guard let uploadURL = HTTP.json(from: upData)["url"] as? String else {
-            throw APIError(status: 0, body: "استجابة رفع STT.ai غير متوقعة")
-        }
-        let body: [String: Any] = [
-            "audio_url": uploadURL,
-            "language": language.bcp47 ?? language.rawValue,
-            "model": "whisper-large-v3"
-        ]
-        let payload = try JSONSerialization.data(withJSONObject: body)
-        let (data, _) = try await HTTP.withRetry(attempts: 3) {
+        // STT.ai uses one multipart request to /v1/transcribe. The previous
+        // /v1/upload + audio_url flow is not part of their public API and can 404.
+        let boundary = "sttai\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        let payload = multipart(fields: [
+            "model": "large-v3-turbo",
+            "language": language.bcp47 ?? "auto",
+            "response_format": "json",
+            "diarize": "false"
+        ],
+        fileField: "file",
+        fileName: audioURL.lastPathComponent,
+        mime: mimeType(forAudioURL: audioURL),
+        fileData: try Data(contentsOf: audioURL),
+        boundary: boundary)
+
+        let (data, _) = try await HTTP.withRetry(attempts: 3, baseDelay: 3) {
             try await HTTP.request("POST", "https://api.stt.ai/v1/transcribe",
-                                   headers: ["Authorization": "Bearer \(apiKey)",
-                                             "Content-Type": "application/json"],
+                                   headers: ["Authorization": "Bearer \(KeychainStore.normalized(apiKey))",
+                                             "Content-Type": "multipart/form-data; boundary=\(boundary)"],
                                    body: payload,
-                                   timeout: 300)
+                                   timeout: 1800)
         }
         let json = HTTP.json(from: data)
         var cues: [SubCue] = []
-        if let results = json["results"] as? [[String: Any]] {
-            for r in results {
-                if let text = r["text"] as? String, !text.isEmpty {
-                    cues.append(SubCue(id: cues.count, start: 0, end: 10, text: text, translated: nil))
-                }
+        if let segments = json["segments"] as? [[String: Any]] {
+            for seg in segments {
+                guard let text = seg["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                let s = HTTP.num(seg["start"]) ?? 0
+                let e = HTTP.num(seg["end"]) ?? max(s + 2, cues.last?.end ?? 0)
+                cues.append(SubCue(id: cues.count, start: s, end: e, text: text, translated: nil))
             }
         }
-        return STTResult(cues: cues, detectedLang: language.rawValue)
+        if cues.isEmpty, let text = json["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let duration = HTTP.num(json["duration"]) ?? 10
+            cues.append(SubCue(id: 0, start: 0, end: max(2, duration), text: text, translated: nil))
+        }
+        return STTResult(cues: cues, detectedLang: (json["language"] as? String) ?? language.rawValue)
     }
 
-    // MARK: Speechmatics — إصلاح: رفع الملف فعلياً بدل إرسال file:// URL
+    // MARK: Speechmatics
 
     static func speechmaticsTranscribe(audioURL: URL,
                                        language: SubLang,
                                        apiKey: String) async throws -> STTResult {
-        // 1) إنشاء مهمة
-        let configBody: [String: Any] = [
-            "config": [
-                "type": "transcription",
-                "transcription_config": [
-                    "language": language.bcp47 ?? language.rawValue,
-                    "diarization": "none"
-                ]
+        // Speechmatics Batch API expects a single multipart POST to /v2/jobs/:
+        //   - form field "config" = JSON string
+        //   - form file  "data_file" = audio/video file
+        // The public SaaS API also requires the regional host and Bearer auth.
+        let base = "https://eu1.asr.api.speechmatics.com/v2"
+        let boundary = "sm\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        let config: [String: Any] = [
+            "type": "transcription",
+            "transcription_config": [
+                "language": language.bcp47 ?? language.rawValue,
+                "model": "enhanced",
+                "diarization": "none"
             ]
         ]
-        let configPayload = try JSONSerialization.data(withJSONObject: configBody)
-        let (jobData, _) = try await HTTP.withRetry(attempts: 2) {
-            try await HTTP.request("POST", "https://asr.api.speechmatics.com/v2/jobs/",
-                                   headers: ["api-key": apiKey,
-                                             "Content-Type": "application/json"],
-                                   body: configPayload,
-                                   timeout: 60)
+        let configData = try JSONSerialization.data(withJSONObject: config)
+        let configString = String(data: configData, encoding: .utf8) ?? "{}"
+        let audioData = try Data(contentsOf: audioURL)
+        let payload = multipart(fields: ["config": configString],
+                                fileField: "data_file",
+                                fileName: audioURL.lastPathComponent,
+                                mime: mimeType(forAudioURL: audioURL),
+                                fileData: audioData,
+                                boundary: boundary)
+        let auth = ["Authorization": "Bearer \(KeychainStore.normalized(apiKey))"]
+
+        let (jobData, _) = try await HTTP.withRetry(attempts: 3, baseDelay: 3) {
+            try await HTTP.request("POST", "\(base)/jobs/",
+                                   headers: dictMerging(auth, ["Content-Type": "multipart/form-data; boundary=\(boundary)"]),
+                                   body: payload,
+                                   timeout: 1800)
         }
         let jobJson = HTTP.json(from: jobData)
-        guard let jobID = jobJson["id"] as? String else {
+        let jobID = (jobJson["id"] as? String)
+            ?? ((jobJson["job"] as? [String: Any])?["id"] as? String)
+        guard let jobID, !jobID.isEmpty else {
             throw APIError(status: 0, body: "تعذر إنشاء مهمة Speechmatics")
         }
 
-        // 2) رفع الملف الصوتي (PUT /v2/jobs/{id}/data) — بدل إرسال file:// URL
-        let audioData = try Data(contentsOf: audioURL)
-        _ = try await HTTP.withRetry(attempts: 3) {
-            try await HTTP.request("PUT",
-                                   "https://asr.api.speechmatics.com/v2/jobs/\(jobID)/data",
-                                   headers: ["api-key": apiKey,
-                                             "Content-Type": "audio/m4a"],
-                                   body: audioData,
-                                   timeout: 1800)
-        }
-
-        // 3) بدء المعالجة
-        _ = try await HTTP.withRetry(attempts: 2) {
-            try await HTTP.request("PUT",
-                                   "https://asr.api.speechmatics.com/v2/jobs/\(jobID)/start",
-                                   headers: ["api-key": apiKey],
-                                   timeout: 60)
-        }
-
-        // 4) الاستعلام الدوري
         let start = Date()
         while true {
             if Task.isCancelled { throw CancellationError() }
-            let (data, _) = try await HTTP.withRetry(attempts: 3, baseDelay: 3) {
-                try await HTTP.request("GET",
-                                       "https://asr.api.speechmatics.com/v2/jobs/\(jobID)/transcript",
-                                       headers: ["api-key": apiKey], timeout: 60)
+            let (statusData, _) = try await HTTP.withRetry(attempts: 4, baseDelay: 3) {
+                try await HTTP.request("GET", "\(base)/jobs/\(jobID)",
+                                       headers: auth, timeout: 60)
             }
-            let json = HTTP.json(from: data)
-            if let jobStatus = json["job"] as? [String: Any],
-               let status = jobStatus["status"] as? String, status == "done" {
-                var cues: [SubCue] = []
-                if let results = json["results"] as? [[String: Any]] {
-                    for r in results {
-                        if let alternatives = r["alternatives"] as? [[String: Any]],
-                           let best = alternatives.first,
-                           let text = best["content"] as? String, !text.isEmpty {
-                            cues.append(SubCue(id: cues.count, start: 0, end: 10, text: text, translated: nil))
-                        }
-                    }
+            let statusJson = HTTP.json(from: statusData)
+            let status = ((statusJson["job"] as? [String: Any])?["status"] as? String) ?? ""
+            if status == "done" {
+                let (data, _) = try await HTTP.withRetry(attempts: 4, baseDelay: 3) {
+                    try await HTTP.request("GET", "\(base)/jobs/\(jobID)/transcript?format=json-v2",
+                                           headers: auth, timeout: 120)
                 }
-                return STTResult(cues: cues, detectedLang: language.rawValue)
+                let json = HTTP.json(from: data)
+                return STTResult(cues: parseSpeechmaticsResponse(json), detectedLang: language.rawValue)
             }
-            if Date().timeIntervalSince(start) > 600 {
+            if status == "rejected" || status == "failed" {
+                throw APIError(status: 0, body: "فشل تفريغ Speechmatics: \(status)")
+            }
+            if Date().timeIntervalSince(start) > 1800 {
                 throw APIError(status: 0, body: "انتهت مدة الانتظار لـ Speechmatics")
             }
             try await Task.sleep(nanoseconds: 5_000_000_000)
+        }
+    }
+
+    private static func parseSpeechmaticsResponse(_ json: [String: Any]) -> [SubCue] {
+        guard let results = json["results"] as? [[String: Any]] else { return [] }
+        var cues: [SubCue] = []
+        var words: [(text: String, start: Double, end: Double)] = []
+
+        func flush() {
+            guard !words.isEmpty else { return }
+            let text = words.map(\.text)
+                .joined(separator: " ")
+                .replacingOccurrences(of: " ,", with: ",")
+                .replacingOccurrences(of: " .", with: ".")
+                .replacingOccurrences(of: " ?", with: "?")
+                .replacingOccurrences(of: " !", with: "!")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                cues.append(SubCue(id: cues.count,
+                                   start: words.first?.start ?? 0,
+                                   end: words.last?.end ?? ((words.first?.start ?? 0) + 2),
+                                   text: text,
+                                   translated: nil))
+            }
+            words.removeAll(keepingCapacity: true)
+        }
+
+        for item in results {
+            guard let alternatives = item["alternatives"] as? [[String: Any]],
+                  let best = alternatives.first,
+                  let content = best["content"] as? String,
+                  !content.isEmpty else { continue }
+            let type = item["type"] as? String ?? "word"
+            if type == "punctuation" {
+                if var last = words.popLast() {
+                    last.text += content
+                    words.append(last)
+                }
+                if ".!?؟".contains(content) { flush() }
+                continue
+            }
+            let s = HTTP.num(item["start_time"]) ?? (words.last?.end ?? 0)
+            let e = HTTP.num(item["end_time"]) ?? max(s + 0.5, words.last?.end ?? 0)
+            words.append((content, s, e))
+            if words.count >= 18 || (e - (words.first?.start ?? s)) >= 7 { flush() }
+        }
+        flush()
+        return cues
+    }
+
+    private static func mimeType(forAudioURL url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "m4a": return "audio/m4a"
+        case "mp3", "mpeg": return "audio/mpeg"
+        case "wav": return "audio/wav"
+        case "aac": return "audio/aac"
+        case "ogg": return "audio/ogg"
+        case "flac": return "audio/flac"
+        case "mp4": return "video/mp4"
+        default: return "application/octet-stream"
         }
     }
 

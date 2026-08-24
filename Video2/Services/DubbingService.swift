@@ -73,6 +73,21 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .edge, .auto: return nil
         }
     }
+
+    /// حد آمن للتوازي. الدبلجة كانت قد تنهار في منتصف التوليد على iOS
+    /// عند فتح عدة WebSocket/AVAudioEngine jobs معاً، خصوصاً Edge أو fallback المحلي.
+    var safeMaxConcurrent: Int {
+        switch self {
+        case .edge:
+            return 1
+        case .groqPlayAI:
+            return 2
+        case .siliconflow, .elevenlabs:
+            return 2
+        case .auto:
+            return 1
+        }
+    }
 }
 
 /// وصف صوت واحد في مزوّد ما.
@@ -209,18 +224,21 @@ final class DubbingService: ObservableObject {
         statusText = "توليد الصوت لكل جملة…"
         var generated: [(cue: SubCue, audioURL: URL, duration: Double)] = []
         let total = Double(translatable.count)
+        let effectiveMaxConcurrent = min(max(1, request.maxConcurrent), provider.safeMaxConcurrent)
 
-        // تسلسلي لتجنّب 429، أو متوازي حسب الإعداد
-        if request.maxConcurrent <= 1 {
+        // تسلسلي لتجنّب 429/استهلاك الذاكرة، أو متوازي بسقف آمن حسب المزود
+        if effectiveMaxConcurrent <= 1 {
             for cue in translatable {
                 if Task.isCancelled { throw CancellationError() }
-                let text = cue.translated ?? cue.text
+                let text = DubbingService.cleanText(cue.translated ?? cue.text)
+                guard !text.isEmpty else { continue }
                 let url = tempDir.appendingPathComponent("cue-\(cue.id).\(perCueExt)")
                 let dur = try await DubbingService.synthesizeOneStatic(text: text,
                                                                        voice: voice,
                                                                        provider: provider,
                                                                        outputURL: url,
                                                                        sampleRate: sampleRate)
+                guard DubbingService.isUsableAudioFile(url) else { continue }
                 generated.append((cue, url, dur))
                 let p = Double(generated.count) / total
                 progress = 0.85 * p
@@ -228,8 +246,8 @@ final class DubbingService: ObservableObject {
             }
         } else {
             // متوازي مع سقف
-            let maxConcurrent = max(1, request.maxConcurrent)
-            try await withThrowingTaskGroup(of: (SubCue, URL, Double).self) { group in
+            let maxConcurrent = effectiveMaxConcurrent
+            try await withThrowingTaskGroup(of: (SubCue, URL, Double)?.self) { group in
                 var pending = Array(translatable)
                 var done = 0
                 var inFlight = 0
@@ -239,7 +257,8 @@ final class DubbingService: ObservableObject {
 
                     while !pending.isEmpty && inFlight < maxConcurrent {
                         let cue = pending.removeFirst()
-                        let text = cue.translated ?? cue.text
+                        let text = DubbingService.cleanText(cue.translated ?? cue.text)
+                        guard !text.isEmpty else { continue }
                         let url = tempDir.appendingPathComponent("cue-\(cue.id).\(perCueExt)")
                         let v = voice
                         let p = provider
@@ -249,6 +268,7 @@ final class DubbingService: ObservableObject {
                                                                                    provider: p,
                                                                                    outputURL: url,
                                                                                    sampleRate: sampleRate)
+                            guard DubbingService.isUsableAudioFile(url) else { return nil }
                             return (cue, url, dur)
                         }
                         inFlight += 1
@@ -257,7 +277,7 @@ final class DubbingService: ObservableObject {
                     if let result = try await group.next() {
                         inFlight -= 1
                         done += 1
-                        generated.append(result)
+                        if let result { generated.append(result) }
                         progress = 0.85 * Double(done) / total
                         onProgress?(progress, "توليد الصوت \(done)/\(translatable.count)")
                     }
@@ -289,6 +309,22 @@ final class DubbingService: ObservableObject {
     }
 
     // MARK: - توليد صوت جملة واحدة (مع fallback تلقائي)
+
+    nonisolated private static func cleanText(_ text: String) -> String {
+        text.replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    nonisolated private static func isUsableAudioFile(_ url: URL) -> Bool {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard FileManager.default.fileExists(atPath: url.path), size > 512 else { return false }
+        let asset = AVURLAsset(url: url)
+        guard asset.tracks(withMediaType: .audio).first != nil else { return false }
+        let d = CMTimeGetSeconds(asset.duration)
+        return d.isFinite ? d > 0.05 : true
+    }
 
     /// توليد صوت جملة — لو المزود الأساسي فشل (مثل Edge TTS محجوب)، يجرب تلقائياً صوت الجهاز.
     /// nonisolated لأن `withThrowingTaskGroup` block لا يرث الـ MainActor

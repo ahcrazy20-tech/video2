@@ -372,7 +372,7 @@ struct SettingsView: View {
             return ModelSelection.selected(purpose: "stt", provider: .siliconflow, fallback: "FunAudioLLM/SenseVoiceSmall")
         case .assemblyai: return "universal"
         case .speechmatics: return "default"
-        case .sttai: return "whisper-large-v3"
+        case .sttai: return "large-v3-turbo"
         case .auto: return "—"
         }
     }
@@ -721,11 +721,11 @@ enum KeyTester {
             url = "https://api-free.deepl.com/v2/usage"
             headers = ["Authorization": "DeepL-Auth-Key \(key)"]
         case "sttai":
-            url = "https://api.stt.ai/v1/user"
+            url = "https://api.stt.ai/v1/usage"
             headers = ["Authorization": "Bearer \(key)"]
         case "speechmatics":
-            url = "https://asr.api.speechmatics.com/v2/user"
-            headers = ["api-key": key]
+            url = "https://eu1.asr.api.speechmatics.com/v2/jobs/"
+            headers = ["Authorization": "Bearer \(key)"]
         case "cloudconvert":
             url = "https://api.cloudconvert.com/v2/jobs?per_page=1"
             headers = ["Authorization": "Bearer \(key)"]
