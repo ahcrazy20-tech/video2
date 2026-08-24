@@ -370,7 +370,7 @@ enum AudioPipeline {
                 guard let d = s.data(using: .utf8) else {
                     throw AudioPipelineError.exportFailed("CloudConvert: ترميز غير صالح")
                 }
-                bodyFH.write(contentsOf: d)
+                try bodyFH.write(contentsOf: d)
             }
             for (k, v) in formParams {
                 try writeStr("--\(boundary)\r\n")
@@ -384,7 +384,7 @@ enum AudioPipeline {
             while true {
                 let chunk = inFH.readData(ofLength: 2 * 1024 * 1024)
                 if chunk.isEmpty { break }
-                bodyFH.write(contentsOf: chunk)
+                try bodyFH.write(contentsOf: chunk)
             }
             try inFH.close()
             try writeStr("\r\n--\(boundary)--\r\n")

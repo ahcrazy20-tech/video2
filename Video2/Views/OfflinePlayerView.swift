@@ -263,7 +263,7 @@ final class OfflinePlayerModel: ObservableObject {
 
     /// كتم الصوت الأصلي أثناء تشغيل الدبلجة
     private func applyMute() {
-        player.muted = mutedUser || (dubOn && !dubFinished)
+        player.isMuted = mutedUser || (dubOn && !dubFinished)
     }
 
     // MARK: كتم الصوت
@@ -291,10 +291,10 @@ final class OfflinePlayerModel: ObservableObject {
         let gen = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true
         gen.maximumSize = CGSize(width: 1920, height: 1080)
-        let t = CMTime(seconds: current, preferredTimescale: 600)
+        let cmTime = CMTime(seconds: current, preferredTimescale: 600)
         Task {
             do {
-                let (cg, _) = try await gen.image(at: t)
+                let (cg, _) = try await gen.image(at: cmTime)
                 let img = UIImage(cgImage: cg)
                 UIImageWriteToSavedPhotosAlbum(img, nil, nil, nil)
                 flash(t("pl.snapshot.saved"))
@@ -865,8 +865,22 @@ private extension MPVolumeView {
 struct AirPlayPicker: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
         let v = AVRoutePickerView()
-        v.artworkImageView.isHidden = true
+        hideArtwork(in: v)
         return v
     }
-    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
+    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {
+        hideArtwork(in: uiView)
+    }
+
+    /// AVRoutePickerView يعرض صورة غلاف "Now Playing" فوق قائمة الأجهزة،
+    /// ولا توجد API عامة لإخفائها — نبحث عن UIImageView داخل شجرة الـ subviews.
+    private func hideArtwork(in view: UIView) {
+        for sub in view.subviews {
+            if sub is UIImageView {
+                sub.isHidden = true
+            } else {
+                hideArtwork(in: sub)
+            }
+        }
+    }
 }

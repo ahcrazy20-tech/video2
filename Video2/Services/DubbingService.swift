@@ -395,10 +395,11 @@ final class DubbingService: ObservableObject {
             try? FileManager.default.removeItem(at: outputURL)
         }
         let compatible = AVAssetExportSession.exportPresets(compatibleWith: composition)
-        var exporter = compatible.contains(AVAssetExportPresetAppleM4A)
-            ? AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A)
-            : AVAssetExportSession(asset: composition)
-        guard let exp = exporter, exp.supportedFileTypes.contains(.m4a) else {
+        let preset = compatible.contains(AVAssetExportPresetAppleM4A)
+            ? AVAssetExportPresetAppleM4A
+            : AVAssetExportPresetHighestQuality
+        guard let exp = AVAssetExportSession(asset: composition, presetName: preset),
+              exp.supportedFileTypes.contains(.m4a) else {
             throw DubbingError.exportFailed
         }
         exp.outputURL = outputURL
