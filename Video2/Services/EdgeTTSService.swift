@@ -172,18 +172,25 @@ enum EdgeTTSError: LocalizedError {
 enum EdgeTTSClient {
     private static let trustedToken = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
     private static let chromium = "130.0.2849.68"
+    // Edge ReadAloud WebSocket يصبح غير مستقر على iOS عند تشغيل عدة جلسات
+    // متزامنة لفيديو طويل؛ نسلسله لتفادي الكراش في منتصف الدبلجة.
+    private static let synthesisGate = AsyncSerialGate()
 
     static func synthesize(text: String, language: String) async throws -> Data {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw EdgeTTSError.empty }
-        return try await synthesizeInternal(text: trimmed, voice: SpeechNarrator.edgeVoice(for: language))
+        return try await synthesisGate.run {
+            try await synthesizeInternal(text: trimmed, voice: SpeechNarrator.edgeVoice(for: language))
+        }
     }
 
     /// يخزّن الصوت في ملف ويعيد مدته التقريبية بالثواني.
     static func synthesizeAndSave(text: String, voice: String, outputURL: URL) async throws -> Double {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw EdgeTTSError.empty }
-        let data = try await synthesizeInternal(text: trimmed, voice: voice)
+        let data = try await synthesisGate.run {
+            try await synthesizeInternal(text: trimmed, voice: voice)
+        }
         try data.write(to: outputURL, options: .atomic)
         return approximateMP3Duration(bytes: data.count)
     }

@@ -14,7 +14,7 @@ struct DubbingView: View {
     @State private var provider: DubbingProvider = .auto
     @State private var selectedVoiceID: String = ""
     @State private var stretchToFit = true
-    @State private var concurrency: Double = 3
+    @State private var concurrency: Double = 2
     @State private var dubbingStarted = false
     @State private var dubbingCompleted = false
     @State private var lastResult: DubbingResult?
@@ -216,7 +216,7 @@ struct DubbingView: View {
                     .foregroundStyle(.secondary)
             }
             Slider(value: $concurrency, in: 1...6, step: 1)
-            Text("تقليل التوازي عند ظهور أخطاء 429. زيادته تسرّع الدبلجة لكن تستهلك رصيد أكثر.")
+            Text("سيُطبّق التطبيق سقفاً آمناً تلقائياً حسب المزود (Edge = 1، والسحابي غالباً = 2) لتجنب الكراش في الفيديوهات الطويلة.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -339,9 +339,10 @@ struct DubbingView: View {
 
     private func startDubbing() {
         guard let srtURL = subtitleFileForDubbing() else { return }
-        let parsedCues = SubtitleCodec.parseSRTFile(at: srtURL)
+        let parsedCues = SubtitleCodec.normalize(SubtitleCodec.parseSRTFile(at: srtURL))
         guard !parsedCues.isEmpty else { return }
         // حوّل النص إلى translated لأن ملف SRT الهدف يحوي الترجمة (وليس الأصلي)
+        // ونقسّم الجمل الطويلة قبل TTS لتقليل استهلاك الذاكرة ومنع كراش AVSpeech/Edge.
         let cues = parsedCues.map { c -> SubCue in
             var nc = c
             nc.translated = c.text

@@ -418,7 +418,7 @@ struct NewTranslationView: View {
         case .siliconflow:
             return ModelSelection.selected(purpose: "stt", provider: .siliconflow, fallback: "FunAudioLLM/SenseVoiceSmall")
         case .assemblyai: return "universal"
-        case .sttai: return "whisper-large-v3"
+        case .sttai: return "large-v3-turbo"
         case .speechmatics: return "default"
         case .auto: return "—"
         }
