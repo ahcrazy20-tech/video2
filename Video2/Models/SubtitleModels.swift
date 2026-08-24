@@ -151,7 +151,8 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
 // MARK: - مزودو الترجمة النصية
 
 enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
-    case auto, gemini, groqLLM, deepL, siliconflow, qwenMT
+    // مزودات بدون فيزا: كلها فيها شريحة مجانية ويمكن التسجيل فيها بالبريد/GitHub/Google.
+    case auto, gemini, groqLLM, deepL, openRouter, cerebras, sambaNova
     var id: String { rawValue }
 
     var titleAR: String {
@@ -160,25 +161,28 @@ enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
         case .gemini: return "Gemini (ترجمة سياقية)"
         case .groqLLM: return "Groq LLM (GPT-OSS 120B — سريع جداً)"
         case .deepL: return "DeepL (500K حرف/شهر مجاناً)"
-        case .siliconflow: return "SiliconFlow (Qwen / DeepSeek / GLM)"
-        case .qwenMT: return "Qwen-MT (DashScope — ترجمة متخصصة)"
+        case .openRouter: return "OpenRouter (موديلات مجانية كثيرة)"
+        case .cerebras: return "Cerebras (سريع جداً — مليون token/يوم)"
+        case .sambaNova: return "SambaNova (DeepSeek/Llama — رصيد مجاني)"
         }
     }
 
     var detailAR: String {
         switch self {
         case .auto:
-            return "يفضّل Gemini عند توفر مفتاحه، ثم Groq، ثم SiliconFlow. لاختيار DeepSeek V3.2 للسياق العربي اختر SiliconFlow صراحةً؛ حدود الاستخدام تختلف حسب الحساب."
+            return "يفضّل Gemini ثم Groq ثم OpenRouter/Cerebras — كلها بدون فيزا ومجانية أو بشريحة. اختر مزوداً صراحةً للتحكم في الموديل."
         case .gemini:
-            return "ترجمة طبيعية تفهم السياق والمصطلحات. للدفعات السريعة يضبط التطبيق التفكير المنخفض تلقائياً."
+            return "ترجمة طبيعية تفهم السياق والمصطلحات. للدفعات السريعة يضبط التطبيق التفكير المنخفض تلقائياً. مفتاح Google AI Studio مجاني بدون فيزا."
         case .groqLLM:
-            return "GPT-OSS 120B أو Qwen 3.6 27B عبر Groq — سريعان جداً بنفس مفتاح التفريغ؛ التوفر والحدود حسب حساب Groq."
+            return "GPT-OSS 120B أو Qwen عبر Groq — سريعان جداً بنفس مفتاح التفريغ. شريحة مجانية بدون فيزا."
         case .deepL:
             return "DeepL — 500 ألف حرف/شهر مجاناً، جودة عالية للترجمة السياقية. يحتاج مفتاح DeepL (deepl)."
-        case .siliconflow:
-            return "DeepSeek V3.2 (الموصى به للسياق) أو Qwen 3.5 — موديلات قوية للترجمة العربية بسعر منخفض. المفتاح: siliconflow."
-        case .qwenMT:
-            return "Qwen-MT Flash موديل ترجمة متخصص لـ 92 لغة مع العربية. يستخدم مفتاح DashScope منفصل؛ اختره صراحةً لأنه مزود جديد للنصوص."
+        case .openRouter:
+            return "Llama 3.3 70B وغيره — موديلات تنتهي بـ :free بدون فيزا نهائياً. 50 طلب/يوم (1000 بعد شحن 10$ اختياري)."
+        case .cerebras:
+            return "مليون token يومياً مجاناً وسريع جداً. Llama 3.3 70B / Qwen3 / GLM. بدون فيزا."
+        case .sambaNova:
+            return "DeepSeek V3.2 / Llama 3.3 عبر SambaNova — رصيد 5$ مجاني بدون فيزا. سريع جداً."
         }
     }
 
@@ -188,9 +192,18 @@ enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
         case .gemini: return "gemini"
         case .groqLLM: return "groq"
         case .deepL: return "deepl"
-        case .siliconflow: return "siliconflow"
-        case .qwenMT: return "dashscope"
+        case .openRouter: return "openrouter"
+        case .cerebras: return "cerebras"
+        case .sambaNova: return "sambanova"
         }
+    }
+
+    /// مفاتيح/مهام قديمة قد تحوي مزوّدات أُزيلت (siliconflow / qwenMT). بدل أن
+    /// يفشل فكّ ترميز jobs.json بالكامل ويُضيّع كل المهام، نُسقطها بهدوء إلى
+    /// «تلقائي». الترميز يبقى يستخدم الـ rawValue الافتراضي.
+    init(from decoder: Decoder) throws {
+        let raw = (try? decoder.singleValueContainer().decode(String.self)) ?? ""
+        self = TranslatorKind(rawValue: raw) ?? .auto
     }
 }
 

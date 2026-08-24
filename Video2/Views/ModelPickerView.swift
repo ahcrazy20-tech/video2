@@ -91,9 +91,9 @@ struct ModelPickerView: View {
     }
 
     @ViewBuilder private var content: some View {
-        // Qwen-MT قائمة موثقة ثابتة؛ نسمح بمقارنة موديلاتها وحصصها قبل حفظ
-        // المفتاح، بينما يبقى التشغيل/اختبار المفتاح محمياً في الإعدادات.
-        if !provider.isAvailable && provider != .dashscope {
+        // مزوّدات القائمة الثابتة (OpenRouter/Cerebras/SambaNova) نسمح بمقارنة
+        // موديلاتها وحصصها قبل حفظ المفتاح، بينما يبقى التشغيل/اختبار المفتاح محمياً.
+        if !provider.isAvailable && !provider.hasStaticCatalog {
             missingKeyView
         } else if let error = catalog.lastError[provider], catalog.models(for: provider).isEmpty {
             errorView(error)

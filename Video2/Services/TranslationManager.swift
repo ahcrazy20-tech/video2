@@ -517,12 +517,15 @@ final class TranslationManager: ObservableObject {
             case .groqLLM:
                 translatorModel = ModelSelection.selected(purpose: "translator", provider: .groq,
                                                           fallback: "openai/gpt-oss-120b")
-            case .siliconflow:
-                translatorModel = ModelSelection.selected(purpose: "translator", provider: .siliconflow,
-                                                          fallback: "deepseek-ai/DeepSeek-V3.2")
-            case .qwenMT:
-                translatorModel = ModelSelection.selected(purpose: "translator", provider: .dashscope,
-                                                          fallback: TranslateService.defaultQwenMTModel)
+            case .openRouter:
+                translatorModel = ModelSelection.selected(purpose: "translator", provider: .openRouter,
+                                                          fallback: TranslateService.defaultOpenRouterModel)
+            case .cerebras:
+                translatorModel = ModelSelection.selected(purpose: "translator", provider: .cerebras,
+                                                          fallback: TranslateService.defaultCerebrasModel)
+            case .sambaNova:
+                translatorModel = ModelSelection.selected(purpose: "translator", provider: .sambaNova,
+                                                          fallback: TranslateService.defaultSambaNovaModel)
             case .deepL:
                 translatorModel = "DeepL API"
             case .auto:

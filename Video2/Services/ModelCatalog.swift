@@ -97,21 +97,22 @@ enum ModelBillingCatalog {
     static func info(provider: ModelProvider, model: String) -> ModelBillingInfo {
         let id = model.lowercased()
         switch provider {
-        case .dashscope:
-            if id == "qwen-mt-flash" {
-                return ModelBillingInfo(kind: .trialQuota,
-                                        detailAR: "Flash: توازن السرعة والجودة. حصة تجربة حتى 1M token/90 يوماً عند الأهلية؛ بعدها حسب المنطقة والحساب.")
+        case .openRouter:
+            // كل ما ينتهي بـ :free على OpenRouter مجاني بالكامل بلا فيزا.
+            if id.hasSuffix(":free") {
+                return ModelBillingInfo(kind: .free,
+                                        detailAR: "موديل مجاني بالكامل على OpenRouter — 50 طلب/يوم بلا شحن (1000 بعد شحن 10$ اختياري). لا يحتاج فيزا.")
             }
-            if id == "qwen-mt-plus" {
-                return ModelBillingInfo(kind: .trialQuota,
-                                        detailAR: "Plus: أعلى جودة للمجالات المهنية؛ حصة تجربة عند الأهلية ثم مدفوع. لا يدعم البث التدريجي.")
-            }
-            if id == "qwen-mt-lite" {
-                return ModelBillingInfo(kind: .accountDependent,
-                                        detailAR: "Lite: الأسرع للحالات البسيطة (31 لغة). راجع حصة/سعر حساب Model Studio.")
-            }
-            return ModelBillingInfo(kind: .accountDependent,
-                                    detailAR: "الحصة والسعر يعتمدان على المنطقة وحساب Model Studio.")
+            return ModelBillingInfo(kind: .paid,
+                                    detailAR: "موديل مدفوع بالـ token من رصيد OpenRouter؛ الموديلات المنتهية بـ :free مجانية فاخترها أولاً.")
+
+        case .cerebras:
+            return ModelBillingInfo(kind: .free,
+                                    detailAR: "Cerebras: مليون token/يوم مجاناً بدون فيزا. حد السياق في الشريحة المجانية قد يصل إلى 8K token — كافٍ لدفعات الترجمة.")
+
+        case .sambaNova:
+            return ModelBillingInfo(kind: .trialQuota,
+                                    detailAR: "SambaNova: رصيد 5$ مجاني لـ30 يوماً بدون فيزا. سريع جداً؛ راجع اللوحة للمتبقي الفعلي.")
 
         case .siliconflow:
             if id.contains("hunyuan-mt-7b") {
@@ -164,8 +165,10 @@ enum ModelBillingCatalog {
 enum ModelProvider: String, Codable, CaseIterable, Identifiable {
     case gemini       // Google Gemini
     case groq         // Groq (OpenAI-compatible)
-    case siliconflow  // SiliconFlow (Qwen / DeepSeek / GLM / SenseVoice / CosyVoice)
-    case dashscope    // Alibaba Cloud Model Studio / Qwen-MT
+    case siliconflow  // SiliconFlow (يُستخدم للتفريغ والدبلجة فقط)
+    case openRouter   // OpenRouter (موديلات مجانية بدون فيزا)
+    case cerebras     // Cerebras (مليون token/يوم مجاناً)
+    case sambaNova    // SambaNova (DeepSeek/Llama — رصيد مجاني)
     case openaiCompat // OpenAI-compatible (نحتفظ به للتوسعة)
     case elevenlabs   // ElevenLabs TTS (للدبلجة)
 
@@ -176,7 +179,9 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
         case .gemini: return "Google Gemini"
         case .groq: return "Groq"
         case .siliconflow: return "SiliconFlow"
-        case .dashscope: return "DashScope / Qwen-MT"
+        case .openRouter: return "OpenRouter"
+        case .cerebras: return "Cerebras"
+        case .sambaNova: return "SambaNova"
         case .openaiCompat: return "OpenAI Compatible"
         case .elevenlabs: return "ElevenLabs"
         }
@@ -187,7 +192,9 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
         case .gemini: return "sparkles"
         case .groq: return "bolt.fill"
         case .siliconflow: return "cpu.fill"
-        case .dashscope: return "character.bubble.fill"
+        case .openRouter: return "rectangle.connected.to.line.below"
+        case .cerebras: return "square.stack.3d.up.fill"
+        case .sambaNova: return "shippingbox.fill"
         case .openaiCompat: return "link"
         case .elevenlabs: return "waveform.path.ecg"
         }
@@ -199,7 +206,9 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
         case .gemini: return "gemini"
         case .groq: return "groq"
         case .siliconflow: return "siliconflow"
-        case .dashscope: return "dashscope"
+        case .openRouter: return "openrouter"
+        case .cerebras: return "cerebras"
+        case .sambaNova: return "sambanova"
         case .openaiCompat: return nil
         case .elevenlabs: return "elevenlabs"
         }
@@ -211,6 +220,15 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
         return KeychainStore.has(k)
     }
 
+    /// مزوّدات نعرض لها قائمة موديلات ثابتة موثّقة حتى قبل إدخال المفتاح،
+    /// بدلاً من جلب /models (الذي يتغيّر ويختلف تحليله بين المزوّدات).
+    var hasStaticCatalog: Bool {
+        switch self {
+        case .openRouter, .cerebras, .sambaNova: return true
+        default: return false
+        }
+    }
+
     /// رابط جلب الموديلات
     var modelsURL: String? {
         switch self {
@@ -220,7 +238,7 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
             return "https://api.groq.com/openai/v1/models"
         case .siliconflow:
             return "https://api.siliconflow.cn/v1/models"
-        case .dashscope, .openaiCompat, .elevenlabs:
+        case .openRouter, .cerebras, .sambaNova, .openaiCompat, .elevenlabs:
             return nil
         }
     }
@@ -288,9 +306,12 @@ final class ModelCatalog: ObservableObject {
 
     private init() {
         loadCache()
-        // القائمة ثابتة وموثقة، لذلك نعرض Qwen-MT مباشرة حتى بلا مفتاح أو شبكة.
-        if models[.dashscope] == nil {
-            models[.dashscope] = ModelCatalogParser.dashscope()
+        // القوائم الثابتة الموثّقة تُعرض مباشرة حتى بلا مفتاح أو شبكة، ليتمكن
+        // المستخدم من مقارنة الحصة/السعر واختيار الموديل قبل إدخال أي مفتاح.
+        for provider in ModelProvider.allCases where provider.hasStaticCatalog {
+            if models[provider] == nil {
+                models[provider] = ModelCatalogParser.staticCatalog(for: provider)
+            }
         }
     }
 
@@ -298,10 +319,10 @@ final class ModelCatalog: ObservableObject {
 
     /// يجلب الموديلات من مزوّد معيّن. يُستدعى عند الضغط على زر "تحديث".
     func refresh(_ provider: ModelProvider) async {
-        // Qwen-MT له قائمة صغيرة ثابتة موثقة؛ نعرضها حتى قبل إدخال المفتاح كي
-        // يستطيع المستخدم مقارنة الحصة/السعر، ولا ننفذ GET /models غير موثق.
-        if provider == .dashscope {
-            models[provider] = ModelCatalogParser.dashscope()
+        // مزوّدات القائمة الثابتة (OpenRouter/Cerebras/SambaNova) نعرضها حتى قبل
+        // إدخال المفتاح كي يقارن المستخدم الحصة/السعر، ولا ننفذ GET /models.
+        if provider.hasStaticCatalog {
+            models[provider] = ModelCatalogParser.staticCatalog(for: provider)
             lastError[provider] = nil
             lastFetched[provider] = Date()
             saveCache()
@@ -342,7 +363,8 @@ final class ModelCatalog: ObservableObject {
                     try await SiliconFlowAPI.request("GET", path: "/models", key: key, timeout: 30)
                 }
                 entries = ModelCatalogParser.siliconflow(data: data)
-            case .dashscope, .openaiCompat, .elevenlabs:
+            case .openRouter, .cerebras, .sambaNova, .openaiCompat, .elevenlabs:
+                // مزوّدات القائمة الثابتة تُخدم أعلاه؛ هذا فرع أمان فقط.
                 lastError[provider] = "هذا المزود لا يدعم جلب الموديلات تلقائياً."
                 return
             }
@@ -438,9 +460,9 @@ final class ModelCatalog: ObservableObject {
 // MARK: - الرصيد والحدود لكل مزود
 
 /// لا نخمّن المتبقي: نعرضه فقط عندما يعيده المزود عبر API. بعض المزودين (Gemini
-/// وDashScope) لا يوفّرون هذا الرقم بمفتاح API عادي، لذلك نعرض مسار اللوحة بوضوح.
+/// والـOpenAI-compat الجدد) لا يوفّرون هذا الرقم بمفتاح API عادي، لذلك نعرض مسار اللوحة.
 enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
-    case gemini, groq, siliconflow, deepL, dashscope
+    case gemini, groq, siliconflow, deepL, openRouter, cerebras, sambaNova
 
     var id: String { rawValue }
 
@@ -450,7 +472,9 @@ enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
         case .groq: return "Groq"
         case .siliconflow: return "SiliconFlow"
         case .deepL: return "DeepL"
-        case .dashscope: return "DashScope / Qwen-MT"
+        case .openRouter: return "OpenRouter"
+        case .cerebras: return "Cerebras"
+        case .sambaNova: return "SambaNova"
         }
     }
 
@@ -460,7 +484,9 @@ enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
         case .groq: return "bolt.fill"
         case .siliconflow: return "cpu.fill"
         case .deepL: return "character.book.closed.fill"
-        case .dashscope: return "character.bubble.fill"
+        case .openRouter: return "rectangle.connected.to.line.below"
+        case .cerebras: return "square.stack.3d.up.fill"
+        case .sambaNova: return "shippingbox.fill"
         }
     }
 
@@ -470,7 +496,9 @@ enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
         case .groq: return "groq"
         case .siliconflow: return "siliconflow"
         case .deepL: return "deepl"
-        case .dashscope: return "dashscope"
+        case .openRouter: return "openrouter"
+        case .cerebras: return "cerebras"
+        case .sambaNova: return "sambanova"
         }
     }
 
@@ -480,8 +508,9 @@ enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
         case .groq: return URL(string: "https://console.groq.com/settings/limits")
         case .siliconflow: return URL(string: "https://cloud.siliconflow.com/")
         case .deepL: return URL(string: "https://www.deepl.com/your-account/usage")
-        // رابط المنطقة (Beijing/Singapore) يختلف من حساب لآخر، فلا نفتح رابطاً خاطئاً.
-        case .dashscope: return nil
+        case .openRouter: return URL(string: "https://openrouter.ai/credits")
+        case .cerebras: return URL(string: "https://cloud.cerebras.ai/")
+        case .sambaNova: return URL(string: "https://cloud.sambanova.ai/")
         }
     }
 }
@@ -565,12 +594,26 @@ final class ProviderUsageStore: ObservableObject {
                     headlineAR: "المتبقي لا يرسله Gemini عبر API key",
                     detailAR: "افتح Google AI Studio > Usage لمعرفة الحصة اليومية/الفوترة الفعلية. لا نعرض رقماً تخمينياً.",
                     updatedAt: Date())
-            case .dashscope:
+            case .openRouter:
                 snapshot = ProviderUsageSnapshot(
-                    provider: .dashscope,
+                    provider: .openRouter,
                     status: .manual,
-                    headlineAR: "Qwen-MT: راجع Free Quota في Model Studio",
-                    detailAR: "الحصة التجريبية — إن كانت مؤهلة — تصل حتى 1M token/90 يوماً لكل موديل (إدخال وإخراج معاً). المتبقي الدقيق لا توفره واجهة API بالمفتاح؛ فعّل Free Quota Only لمنع الدفع بعد نفادها.",
+                    headlineAR: "OpenRouter: الموديلات :free بلا فيزا",
+                    detailAR: "50 طلب/يوم مجاناً (1000 بعد شحن 10$ اختياري). راجع Usage/Credits في اللوحة للمتبقي الفعلي؛ اختر موديلات تنتهي بـ :free.",
+                    updatedAt: Date())
+            case .cerebras:
+                snapshot = ProviderUsageSnapshot(
+                    provider: .cerebras,
+                    status: .manual,
+                    headlineAR: "Cerebras: مليون token/يوم مجاناً",
+                    detailAR: "تتجدد يومياً بدون فيزا. راجع لوحة Cerebras للحدود الدقيقة (RPM/TPM)؛ حد السياق قد يصل 8K في الشريحة المجانية.",
+                    updatedAt: Date())
+            case .sambaNova:
+                snapshot = ProviderUsageSnapshot(
+                    provider: .sambaNova,
+                    status: .manual,
+                    headlineAR: "SambaNova: راجع الرصيد في اللوحة",
+                    detailAR: "رصيد 5$ مجاني/30 يوماً بدون فيزا. المتبقي الدقيق لا توفره واجهة API بسهولة؛ راجع لوحة SambaNova قبل المهام الطويلة.",
                     updatedAt: Date())
             }
             snapshots[provider] = snapshot
@@ -703,42 +746,177 @@ final class ProviderUsageStore: ObservableObject {
 
 enum ModelCatalogParser {
 
-    // MARK: DashScope / Qwen-MT
+    // MARK: القوائم الثابتة للمزوّدات المجانية (بدون فيزا)
 
-    /// لا تعتمد هذه القائمة على GET /models لأن واجهة Qwen-MT الموثقة تضمن هذه
-    /// الموديلات الثلاثة فقط، بينما وصول كل حساب/منطقة يُتحقق منه بزر اختبار المفتاح.
-    static func dashscope() -> [ModelEntry] {
+    /// قوائم موثّقة ثابتة للمزوّدات التي نعرض موديلاتها حتى قبل إدخال المفتاح.
+    /// لا نعتمد على GET /models لأن الموديلات المجانية تتغيّر، واخترنا أفضلها للترجمة.
+    static func staticCatalog(for provider: ModelProvider) -> [ModelEntry] {
+        switch provider {
+        case .openRouter: return openRouter()
+        case .cerebras: return cerebras()
+        case .sambaNova: return sambaNova()
+        default: return []
+        }
+    }
+
+    // MARK: OpenRouter (موديلات :free مجانية بالكامل — بدون فيزا)
+    // https://openrouter.ai/api/v1/chat/completions  ·  الموديلات المنتهية بـ :free مجانية
+    static func openRouter() -> [ModelEntry] {
         [
-            ModelEntry(rawID: "qwen-mt-flash",
-                       displayName: "Qwen-MT Flash",
-                       provider: .dashscope,
-                       capabilities: [.translation],
-                       contextWindow: nil,
+            ModelEntry(rawID: "meta-llama/llama-3.3-70b-instruct:free",
+                       displayName: "Llama 3.3 70B (free)",
+                       provider: .openRouter,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 131072,
                        isMultimodal: false,
                        supportsArabic: true,
-                       descriptionAR: "ترجمة متخصصة لـ 92 لغة؛ الخيار الافتراضي للترجمة المصاحبة.",
+                       descriptionAR: "موديل Meta مفتوح قوي للترجمة السياقية متعددة اللغات. مجاني بالكامل.",
                        recommended: true,
-                       recommendedReasonAR: "أفضل توازن بين الجودة والسرعة والكلفة للترجمة المصاحبة."),
-            ModelEntry(rawID: "qwen-mt-plus",
-                       displayName: "Qwen-MT Plus",
-                       provider: .dashscope,
-                       capabilities: [.translation],
-                       contextWindow: nil,
+                       recommendedReasonAR: "الخيار الافتراضي — أفضل توازن جودة سياقية للترجمة بدون فيزا."),
+            ModelEntry(rawID: "deepseek/deepseek-chat-v3.1:free",
+                       displayName: "DeepSeek V3.1 (free)",
+                       provider: .openRouter,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 163840,
                        isMultimodal: false,
                        supportsArabic: true,
-                       descriptionAR: "نسخة الجودة الأعلى للوثائق والمجالات المهنية؛ أبطأ ولا تدعم البث التدريجي.",
+                       descriptionAR: "DeepSeek ممتاز للسياق العربي. (قد يتغيّر التوفر — جرّبه).",
                        recommended: true,
-                       recommendedReasonAR: "اختره عندما تكون الجودة المتخصصة أهم من السرعة."),
-            ModelEntry(rawID: "qwen-mt-lite",
-                       displayName: "Qwen-MT Lite",
-                       provider: .dashscope,
-                       capabilities: [.translation],
-                       contextWindow: nil,
+                       recommendedReasonAR: "بديل قوي للسياق العربي عند توفر نسخة free."),
+            ModelEntry(rawID: "qwen/qwen3-coder:free",
+                       displayName: "Qwen3 Coder (free)",
+                       provider: .openRouter,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 262144,
                        isMultimodal: false,
                        supportsArabic: true,
-                       descriptionAR: "أسرع نسخة للحالات البسيطة والحساسة للزمن؛ تغطي 31 لغة.",
+                       descriptionAR: "Qwen متعدد اللغات بسياق طويل جداً؛ جيد للدفعات الكبيرة.",
                        recommended: true,
-                       recommendedReasonAR: "خيار السرعة القصوى، وليس الخيار الأول للسياق المعقد.")
+                       recommendedReasonAR: "سياق ضخم لدفعات ترجمة طويلة بطلب واحد."),
+            ModelEntry(rawID: "google/gemma-3-27b-it:free",
+                       displayName: "Gemma 3 27B (free)",
+                       provider: .openRouter,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 131072,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "موديل Google مفتوح سريع للترجمة اليومية.",
+                       recommended: false,
+                       recommendedReasonAR: nil),
+            ModelEntry(rawID: "openai/gpt-oss-120b:free",
+                       displayName: "GPT-OSS 120B (free)",
+                       provider: .openRouter,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 131072,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "موديل OpenAI مفتوح المصدر؛ جودة عالية. (موديل تفكير — قد ينتج JSON أحياناً داخل وسوم تفكير).",
+                       recommended: false,
+                       recommendedReasonAR: "جرّبه بحذر: قد يلفّ JSON في وسوم تفكير؛ Llama 3.3 أكثر استقراراً لـ JSON.")
+        ]
+    }
+
+    // MARK: Cerebras (مليون token/يوم مجاناً — بدون فيزا، سريع جداً)
+    // https://api.cerebras.ai/v1/chat/completions
+    static func cerebras() -> [ModelEntry] {
+        [
+            ModelEntry(rawID: "llama3.1-70b",
+                       displayName: "Llama 3.1 70B",
+                       provider: .cerebras,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 131072,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "موديل Meta 70B على رقائق Cerebras — سريع جداً وبدون فيزا.",
+                       recommended: true,
+                       recommendedReasonAR: "الخيار الافتراضي — جودة سياقية عالية وسرعة فائقة على الشريحة المجانية."),
+            ModelEntry(rawID: "qwen-3-32b",
+                       displayName: "Qwen3 32B",
+                       provider: .cerebras,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 131072,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "Qwen متعدد اللغات — ممتاز للترجمة متعددة اللغات.",
+                       recommended: true,
+                       recommendedReasonAR: "قوي للترجمة متعددة اللغات بما فيها العربية."),
+            ModelEntry(rawID: "llama3.1-8b",
+                       displayName: "Llama 3.1 8B",
+                       provider: .cerebras,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 131072,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "أصغر وأسرع — كافٍ للترجمة البسيطة جداً.",
+                       recommended: false,
+                       recommendedReasonAR: nil),
+            ModelEntry(rawID: "gpt-oss-120b",
+                       displayName: "GPT-OSS 120B",
+                       provider: .cerebras,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 131072,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "موديل تفكير من OpenAI — جودة عالية لكن قد يلفّ JSON.",
+                       recommended: false,
+                       recommendedReasonAR: "جرّبه بحذر: قد يلفّ JSON في وسوم تفكير؛ Llama أكثر استقراراً."),
+            ModelEntry(rawID: "llama-4-scout-17b-16e-instruct",
+                       displayName: "Llama 4 Scout 17B",
+                       provider: .cerebras,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 131072,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "جيل Llama 4 الأحدث — سياق طويل وسريع.",
+                       recommended: false,
+                       recommendedReasonAR: nil)
+        ]
+    }
+
+    // MARK: SambaNova (رصيد 5$ مجاني/30 يوماً — بدون فيزا)
+    // https://api.sambanova.ai/v1/chat/completions
+    static func sambaNova() -> [ModelEntry] {
+        [
+            ModelEntry(rawID: "DeepSeek-V3.2",
+                       displayName: "DeepSeek V3.2",
+                       provider: .sambaNova,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 128000,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "DeepSeek V3.2 — ممتاز للترجمة السياقية العربية على رقائق RDU السريعة.",
+                       recommended: true,
+                       recommendedReasonAR: "الخيار الافتراضي — أفضل جودة سياقية عربية ضمن الرصيد المجاني."),
+            ModelEntry(rawID: "DeepSeek-V3.1",
+                       displayName: "DeepSeek V3.1",
+                       provider: .sambaNova,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 128000,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "إصدار سابق مستقر من DeepSeek.",
+                       recommended: false,
+                       recommendedReasonAR: nil),
+            ModelEntry(rawID: "Meta-Llama-3.3-70B-Instruct",
+                       displayName: "Llama 3.3 70B",
+                       provider: .sambaNova,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 128000,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "Llama 3.3 70B — ترجمة قوية متعددة اللغات.",
+                       recommended: true,
+                       recommendedReasonAR: "بديل موثوق عن DeepSeek بنفس الرصيد المجاني."),
+            ModelEntry(rawID: "Meta-Llama-3.1-405B-Instruct",
+                       displayName: "Llama 3.1 405B",
+                       provider: .sambaNova,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 128000,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "أكبر موديل Llama — أعلى جودة وأبطأ، يستهلك رصيداً أكثر.",
+                       recommended: false,
+                       recommendedReasonAR: "جودة قصوى لكنه مكلف للرصيد؛ استخدمه للسياقات الصعبة فقط.")
         ]
     }
 

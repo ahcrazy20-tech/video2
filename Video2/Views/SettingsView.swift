@@ -93,16 +93,23 @@ struct SettingsView: View {
                     APIKeyRow(title: "مفتاح Gemini",
                               placeholder: "AIza...",
                               keyID: "gemini",
-                              hint: "للترجمة النصية السياقية. زر الاختبار يختبر GenerateContent والموديل المختار فعلياً، لا المفتاح فقط.")
-                    APIKeyRow(title: "مفتاح DashScope / Qwen-MT",
-                              placeholder: "sk-...",
-                              keyID: "dashscope",
-                              hint: "لمزوّد Qwen-MT المتخصص فقط. زر الاختبار يرسل طلباً قصيراً إلى الموديل المختار (Flash افتراضياً) وقد يستهلك عدداً صغيراً من tokens.")
-                    DashScopeEndpointRow()
+                              hint: "للترجمة النصية السياقية. زر الاختبار يختبر GenerateContent والموديل المختار فعلياً، لا المفتاح فقط. مجاني بدون فيزا من Google AI Studio.")
+                    APIKeyRow(title: "مفتاح OpenRouter",
+                              placeholder: "sk-or-v1-...",
+                              keyID: "openrouter",
+                              hint: "للترجمة: موديلات تنتهي بـ :free مجانية بالكامل (Llama 3.3 70B وغيره). التسجيل بالبريد/GitHub بدون فيزا. 50 طلب/يوم مجاناً.")
+                    APIKeyRow(title: "مفتاح Cerebras",
+                              placeholder: "csk-...",
+                              keyID: "cerebras",
+                              hint: "للترجمة السريعة جداً — مليون token/يوم مجاناً بدون فيزا (Llama 3.3 70B / Qwen3). سجّل من cloud.cerebras.ai بالبريد.")
+                    APIKeyRow(title: "مفتاح SambaNova",
+                              placeholder: "مفتاح API من اللوحة",
+                              keyID: "sambanova",
+                              hint: "للترجمة عبر DeepSeek V3.2 / Llama 3.3 — رصيد 5$ مجاني/30 يوماً بدون فيزا. سريع جداً. سجّل من cloud.sambanova.ai.")
                     APIKeyRow(title: "مفتاح SiliconFlow",
                               placeholder: "sk-...",
                               keyID: "siliconflow",
-                              hint: "DeepSeek/Qwen للترجمة، SenseVoice للتفريغ، وCosyVoice للدبلجة. الرصيد والتسعير حسب حساب SiliconFlow؛ يظهر الرصيد الفعلي في قسم الرصيد والحدود.")
+                              hint: "للتفريغ (SenseVoice) والدبلجة (CosyVoice) فقط — أُزيل من الترجمة لأنه يحتاج فيزا. الرصيد يظهر في قسم الرصيد والحدود.")
                     APIKeyRow(title: "مفتاح ElevenLabs",
                               placeholder: "xi-api-key",
                               keyID: "elevenlabs",
@@ -134,7 +141,7 @@ struct SettingsView: View {
                 } header: {
                     Text("مفاتيح ترجمة الفيديو")
                 } footer: {
-                    Text("تُخزَّن المفاتيح في Keychain على جهازك فقط. أسرع بداية: مفتاح Groq + مفتاح Gemini (كلاهما فيه شريحة مجانية).")
+                    Text("تُخزَّن المفاتيح في Keychain على جهازك فقط. كل مفاتيح الترجمة هنا بدون فيزا: Groq، Gemini، OpenRouter، Cerebras، SambaNova، DeepL — اختر ما يناسبك.")
                         .font(.caption2)
                 }
 
@@ -301,8 +308,9 @@ struct SettingsView: View {
         switch resolvedTranslator {
         case .gemini: return .gemini
         case .groqLLM: return .groq
-        case .siliconflow: return .siliconflow
-        case .qwenMT: return .dashscope
+        case .openRouter: return .openRouter
+        case .cerebras: return .cerebras
+        case .sambaNova: return .sambaNova
         case .deepL, .auto: return nil
         }
     }
@@ -325,10 +333,12 @@ struct SettingsView: View {
             return ModelSelection.selected(purpose: "translator", provider: .gemini, fallback: TranslateService.defaultGeminiModel)
         case .groqLLM:
             return ModelSelection.selected(purpose: "translator", provider: .groq, fallback: "openai/gpt-oss-120b")
-        case .siliconflow:
-            return ModelSelection.selected(purpose: "translator", provider: .siliconflow, fallback: "deepseek-ai/DeepSeek-V3.2")
-        case .qwenMT:
-            return ModelSelection.selected(purpose: "translator", provider: .dashscope, fallback: TranslateService.defaultQwenMTModel)
+        case .openRouter:
+            return ModelSelection.selected(purpose: "translator", provider: .openRouter, fallback: TranslateService.defaultOpenRouterModel)
+        case .cerebras:
+            return ModelSelection.selected(purpose: "translator", provider: .cerebras, fallback: TranslateService.defaultCerebrasModel)
+        case .sambaNova:
+            return ModelSelection.selected(purpose: "translator", provider: .sambaNova, fallback: TranslateService.defaultSambaNovaModel)
         case .deepL: return "DeepL API"
         case .auto: return "—"
         }
@@ -340,10 +350,12 @@ struct SettingsView: View {
             return ModelBillingCatalog.info(provider: .gemini, model: displayedTranslatorModel)
         case .groqLLM:
             return ModelBillingCatalog.info(provider: .groq, model: displayedTranslatorModel)
-        case .siliconflow:
-            return ModelBillingCatalog.info(provider: .siliconflow, model: displayedTranslatorModel)
-        case .qwenMT:
-            return ModelBillingCatalog.info(provider: .dashscope, model: displayedTranslatorModel)
+        case .openRouter:
+            return ModelBillingCatalog.info(provider: .openRouter, model: displayedTranslatorModel)
+        case .cerebras:
+            return ModelBillingCatalog.info(provider: .cerebras, model: displayedTranslatorModel)
+        case .sambaNova:
+            return ModelBillingCatalog.info(provider: .sambaNova, model: displayedTranslatorModel)
         case .deepL:
             return ModelBillingInfo(kind: .trialQuota,
                                     detailAR: "DeepL API Free: حتى 500,000 حرف/شهر؛ المتبقي الحقيقي يظهر في قسم الرصيد والحدود.")
@@ -430,60 +442,6 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - إعداد اتصال DashScope
-
-/// لا نستخدم رابطاً ثابتاً لكل الحسابات: مفاتيح Beijing وInternational/Singapore
-/// قد تكون منفصلة. يقبل الحقل HTTPS فقط حتى لا يخرج المفتاح أو نص الترجمة بلا تشفير.
-struct DashScopeEndpointRow: View {
-    @State private var endpoint = DashScopeAPI.configuredBaseURL
-    @State private var message: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("رابط DashScope API", systemImage: "network")
-                .font(.subheadline.weight(.semibold))
-            TextField("https://…/compatible-mode/v1", text: $endpoint)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .font(.footnote.monospaced())
-                .environment(\.layoutDirection, .leftToRight)
-                .textFieldStyle(.roundedBorder)
-            HStack {
-                Button("حفظ الرابط") {
-                    guard let valid = DashScopeAPI.validatedBaseURL(endpoint) else {
-                        message = "❌ استخدم رابط HTTPS صالحاً بدون query أو /chat/completions."
-                        return
-                    }
-                    DashScopeAPI.saveBaseURL(valid)
-                    ProviderUsageStore.shared.invalidate(keyID: "dashscope")
-                    endpoint = valid
-                    message = "✅ حُفظ: \(DashScopeAPI.endpointHintAR)"
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                Spacer()
-                Text(DashScopeAPI.endpointHintAR)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Text("الصق Base URL الذي يظهر لحسابك في Qwen Cloud أو Model Studio. لا يُسمح بـ HTTP لحماية المفتاح والنص.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text("International: https://dashscope-intl.aliyuncs.com/compatible-mode/v1\nSingapore: https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1\nBeijing: https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .environment(\.layoutDirection, .leftToRight)
-            if let message {
-                Text(message)
-                    .font(.caption2)
-                    .foregroundStyle(message.hasPrefix("✅") ? .green : .red)
-            }
-        }
-        .padding(.vertical, 2)
-        .onAppear { endpoint = DashScopeAPI.configuredBaseURL }
-    }
-}
-
 // MARK: - الرصيد والحدود
 
 struct ProviderUsageSection: View {
@@ -540,8 +498,6 @@ struct ProviderUsageSection: View {
                             Link(destination: url) {
                                 Label("فتح اللوحة", systemImage: "arrow.up.right.square")
                             }
-                        } else if provider == .dashscope {
-                            Text("Model Studio → Free Quota")
                         }
                     }
                     .font(.caption2)
@@ -683,34 +639,51 @@ enum KeyTester {
             return await TranslateService.verifyGeminiKey(key)
         }
 
-        if provider == "dashscope" {
-            let model = ModelSelection.selected(purpose: "translator", provider: .dashscope,
-                                                fallback: TranslateService.defaultQwenMTModel)
-            let payload: [String: Any] = [
-                "model": model,
-                "messages": [["role": "user", "content": "Reply with OK."]]
-            ]
+        if provider == "openrouter" {
+            // /models على OpenRouter عام ولا يتحقق من المفتاح، لذا نستخدم /key
+            // الذي يتطلب مصادقة ويرفض المفاتيح غير الصالحة بـ 401.
             do {
-                let body = try JSONSerialization.data(withJSONObject: payload)
-                let (data, _) = try await DashScopeAPI.request(
-                    "POST", path: "/chat/completions", key: key,
-                    headers: ["Content-Type": "application/json"], body: body, timeout: 45)
-                let json = HTTP.json(from: data)
-                if let error = json["error"] as? [String: Any] {
-                    let message = error["message"] as? String ?? "خطأ غير معروف"
-                    return "⚠️ وصل DashScope لكن الموديل \(model) رفض الطلب: \(message)"
-                }
-                guard let choices = json["choices"] as? [[String: Any]], !choices.isEmpty else {
-                    return "⚠️ وصل DashScope لكن الاستجابة غير متوقعة — تحقق من رابط المنطقة والموديل."
-                }
-                return "✅ مفتاح DashScope والرابط والموديل \(model) تعمل"
+                let (_, resp) = try await HTTP.request("GET", "https://openrouter.ai/api/v1/key",
+                                                        headers: ["Authorization": "Bearer \(key)"], timeout: 30)
+                _ = resp
+                return "✅ مفتاح OpenRouter يعمل — استخدم موديلات تنتهي بـ :free لترجمة مجانية بدون فيزا"
             } catch let e as APIError {
-                if e.status == 401 { return "❌ مفتاح DashScope غير صحيح أو لا يخص هذه المنطقة (401)" }
-                if e.status == 403 { return "❌ الحساب أو الموديل غير مسموح به في هذه المنطقة (403)" }
-                if e.status == 429 { return "⚠️ وصل DashScope لكن وصلت للحد مؤقتاً (429)" }
-                return "⚠️ فشل اختبار DashScope (HTTP \(e.status)) — راجع الرابط والمنطقة."
+                if e.status == 401 { return "❌ مفتاح OpenRouter غير صحيح (401)" }
+                if e.status == 403 { return "❌ تم رفض المفتاح (403) — تأكد أنه يبدأ بـ sk-or-" }
+                if e.status == 429 { return "⚠️ المفتاح يعمل لكن وصلت لحد الطلبات مؤقتاً (429)" }
+                return "⚠️ استجابة OpenRouter غير متوقعة (رمز \(e.status))"
             } catch {
-                return "⚠️ تعذر الاتصال بـ DashScope — تحقق من رابط HTTPS والإنترنت"
+                return "⚠️ تعذر الاتصال بـ OpenRouter — تحقق من الإنترنت"
+            }
+        }
+
+        if provider == "cerebras" {
+            do {
+                _ = try await HTTP.request("GET", "https://api.cerebras.ai/v1/models",
+                                           headers: ["Authorization": "Bearer \(key)"], timeout: 30)
+                return "✅ مفتاح Cerebras يعمل — مليون token/يوم مجاناً بدون فيزا"
+            } catch let e as APIError {
+                if e.status == 401 { return "❌ مفتاح Cerebras غير صحيح (401)" }
+                if e.status == 403 { return "❌ تم رفض المفتاح (403)" }
+                if e.status == 429 { return "⚠️ المفتاح يعمل لكن وصلت للحد مؤقتاً (429)" }
+                return "⚠️ استجابة Cerebras غير متوقعة (رمز \(e.status))"
+            } catch {
+                return "⚠️ تعذر الاتصال بـ Cerebras — تحقق من الإنترنت"
+            }
+        }
+
+        if provider == "sambanova" {
+            do {
+                _ = try await HTTP.request("GET", "https://api.sambanova.ai/v1/models",
+                                           headers: ["Authorization": "Bearer \(key)"], timeout: 30)
+                return "✅ مفتاح SambaNova يعمل — رصيد 5$ مجاني/30 يوماً بدون فيزا"
+            } catch let e as APIError {
+                if e.status == 401 { return "❌ مفتاح SambaNova غير صحيح (401)" }
+                if e.status == 403 { return "❌ تم رفض المفتاح (403)" }
+                if e.status == 429 { return "⚠️ المفتاح يعمل لكن وصلت للحد مؤقتاً (429)" }
+                return "⚠️ استجابة SambaNova غير متوقعة (رمز \(e.status))"
+            } catch {
+                return "⚠️ تعذر الاتصال بـ SambaNova — تحقق من الإنترنت"
             }
         }
 
