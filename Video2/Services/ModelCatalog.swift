@@ -431,8 +431,9 @@ enum ModelCatalogParser {
         if lc.contains("whisper-large-v3-turbo") { return (true, "الأفضل للتفريغ الصوتي على Groq — سرعة فائقة بنفس مفتاحك") }
         if lc.contains("whisper-large-v3") { return (true, "Whisper الكامل — أعلى دقة وأبطأ") }
         if lc.contains("distil-whisper") { return (true, "Whisper مضغوط — أسرع مع دقة جيدة") }
-        if lc.contains("gpt-oss-120b") { return (true, "أقوى LLM مفتوح من Groq للترجمة — مجاني في الشريحة") }
-        if lc.contains("gpt-oss-20b") { return (true, "أصغر وأسرع من GPT-OSS 120B — ممتاز للترجمة السريعة") }
+        if lc.contains("qwen3.6-27b") { return (true, "Qwen 3.6 27B — خيار ترجمة سريع جداً (500 token/ثانية حسب Groq). تحقق من توفره وحدود حسابك لأنه Preview.") }
+        if lc.contains("gpt-oss-120b") { return (true, "GPT-OSS 120B — جودة قوية وسرعة عالية؛ السعر/الشريحة المجانية بحسب حساب Groq.") }
+        if lc.contains("gpt-oss-20b") { return (true, "GPT-OSS 20B — أصغر وأسرع من 120B، ممتاز للترجمة السريعة.") }
         if lc.contains("llama-3.3") { return (true, "Llama 3.3 70B — ترجمة قوية") }
         if lc.contains("llama-3.1") { return (false, "لا يزال يعمل — Llama 3.3 أحدث وأفضل") }
         if lc.contains("compound") { return (false, "موديل مركّب — مخصص لاستدعاء الأدوات") }
@@ -480,8 +481,9 @@ enum ModelCatalogParser {
         if lc.contains("bge") || lc.contains("embedding") || lc.contains("m3e") {
             caps.append(.embedding)
         }
-        // LLM (ترجمة ومحادثة)
-        if lc.contains("qwen") || lc.contains("deepseek") || lc.contains("glm") || lc.contains("llama") || lc.contains("mistral") || lc.contains("yi") {
+        // LLM (ترجمة ومحادثة). نضم موديلات الدردشة الجديدة أيضاً حتى تظهر في فلتر الترجمة.
+        if lc.contains("qwen") || lc.contains("deepseek") || lc.contains("glm") || lc.contains("llama") || lc.contains("mistral") || lc.contains("yi")
+            || lc.contains("kimi") || lc.contains("minimax") || lc.contains("longcat") || lc.contains("gemma") || lc.contains("hy3") {
             caps.append(.translation)
             caps.append(.chat)
         }
@@ -494,16 +496,26 @@ enum ModelCatalogParser {
 
     private static func recommendSiliconFlow(id: String, capabilities: [ModelCapability]) -> (Bool, String?) {
         let lc = id.lowercased()
-        if lc.contains("qwen2.5-72b") || lc.contains("qwen-2.5-72b") { return (true, "Qwen 2.5 72B — من أقوى الموديلات للترجمة بين الهندية/الإنجليزية والعربية") }
-        if lc.contains("qwen2.5-32b") || lc.contains("qwen-2.5-32b") { return (true, "Qwen 2.5 32B — توازن بين السرعة والجودة") }
-        if lc.contains("qwen2.5-14b") { return (true, "Qwen 2.5 14B — سريع ورخيص مع جودة ممتازة") }
-        if lc.contains("qwen2.5-7b") { return (true, "Qwen 2.5 7B — الأسرع للترجمة الخفيفة") }
-        if lc.contains("qwen2") && !lc.contains("qwen2.5") { return (false, "Qwen 2.0 — لا يزال يعمل لكن 2.5 أحدث") }
+
+        // الترشيحات الحالية موجهة للترجمة المصاحبة: جودة سياقية أولاً ثم كلفة/سرعة.
+        if lc.contains("deepseek-v3.2") { return (true, "DeepSeek V3.2 — الخيار المتوازن الموصى به للترجمة السياقية العربية: جودة عالية وكلفة منخفضة.") }
+        if lc.contains("qwen3.5-397b") { return (true, "Qwen 3.5 397B — أعلى خيار Qwen للجودة السياقية، لكن أبطأ وأغلى للدفعات الطويلة.") }
+        if lc.contains("qwen3.5-122b") { return (true, "Qwen 3.5 122B — جودة سياقية مرتفعة للترجمة عندما تفضّل الجودة على السرعة.") }
+        if lc.contains("qwen3.6-35b") { return (true, "Qwen 3.6 35B A3B — موديل أحدث سريع/اقتصادي؛ جرّبه كبديل Qwen حديث للدفعات.") }
+        if lc.contains("qwen3.5-35b") { return (true, "Qwen 3.5 35B A3B — أفضل توازن Qwen بين السرعة والكلفة وجودة الترجمة.") }
+        if lc.contains("qwen3.6-27b") { return (true, "Qwen 3.6 27B — سريع وقوي للترجمة اليومية مع سياق طويل.") }
+        if lc.contains("qwen3.5-27b") { return (true, "Qwen 3.5 27B — خيار اقتصادي سريع بجودة جيدة.") }
+        if lc.contains("qwen3.5-9b") { return (true, "Qwen 3.5 9B — الأسرع والأوفر؛ مناسب للسرعة وليس الخيار المثالي لأصعب السياقات.") }
+
+        if lc.contains("qwen2.5") { return (false, "Qwen 2.5 قديم/في طريقه للإيقاف على SiliconFlow؛ اختر DeepSeek V3.2 أو Qwen 3.5/3.6.") }
+        if lc.contains("qwen2") { return (false, "Qwen 2.0 — قديم؛ اختر Qwen 3.5 أو DeepSeek V3.2.") }
+
         if lc.contains("deepseek-v3") { return (true, "DeepSeek V3 — جودة عالية جداً للترجمة السياقية") }
-        if lc.contains("deepseek-v2.5") { return (true, "DeepSeek V2.5 — سريع وقوي") }
+        if lc.contains("deepseek-v2.5") { return (false, "DeepSeek V2.5 — جيل أقدم؛ اختر DeepSeek V3.2 عند توفره.") }
         if lc.contains("deepseek-r1") { return (false, "DeepSeek R1 — موديل تفكير، بطيء وغير عملي للترجمة بالدفعات") }
-        if lc.contains("glm-4-9b") { return (true, "GLM-4 9B — بديل جيد جداً بسعر منخفض") }
-        if lc.contains("glm-4-plus") || lc.contains("glm-4-5") { return (true, "GLM-4 الأقوى — جودة عالية للترجمة") }
+        if lc.contains("glm-4") { return (false, "GLM-4 جيل قديم؛ لا نوصي به للترجمة الجديدة قبل التحقق من حالته في حسابك.") }
+        if lc.contains("kimi") { return (false, "سياق طويل، لكنه ليس من الترشيحات المختبرة للترجمة المصاحبة؛ DeepSeek V3.2 أولاً.") }
+        if lc.contains("minimax") || lc.contains("longcat") { return (false, "موديل عام حديث بسياق طويل؛ لا نوصي به افتراضياً للترجمة قبل اختبار الجودة والكلفة.") }
         if lc.contains("sensevoicesmall") { return (true, "SenseVoice Small — تفريغ صوتي ممتاز للهندية والصينية ومتعدد اللغات") }
         if lc.contains("cosyvoice2-0.5b") { return (true, "CosyVoice 2 — TTS صيني مع دعم لهجات، يولد كلاماً طبيعياً") }
         if lc.contains("funasr") { return (true, "FunASR — بديل SenseVoice للتفريغ") }

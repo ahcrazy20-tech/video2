@@ -519,7 +519,7 @@ final class TranslationManager: ObservableObject {
                                                           fallback: "openai/gpt-oss-120b")
             case .siliconflow:
                 translatorModel = ModelSelection.selected(purpose: "translator", provider: .siliconflow,
-                                                          fallback: "Qwen/Qwen2.5-72B-Instruct")
+                                                          fallback: "deepseek-ai/DeepSeek-V3.2")
             case .deepL:
                 translatorModel = "DeepL API"
             case .auto:
@@ -528,7 +528,7 @@ final class TranslationManager: ObservableObject {
             let translatorConfig = TranslateService.Config(provider: job.translator,
                                                           model: translatorModel,
                                                           temperature: 0.15,
-                                                          maxOutputTokens: 32768)
+                                                          maxOutputTokens: 4096)
             let pendingBatches = batches.filter { translationsByStart[$0.startIndex] == nil }
             var doneBatches = batches.count - pendingBatches.count
             setJob(jobID) { j in
@@ -547,12 +547,26 @@ final class TranslationManager: ObservableObject {
                 }
             }
 
-            // نوافذ متوازية صغيرة (تُحافظ على حدود الشريحة المجانية)
+            // Gemini المجاني يحدّ الطلبات/الدقيقة وقد يضع الطلبين المتوازيين في طابور.
+            // نرسل دفعة واحدة له كي تظهر أول نتيجة سريعاً بدل بقاء العداد 0/N؛ بقية المزودين
+            // تبقى على نافذة من طلبين للاستفادة من سرعتها.
+            let maxConcurrentBatches = resolvedTranslator == .gemini ? 1 : 2
+            let translatorName = TranslateService.providerName(resolvedTranslator)
             var w = 0
             while w < pendingBatches.count {
                 if Task.isCancelled { throw CancellationError() }
-                let window = Array(pendingBatches[w..<min(w + 2, pendingBatches.count)])
+                let window = Array(pendingBatches[w..<min(w + maxConcurrentBatches, pendingBatches.count)])
                 w += window.count
+                let firstInFlight = doneBatches + 1
+                let lastInFlight = min(doneBatches + window.count, batches.count)
+                setJob(jobID) { j in
+                    if firstInFlight == lastInFlight {
+                        j.errorMessage = "\(translatorName): جارٍ إرسال وترجمة الدفعة \(firstInFlight) من \(batches.count)…"
+                    } else {
+                        j.errorMessage = "\(translatorName): جارٍ إرسال الدفعات \(firstInFlight)–\(lastInFlight) من \(batches.count)…"
+                    }
+                }
+                saveIndex()
                 try await withThrowingTaskGroup(of: (Int, [String]).self) { group in
                     for batch in window {
                         let tail = contextTail
@@ -583,6 +597,11 @@ final class TranslationManager: ObservableObject {
                         setJob(jobID) { j in
                             j.doneBatches = db
                             j.progress = 0.70 + 0.24 * Double(db) / Double(totalB)
+                            if db < totalB {
+                                j.errorMessage = "\(translatorName): اكتملت الدفعة \(db) من \(totalB)…"
+                            } else {
+                                j.errorMessage = nil
+                            }
                         }
                     }
                 }

@@ -426,7 +426,7 @@ struct NewTranslationView: View {
         case .groqLLM:
             return ModelSelection.selected(purpose: "translator", provider: .groq, fallback: "openai/gpt-oss-120b")
         case .siliconflow:
-            return ModelSelection.selected(purpose: "translator", provider: .siliconflow, fallback: "Qwen/Qwen2.5-72B-Instruct")
+            return ModelSelection.selected(purpose: "translator", provider: .siliconflow, fallback: "deepseek-ai/DeepSeek-V3.2")
         case .deepL: return "DeepL API"
         case .auto: return "—"
         }

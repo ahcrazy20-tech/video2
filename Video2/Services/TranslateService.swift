@@ -25,7 +25,7 @@ enum TranslateService {
         var maxOutputTokens: Int
     }
 
-    /// يبني دفعات من الجُمل (حوالي 40 سطراً للدفعة — يوازن الجودة مع حدود المخرجات).
+    /// يبني دفعات من الجُمل (20 سطراً للدفعة — يوازن الجودة والسياق مع سرعة الاستجابة).
     static func makeBatches(cues: [SubCue], size: Int = 20) -> [Batch] {
         var batches: [Batch] = []
         var i = 0
@@ -52,7 +52,7 @@ enum TranslateService {
         let cfg = Config(provider: provider,
                          model: geminiModel,
                          temperature: 0.15,
-                         maxOutputTokens: 32768)
+                         maxOutputTokens: 4096)
         return try await translateBatch(config: cfg,
                                          batch: batch,
                                          contextTail: contextTail,
@@ -231,15 +231,42 @@ enum TranslateService {
         ["Content-Type": "application/json", "x-goog-api-key": key]
     }
 
+    /// يضيف إعداد تفكير مناسباً لطلب ترجمة الدفعة الذي يُرسل فعلياً. هذا مهم
+    /// عند الاسترداد التلقائي: قد يبدأ الطلب بـ Gemini 3 ثم يتحول إلى 2.5.
+    /// لا نعدّل طلب فحص المفتاح القصير؛ ترجمة الترجمة المصاحبة مهمة مباشرة ولا
+    /// تحتاج تفكيراً متوسطاً/عميقاً.
+    private static func optimizedGeminiPayload(_ payload: Data, model: String) -> Data {
+        guard var body = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
+              var generationConfig = body["generationConfig"] as? [String: Any],
+              generationConfig["responseMimeType"] != nil else {
+            return payload
+        }
+
+        let id = normalizedGeminiModel(model).lowercased()
+        if id.hasPrefix("gemini-3.") {
+            // Gemini 3.7 Flash يدعم low كأقل مستوى؛ موديلات Lite تستفيد من minimal.
+            let level = id.contains("lite") ? "minimal" : "low"
+            generationConfig["thinkingConfig"] = ["thinkingLevel": level]
+        } else if id.hasPrefix("gemini-2.5-") {
+            // صيغة 2.5 مختلفة، لذا لا نرسل thinkingLevel الخاص بسلسلة Gemini 3.
+            generationConfig["thinkingConfig"] = ["thinkingBudget": 0]
+        }
+
+        body["generationConfig"] = generationConfig
+        return (try? JSONSerialization.data(withJSONObject: body)) ?? payload
+    }
+
     private static func requestGemini(model: String,
                                       key: String,
                                       payload: Data,
                                       attempts: Int,
                                       timeout: Double) async throws -> (Data, HTTPURLResponse) {
-        try await HTTP.withRetry(attempts: attempts, baseDelay: 4) {
+        // يُبنى الجسم بحسب candidate الحالي حتى لا يرفض Gemini 2.5 إعداد Gemini 3.
+        let optimizedPayload = optimizedGeminiPayload(payload, model: model)
+        return try await HTTP.withRetry(attempts: attempts, baseDelay: 4) {
             try await HTTP.request("POST", geminiEndpoint(model: model),
                                    headers: geminiHeaders(key: key),
-                                   body: payload,
+                                   body: optimizedPayload,
                                    timeout: timeout)
         }
     }
@@ -290,7 +317,9 @@ enum TranslateService {
         let excluded = normalizedGeminiModel(excluding).lowercased()
         let usable = available.filter {
             let normalized = normalizedGeminiModel($0)
-            return normalized.lowercased() != excluded && isTextTranslationModel(normalized)
+            return normalized.lowercased() != excluded
+                && !isRetiredGeminiModel(normalized)
+                && isTextTranslationModel(normalized)
         }
         var result: [String] = []
         for preferred in preferredGeminiModels {
@@ -447,8 +476,8 @@ enum TranslateService {
             let result = try await requestGeminiWithRecovery(requestedModel: model,
                                                               key: key,
                                                               payload: payload,
-                                                              attempts: 5,
-                                                              timeout: 180)
+                                                              attempts: 3,
+                                                              timeout: 75)
             data = result.data
             response = result.response
         } catch {
@@ -539,7 +568,7 @@ enum TranslateService {
         guard let key = KeychainStore.get("siliconflow") else {
             throw APIError(status: 401, body: "أدخل مفتاح SiliconFlow من الإعدادات")
         }
-        let model = config.model.isEmpty ? "Qwen/Qwen2.5-72B-Instruct" : config.model
+        let model = config.model.isEmpty ? "deepseek-ai/DeepSeek-V3.2" : config.model
         let body: [String: Any] = [
             "model": model,
             "temperature": config.temperature,

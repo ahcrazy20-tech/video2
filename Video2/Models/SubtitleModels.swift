@@ -167,15 +167,15 @@ enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
     var detailAR: String {
         switch self {
         case .auto:
-            return "يفضّل Gemini عند توفر مفتاحه (شريحة مجانية سخية)، وإلا SiliconFlow (Qwen 72B ممتاز في العربية)، وإلا Groq."
+            return "يفضّل Gemini عند توفر مفتاحه، ثم Groq، ثم SiliconFlow. لاختيار DeepSeek V3.2 للسياق العربي اختر SiliconFlow صراحةً؛ حدود الاستخدام تختلف حسب الحساب."
         case .gemini:
-            return "ترجمة طبيعية تفهم السياق والمصطلحات، مناسبة للهندية والإنجليزية إلى العربية."
+            return "ترجمة طبيعية تفهم السياق والمصطلحات. للدفعات السريعة يضبط التطبيق التفكير المنخفض تلقائياً."
         case .groqLLM:
-            return "GPT-OSS 120B عبر Groq (بديل Llama 3.3 المنتهي) — سريع جداً بنفس مفتاح التفريغ."
+            return "GPT-OSS 120B أو Qwen 3.6 27B عبر Groq — سريعان جداً بنفس مفتاح التفريغ؛ التوفر والحدود حسب حساب Groq."
         case .deepL:
             return "DeepL — 500 ألف حرف/شهر مجاناً، جودة عالية للترجمة السياقية. يحتاج مفتاح DeepL (deepl)."
         case .siliconflow:
-            return "Qwen 2.5 72B / DeepSeek V3 / GLM-4 9B — موديلات صينية مفتوحة المصدر بترجمة عربية ممتازة وسعر منخفض. المفتاح: siliconflow."
+            return "DeepSeek V3.2 (الموصى به للسياق) أو Qwen 3.5 — موديلات قوية للترجمة العربية بسعر منخفض. المفتاح: siliconflow."
         }
     }
 
