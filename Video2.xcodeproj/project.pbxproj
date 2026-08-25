@@ -53,6 +53,8 @@
 		A1000000000000010000004B /* SubtitleRefineService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000004B /* SubtitleRefineService.swift */; };
 		A1000000000000010000004C /* SubtitleReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000004C /* SubtitleReviewView.swift */; };
 		A1000000000000010000004D /* CloudConvertService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000004D /* CloudConvertService.swift */; };
+		A1000000000000010000004E /* MPEGTSDemuxer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000004E /* MPEGTSDemuxer.swift */; };
+		A1000000000000010000004F /* ConvertAPIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000004F /* ConvertAPIService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -105,6 +107,8 @@
 		B1000000000000010000004B /* SubtitleRefineService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleRefineService.swift; sourceTree = "<group>"; };
 		B1000000000000010000004C /* SubtitleReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleReviewView.swift; sourceTree = "<group>"; };
 		B1000000000000010000004D /* CloudConvertService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudConvertService.swift; sourceTree = "<group>"; };
+		B1000000000000010000004E /* MPEGTSDemuxer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPEGTSDemuxer.swift; sourceTree = "<group>"; };
+		B1000000000000010000004F /* ConvertAPIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvertAPIService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -188,6 +192,8 @@
 				B1000000000000010000004A /* OrientationLock.swift */,
 				B1000000000000010000004B /* SubtitleRefineService.swift */,
 				B1000000000000010000004D /* CloudConvertService.swift */,
+				B1000000000000010000004E /* MPEGTSDemuxer.swift */,
+				B1000000000000010000004F /* ConvertAPIService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -336,6 +342,8 @@
 				A1000000000000010000004B /* SubtitleRefineService.swift in Sources */,
 				A1000000000000010000004C /* SubtitleReviewView.swift in Sources */,
 				A1000000000000010000004D /* CloudConvertService.swift in Sources */,
+				A1000000000000010000004E /* MPEGTSDemuxer.swift in Sources */,
+				A1000000000000010000004F /* ConvertAPIService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

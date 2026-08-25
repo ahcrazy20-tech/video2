@@ -132,13 +132,17 @@ struct SettingsView: View {
                               keyID: "speechmatics",
                               hint: "تفريغ صوتي — 480 دقيقة مجانية شهرياً لدقة عالية بأكثر من 55 لغة.")
                     APIKeyRow(title: "مفتاح CloudConvert",
-                              placeholder: "cc-...",
+                              placeholder: "مفتاح API من اللوحة",
                               keyID: "cloudconvert",
-                              hint: "تحويل HLS عند الحاجة فقط. للتشغيل تأكد من تفعيل task.read و task.write في مفتاح CloudConvert.")
+                              hint: "احتياطي فقط. أنشئ المفتاح من Dashboard → API Keys وفعّل task.read و task.write. التطبيق يحوّل معظم HLS محلياً بلا سحابة.")
                     APIKeyRow(title: "مفتاح ffmpeg-api.com",
                               placeholder: "من لوحة التحكم",
                               keyID: "ffmpegapi",
-                              hint: "مزوّد سحابي احتياطي ثانٍ لتحويل HLS إلى MP4. من https://ffmpeg-api.com")
+                              hint: "مزوّد سحابي احتياطي ثانٍ لتحويل HLS. من https://ffmpeg-api.com")
+                    APIKeyRow(title: "مفتاح ConvertAPI",
+                              placeholder: "Secret من convertapi.com",
+                              keyID: "convertapi",
+                              hint: "مزوّد سحابي ثالث (شريحة تجريبية بدون فيزا غالباً). بديل قوي إذا رُفض CloudConvert بـ 403.")
                 } header: {
                     Text("مفاتيح ترجمة ومراجعة الفيديو")
                 } footer: {
@@ -244,7 +248,7 @@ struct SettingsView: View {
                 }
 
                 Section("كيف تعمل منظومة التفريغ والترجمة؟") {
-                    howBullet("1", "استخراج الصوت من الفيديو (وHLS يُحوَّل أولاً) وتقطيعه لأجزاء 15 دقيقة صغيرة.")
+                    howBullet("1", "استخراج الصوت من الفيديو. HLS يُستخرج محلياً أولاً (MPEG-TS → AAC)، وإن فشل تُجرَّب AVFoundation ثم CloudConvert / ffmpeg-api / ConvertAPI.")
                     howBullet("2", "تفريغ الكلام بتوقيتات دقيقة عبر Groq بالتوازي، أو AssemblyAI بملف واحد حتى 10 ساعات.")
                     howBullet("3", "مراجعة وتدقيق النصوص بالذكاء الاصطناعي (Free API) لتصحيح الأخطاء الصوتية وحذف الهلاوس والتكرار وإكمال الكلمات لضمان اكتمال المعنى والسياق.")
                     howBullet("4", "ترجمة سياقية بالدفعات عبر Gemini أو Llama — تفهم سياق الجمل السابقة والمصطلحات.")
@@ -785,8 +789,9 @@ enum KeyTester {
             url = "https://eu1.asr.api.speechmatics.com/v2/jobs/"
             headers = ["Authorization": "Bearer \(key)"]
         case "cloudconvert":
-            url = "https://api.cloudconvert.com/v2/jobs?per_page=1"
-            headers = ["Authorization": "Bearer \(key)"]
+            return await verifyCloudConvert(key)
+        case "convertapi":
+            return await verifyConvertAPI(key)
         case "ffmpegapi":
             url = "https://api.ffmpeg-api.com/"
             headers = ["Authorization": "Basic \(key)"]
@@ -823,6 +828,89 @@ enum KeyTester {
             return "⚠️ استجابة غير متوقعة (رمز \(e.status))"
         } catch {
             return "⚠️ تعذر الاتصال — تحقق من الإنترنت"
+        }
+    }
+
+    /// اختبار CloudConvert على أكثر من نطاق، مع قراءة الرصيد إن أمكن.
+    private static func verifyCloudConvert(_ key: String) async -> String {
+        let bases = [
+            "https://api.cloudconvert.com/v2",
+            "https://eu-central.api.cloudconvert.com/v2",
+            "https://us-east.api.cloudconvert.com/v2",
+            "https://api.sandbox.cloudconvert.com/v2"
+        ]
+        var lastStatus = 0
+        var lastBody = ""
+        for base in bases {
+            do {
+                let (data, _) = try await HTTP.request(
+                    "GET", "\(base)/users/me",
+                    headers: ["Authorization": "Bearer \(key)"],
+                    timeout: 20)
+                let json = HTTP.json(from: data)
+                let credits = ((json["data"] as? [String: Any])?["credits"] as? Int)
+                    ?? (json["credits"] as? Int)
+                let creditLine = credits.map { "الرصيد المتبقي: \($0) تحويل" } ?? "تم التحقق من الحساب"
+                let sandbox = base.contains("sandbox") ? " (Sandbox)" : ""
+                return "✅ مفتاح CloudConvert يعمل\(sandbox) — \(creditLine). تأكد أن task.write مفعّل للتحويل."
+            } catch let e as APIError {
+                lastStatus = e.status
+                lastBody = e.body
+                if e.status == 401 { continue }
+                if e.status == 403 {
+                    let lower = e.body.lowercased()
+                    if lower.contains("cloudflare") || lower.contains("<html") || lower.contains("just a moment") {
+                        continue
+                    }
+                    if lower.contains("scope") || lower.contains("unauthorized") || lower.contains("user.read") {
+                        // المفتاح قد يعمل للمهام دون user.read — نجرّب /jobs
+                    } else {
+                        continue
+                    }
+                }
+            } catch {
+                lastBody = error.localizedDescription
+            }
+
+            do {
+                _ = try await HTTP.request(
+                    "GET", "\(base)/jobs?per_page=1",
+                    headers: ["Authorization": "Bearer \(key)"],
+                    timeout: 20)
+                return "✅ مفتاح CloudConvert يعمل على \(base) (task.read). فعّل task.write أيضاً لإنشاء مهام التحويل."
+            } catch let e as APIError {
+                lastStatus = e.status
+                lastBody = e.body
+            } catch {
+                lastBody = error.localizedDescription
+            }
+        }
+        return "❌ " + CloudConvertService.describeCreateFailure(status: lastStatus == 0 ? 403 : lastStatus, body: lastBody)
+    }
+
+    private static func verifyConvertAPI(_ key: String) async -> String {
+        var components = URLComponents(string: "https://v2.convertapi.com/user")
+        components?.queryItems = [URLQueryItem(name: "Secret", value: key)]
+        guard let url = components?.string else {
+            return "❌ رابط ConvertAPI غير صالح"
+        }
+        do {
+            let (data, _) = try await HTTP.request("GET", url, timeout: 20)
+            let json = HTTP.json(from: data)
+            if let seconds = HTTP.num(json["SecondsLeft"]) ?? HTTP.num(json["secondsLeft"]) {
+                return "✅ مفتاح ConvertAPI يعمل — متبقٍ \(Int(seconds)) ثانية تحويل"
+            }
+            return "✅ مفتاح ConvertAPI يعمل"
+        } catch let e as APIError {
+            if e.status == 401 || e.status == 403 {
+                return ConvertAPIService.describe(status: e.status, body: e.body)
+            }
+            if e.status == 404 {
+                return "⚠️ مسار ConvertAPI تغيّر (404) — احفظ المفتاح وجرّب التحويل مباشرة"
+            }
+            return "⚠️ استجابة ConvertAPI غير متوقعة (رمز \(e.status))"
+        } catch {
+            return "⚠️ تعذر الاتصال بـ ConvertAPI — تحقق من الإنترنت"
         }
     }
 }
