@@ -108,6 +108,75 @@ enum TranslateService {
         return KeychainStore.has(k)
     }
 
+    // MARK: التبديل التلقائي عند نفاد الحصة المجانية
+
+    /// هل هذا الخطأ يعني أن المزود رفض الاستمرار لأن حصته المجانية/حدّه انتهى؟
+    /// هذه هي الحالات التي يستفيد فيها المستخدم من الانتقال لمزود آخر بدل
+    /// سقوط المهمة بالكامل: 429 حد طلبات، 403 حصة/منطقة، 402 رصيد، و404 موديل.
+    static func isQuotaOrLimitError(_ error: Error) -> Bool {
+        guard let api = error as? APIError else { return false }
+        if [402, 403, 429].contains(api.status) { return true }
+        if api.status == 404 { return true }
+        // بعض المزودين يرجعون 400 مع نص صريح عن نفاد الحصة بدل 429.
+        let body = api.body.lowercased()
+        let markers = ["resource_exhausted", "resource exhausted", "quota exceeded",
+                       "exceeded your current quota", "rate limit", "ratelimit",
+                       "too many requests", "daily limit", "insufficient_quota",
+                       "credits", "free tier"]
+        return markers.contains { body.contains($0) }
+    }
+
+    /// سلسلة المزودين بالترتيب: المطلوب أولاً ثم بقية من يملك مفتاحاً.
+    /// بهذا لا تسقط مهمة فيديو 5 ساعات لأن Gemini وصل حدّه المجاني اليومي —
+    /// تنتقل تلقائياً لأقرب مزود متاح وتكمل من نفس النقطة المحفوظة.
+    /// الترتيب بعد المزود المطلوب مبني على ملاءمة الشريحة المجانية للفيديوهات
+    /// الطويلة: DeepL قبل OpenRouter لأن حدّه شهري (500 ألف حرف) بينما
+    /// OpenRouter محدود بـ 50 طلباً/يوم فقط، ثم Cerebras/SambaNova/Groq.
+    private static let failoverOrder: [TranslatorKind] =
+        [.gemini, .groqLLM, .cerebras, .sambaNova, .deepL, .openRouter]
+
+    static func failoverChain(from preferred: TranslatorKind) -> [TranslatorKind] {
+        let start = resolved(provider: preferred)
+        var chain: [TranslatorKind] = []
+        if start != .auto, let key = start.keyID, KeychainStore.has(key) {
+            chain.append(start)
+        }
+        for candidate in failoverOrder where !chain.contains(candidate) {
+            if let key = candidate.keyID, KeychainStore.has(key) {
+                chain.append(candidate)
+            }
+        }
+        return chain
+    }
+
+    /// الموديل المناسب لمزوّد معيّن (لكل مزود موديله المستقل — يمنع إرسال اسم
+    /// موديل Gemini إلى Cerebras مثلاً). يستخدم اختيار المستخدم إن وُجد.
+    static func modelSelection(for provider: TranslatorKind,
+                               geminiOverride: String? = nil) -> String {
+        switch provider {
+        case .gemini:
+            if let geminiOverride, !geminiOverride.isEmpty { return geminiOverride }
+            return ModelSelection.selected(purpose: "translator", provider: .gemini,
+                                           fallback: defaultGeminiModel)
+        case .groqLLM:
+            return ModelSelection.selected(purpose: "translator", provider: .groq,
+                                           fallback: "openai/gpt-oss-120b")
+        case .openRouter:
+            return ModelSelection.selected(purpose: "translator", provider: .openRouter,
+                                           fallback: defaultOpenRouterModel)
+        case .cerebras:
+            return ModelSelection.selected(purpose: "translator", provider: .cerebras,
+                                           fallback: defaultCerebrasModel)
+        case .sambaNova:
+            return ModelSelection.selected(purpose: "translator", provider: .sambaNova,
+                                           fallback: defaultSambaNovaModel)
+        case .deepL:
+            return "DeepL API"
+        case .auto:
+            return ""
+        }
+    }
+
     static func providerName(_ provider: TranslatorKind) -> String {
         switch resolved(provider: provider) {
         case .gemini: return "Gemini"

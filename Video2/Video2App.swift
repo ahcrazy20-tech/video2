@@ -4,6 +4,7 @@ import UIKit
 
 @main
 struct Video2App: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var library = LibraryStore()
     @StateObject private var downloads = DownloadManager()

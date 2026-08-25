@@ -311,10 +311,9 @@ final class OfflinePlayerModel: ObservableObject {
     }
 
     func rotate() {
-        // التطبيق مسموح له بالوضع الأفقي في Info.plist — ده الطريقة المعتمدة
-        // للتبديل البرمجي (تطبيقات TrollStore غير معرّضة لمراجعة App Store)
-        let target: UIInterfaceOrientation = isLandscapeNow ? .portrait : .landscapeRight
-        UIDevice.current.setValue(target.rawValue, forKey: "orientation")
+        // التبديل عبر requestGeometryUpdate (iOS 16+) — لا يترك حالة الجهاز
+        // متعارضة مع الاتجاه الفعلي كما كان يفعل setValue(forKey:"orientation").
+        OrientationLock.shared.toggleLandscape(currentlyLandscape: isLandscapeNow)
         flash(isLandscapeNow ? t("pl.portrait") : t("pl.landscape"))
     }
 
@@ -594,10 +593,15 @@ struct OfflinePlayerView: View {
             // Connect the language store to the model after init
             vm.lang = lang
             vm.start()
+            // الأفقي مسموح فقط أثناء وجود المشغّل — خارجه التطبيق عمودي.
+            OrientationLock.shared.setPlayerVisible(true)
         }
         .onDisappear {
             library.updatePosition(id: video.id, position: vm.current, duration: vm.duration)
             vm.stop()
+            // إعادة القفل العمودي: بدونها تبقى بقية الشاشات (مثل الإعدادات)
+            // قابلة للدوران الحر وقد تظهر مقلوبة/معكوسة.
+            OrientationLock.shared.setPlayerVisible(false)
         }
         .confirmationDialog(lang.t("pl.speed"), isPresented: $showSpeed, titleVisibility: .visible) {
             ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in
