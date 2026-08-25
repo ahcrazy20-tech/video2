@@ -310,6 +310,7 @@ final class OfflinePlayerModel: ObservableObject {
         UIScreen.main.bounds.width > UIScreen.main.bounds.height
     }
 
+    @MainActor
     func rotate() {
         // التبديل عبر requestGeometryUpdate (iOS 16+) — لا يترك حالة الجهاز
         // متعارضة مع الاتجاه الفعلي كما كان يفعل setValue(forKey:"orientation").
@@ -593,15 +594,12 @@ struct OfflinePlayerView: View {
             // Connect the language store to the model after init
             vm.lang = lang
             vm.start()
-            // الأفقي مسموح فقط أثناء وجود المشغّل — خارجه التطبيق عمودي.
-            OrientationLock.shared.setPlayerVisible(true)
+            // يدعم التطبيق الوضعين العمودي والأفقي بشكل طبيعي، بدون قفل المشغّل على الأفقي.
         }
         .onDisappear {
             library.updatePosition(id: video.id, position: vm.current, duration: vm.duration)
             vm.stop()
-            // إعادة القفل العمودي: بدونها تبقى بقية الشاشات (مثل الإعدادات)
-            // قابلة للدوران الحر وقد تظهر مقلوبة/معكوسة.
-            OrientationLock.shared.setPlayerVisible(false)
+            // لا نغيّر قناع الاتجاه عند الخروج؛ كل الشاشات تدعم الدوران الطبيعي.
         }
         .confirmationDialog(lang.t("pl.speed"), isPresented: $showSpeed, titleVisibility: .visible) {
             ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in
