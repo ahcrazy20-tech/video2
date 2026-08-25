@@ -2,13 +2,14 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var lang: LanguageStore
-     @EnvironmentObject var appLock: AppLock
+    @EnvironmentObject var appLock: AppLock
     @State private var newPassword = ""
     @State private var passwordMessage: String?
     @State private var adblock = AdBlock.isEnabled
     @State private var mode = AdBlock.mode
 
     @AppStorage("stt.provider") private var sttProviderRaw: String = STTProviderKind.auto.rawValue
+    @AppStorage("refiner.provider") private var refinerProviderRaw: String = SubtitleRefinerKind.auto.rawValue
     @AppStorage("tr.provider") private var translatorRaw: String = TranslatorKind.auto.rawValue
     @AppStorage("stt.concurrency") private var sttConcurrency: Int = 3
     @AppStorage("dl.maxHeight") private var downloadMaxHeight: Int = 0
@@ -26,7 +27,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                 Section("حماية التطبيق") {
+                Section("حماية التطبيق") {
                     SecureField("كلمة سر جديدة (4 أحرف على الأقل)", text: $newPassword)
                         .environment(\.layoutDirection, .leftToRight)
                     Button(appLock.hasPassword ? "تغيير كلمة السر" : "تفعيل كلمة السر") {
@@ -89,27 +90,27 @@ struct SettingsView: View {
                     APIKeyRow(title: "مفتاح Groq",
                               placeholder: "gsk_...",
                               keyID: "groq",
-                              hint: "للتفريغ الصوتي (Whisper Turbo) وترجمة GPT-OSS 120B (بديل Llama 3.3 المنتهي في 16 أغسطس 2026) — فيه شريحة مجانية.")
+                              hint: "للتفريغ الصوتي (Whisper Turbo)، تدقيق النصوص، وترجمة GPT-OSS 120B — فيه شريحة مجانية سريعة جداً.")
                     APIKeyRow(title: "مفتاح Gemini",
                               placeholder: "AIza...",
                               keyID: "gemini",
-                              hint: "للترجمة النصية السياقية. زر الاختبار يختبر GenerateContent والموديل المختار فعلياً، لا المفتاح فقط. مجاني بدون فيزا من Google AI Studio.")
+                              hint: "لمراجعة وتدقيق نصوص التفريغ والترجمة النصية السياقية. مجاني بدون فيزا من Google AI Studio.")
                     APIKeyRow(title: "مفتاح OpenRouter",
                               placeholder: "sk-or-v1-...",
                               keyID: "openrouter",
-                              hint: "للترجمة: الموديلات المجانية (‎:free) — التطبيق يجلب قائمتهم الحيّة تلقائياً فيعكس ما هو مجاني فعلاً الآن. التسجيل بالبريد/GitHub بدون فيزا. 50 طلب/يوم مجاناً.")
+                              hint: "للمراجعة والترجمة: الموديلات المجانية (‎:free) — التطبيق يجلب قائمتهم الحيّة تلقائياً. التسجيل بالبريد/GitHub بدون فيزا.")
                     APIKeyRow(title: "مفتاح Cerebras",
                               placeholder: "csk-...",
                               keyID: "cerebras",
-                              hint: "للترجمة السريعة جداً — مليون token/يوم مجاناً بدون فيزا (Llama 3.3 70B / Qwen3). سجّل من cloud.cerebras.ai بالبريد.")
+                              hint: "لتدقيق وترجمة النصوص بسرعة فائقة — مليون token/يوم مجاناً بدون فيزا (Llama 3.1 70B / Qwen3). سجّل من cloud.cerebras.ai.")
                     APIKeyRow(title: "مفتاح SambaNova",
                               placeholder: "مفتاح API من اللوحة",
                               keyID: "sambanova",
-                              hint: "للترجمة عبر DeepSeek V3.2 / Llama 3.3 — رصيد 5$ مجاني/30 يوماً بدون فيزا. سريع جداً. سجّل من cloud.sambanova.ai.")
+                              hint: "للمراجعة والترجمة عبر DeepSeek V3.2 / Llama 3.3 — رصيد 5$ مجاني بدون فيزا. سريع جداً من cloud.sambanova.ai.")
                     APIKeyRow(title: "مفتاح SiliconFlow",
                               placeholder: "sk-...",
                               keyID: "siliconflow",
-                              hint: "للتفريغ (SenseVoice) والدبلجة (CosyVoice) فقط — أُزيل من الترجمة لأنه يحتاج فيزا. الرصيد يظهر في قسم الرصيد والحدود.")
+                              hint: "للتفريغ (SenseVoice) والدبلجة (CosyVoice) فقط. الرصيد يظهر في قسم الرصيد والحدود.")
                     APIKeyRow(title: "مفتاح ElevenLabs",
                               placeholder: "xi-api-key",
                               keyID: "elevenlabs",
@@ -130,25 +131,26 @@ struct SettingsView: View {
                               placeholder: "مفتاح Speechmatics API",
                               keyID: "speechmatics",
                               hint: "تفريغ صوتي — 480 دقيقة مجانية شهرياً لدقة عالية بأكثر من 55 لغة.")
-                     APIKeyRow(title: "مفتاح CloudConvert",
+                    APIKeyRow(title: "مفتاح CloudConvert",
                               placeholder: "cc-...",
                               keyID: "cloudconvert",
                               hint: "تحويل HLS عند الحاجة فقط. للتشغيل تأكد من تفعيل task.read و task.write في مفتاح CloudConvert.")
                     APIKeyRow(title: "مفتاح ffmpeg-api.com",
                               placeholder: "من لوحة التحكم",
                               keyID: "ffmpegapi",
-                              hint: "مزوّد سحابي احتياطي ثانٍ لتحويل HLS إلى MP4 (يُنفَّذ تلقائياً لو نفدت حصة CloudConvert). من https://ffmpeg-api.com")
+                              hint: "مزوّد سحابي احتياطي ثانٍ لتحويل HLS إلى MP4. من https://ffmpeg-api.com")
                 } header: {
-                    Text("مفاتيح ترجمة الفيديو")
+                    Text("مفاتيح ترجمة ومراجعة الفيديو")
                 } footer: {
-                    Text("تُخزَّن المفاتيح في Keychain على جهازك فقط. كل مفاتيح الترجمة هنا بدون فيزا: Groq، Gemini، OpenRouter، Cerebras، SambaNova، DeepL — اختر ما يناسبك.")
+                    Text("تُخزَّن المفاتيح في Keychain على جهازك فقط. كل مزودات المراجعة والترجمة هنا بدون فيزا ولها شريحة مجانية: Groq، Gemini، OpenRouter، Cerebras، SambaNova، DeepL.")
                         .font(.caption2)
                 }
 
                 ProviderUsageSection()
 
                 Section("تفضيلات التفريغ والترجمة") {
-                    Picker("مزود التفريغ", selection: $sttProviderRaw) {
+                    // === 1. مزود التفريغ ===
+                    Picker("مزود التفريغ الصوتي", selection: $sttProviderRaw) {
                         ForEach(STTProviderKind.allCases) { p in
                             Text(p.titleAR).tag(p.rawValue)
                         }
@@ -158,7 +160,18 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    Picker("مزود الترجمة", selection: $translatorRaw) {
+                    // === 2. مزود مراجعة وتدقيق النصوص ===
+                    Picker("مراجعة وتدقيق نصوص التفريغ", selection: $refinerProviderRaw) {
+                        ForEach(SubtitleRefinerKind.allCases) { p in
+                            Text(p.titleAR).tag(p.rawValue)
+                        }
+                    }
+                    Text(SubtitleRefineService.resolved(provider: SubtitleRefinerKind(rawValue: refinerProviderRaw) ?? .auto).detailAR)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    // === 3. مزود الترجمة ===
+                    Picker("مزود الترجمة النصية", selection: $translatorRaw) {
                         ForEach(TranslatorKind.allCases) { p in
                             Text(p.titleAR).tag(p.rawValue)
                         }
@@ -167,7 +180,7 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    // === موديل الترجمة (العناصر تحت بعضها لسهولة القراءة) ===
+                    // === موديل الترجمة ===
                     VStack(alignment: .leading, spacing: 9) {
                         Text("الموديل المستخدم فعلياً للترجمة")
                             .font(.caption.weight(.semibold))
@@ -178,7 +191,7 @@ struct SettingsView: View {
                             modelBillingLine(billing)
                         }
                         if let provider = translatorCatalogProvider {
-                            modelPickerButton(title: "اختيار موديل \(provider.titleAR)",
+                            modelPickerButton(title: "اختيار موديل ترجمة \(provider.titleAR)",
                                               provider: provider,
                                               purpose: .translation)
                         } else {
@@ -189,6 +202,26 @@ struct SettingsView: View {
                     }
                     .padding(.vertical, 4)
 
+                    // === موديل مراجعة وتدقيق النصوص ===
+                    if resolvedRefiner != .off {
+                        VStack(alignment: .leading, spacing: 9) {
+                            Text("الموديل المستخدم فعلياً لمراجعة النصوص")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            modelNameLine(provider: resolvedRefinerProviderName,
+                                          model: displayedRefinerModel)
+                            if let billing = displayedRefinerBilling {
+                                modelBillingLine(billing)
+                            }
+                            if let provider = refinerCatalogProvider {
+                                modelPickerButton(title: "اختيار موديل مراجعة \(provider.titleAR)",
+                                                  provider: provider,
+                                                  purpose: .refinement)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+
                     // === موديل التفريغ ===
                     VStack(alignment: .leading, spacing: 9) {
                         Text("الموديل المستخدم فعلياً للتفريغ")
@@ -197,7 +230,7 @@ struct SettingsView: View {
                         modelNameLine(provider: resolvedSTT.titleAR,
                                       model: displayedSTTModel)
                         if let provider = sttCatalogProvider {
-                            modelPickerButton(title: "اختيار موديل \(provider.titleAR)",
+                            modelPickerButton(title: "اختيار موديل تفريغ \(provider.titleAR)",
                                               provider: provider,
                                               purpose: .transcription)
                         }
@@ -210,12 +243,13 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("كيف تعمل الترجمة؟") {
+                Section("كيف تعمل منظومة التفريغ والترجمة؟") {
                     howBullet("1", "استخراج الصوت من الفيديو (وHLS يُحوَّل أولاً) وتقطيعه لأجزاء 15 دقيقة صغيرة.")
                     howBullet("2", "تفريغ الكلام بتوقيتات دقيقة عبر Groq بالتوازي، أو AssemblyAI بملف واحد حتى 10 ساعات.")
-                    howBullet("3", "ترجمة سياقية بالدفعات عبر Gemini أو Llama — معنى الجملة كاملة لا كلمة كلمة.")
-                    howBullet("4", "ثلاثة ملفات SRT: أصلي ومترجم وثنائي اللغة — تظهر فوق المشغّل وتُصدَّر بضغطة.")
-                    Text("المهمام قابلة للاستئناف لحظياً: كل جزء مفرَّغ وكل دفعة مترجمة تُحفَظ، فلو انقطع الاتصال تُكمل من نفس النقطة. فيديو 5 ساعات ≈ 20 جزءاً.")
+                    howBullet("3", "مراجعة وتدقيق النصوص بالذكاء الاصطناعي (Free API) لتصحيح الأخطاء الصوتية وحذف الهلاوس والتكرار وإكمال الكلمات لضمان اكتمال المعنى والسياق.")
+                    howBullet("4", "ترجمة سياقية بالدفعات عبر Gemini أو Llama — تفهم سياق الجمل السابقة والمصطلحات.")
+                    howBullet("5", "ثلاثة ملفات SRT: أصلي مراجع، مترجم، وثنائي اللغة — تظهر فوق المشغّل مع إمكانية التعديل والمراجعة اليدوية.")
+                    Text("المهمام قابلة للاستئناف لحظياً: كل جزء مفرَّغ وكل دفعة مراجعة وترجمة تُحفَظ لحظياً، فلو انقطع الاتصال تُكمل من نفس النقطة بدون تكرار.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -300,6 +334,10 @@ struct SettingsView: View {
         TranslateService.resolved(provider: TranslatorKind(rawValue: translatorRaw) ?? .auto)
     }
 
+    private var resolvedRefiner: SubtitleRefinerKind {
+        SubtitleRefineService.resolved(provider: SubtitleRefinerKind(rawValue: refinerProviderRaw) ?? .auto)
+    }
+
     private var resolvedSTT: STTProviderKind {
         TranslationManager.resolvedSTT(STTProviderKind(rawValue: sttProviderRaw) ?? .auto)
     }
@@ -315,6 +353,17 @@ struct SettingsView: View {
         }
     }
 
+    private var refinerCatalogProvider: ModelProvider? {
+        switch resolvedRefiner {
+        case .gemini: return .gemini
+        case .groqLLM: return .groq
+        case .openRouter: return .openRouter
+        case .cerebras: return .cerebras
+        case .sambaNova: return .sambaNova
+        case .auto, .off: return nil
+        }
+    }
+
     private var sttCatalogProvider: ModelProvider? {
         switch resolvedSTT {
         case .groq: return .groq
@@ -325,6 +374,10 @@ struct SettingsView: View {
 
     private var resolvedTranslatorProviderName: String {
         resolvedTranslator == .auto ? "غير محدد" : resolvedTranslator.titleAR
+    }
+
+    private var resolvedRefinerProviderName: String {
+        resolvedRefiner == .auto ? "تلقائي" : (resolvedRefiner == .off ? "معطل" : resolvedRefiner.titleAR)
     }
 
     private var displayedTranslatorModel: String {
@@ -342,6 +395,10 @@ struct SettingsView: View {
         case .deepL: return "DeepL API"
         case .auto: return "—"
         }
+    }
+
+    private var displayedRefinerModel: String {
+        SubtitleRefineService.modelSelection(for: resolvedRefiner)
     }
 
     private var displayedTranslatorBilling: ModelBillingInfo? {
@@ -362,6 +419,11 @@ struct SettingsView: View {
         case .auto:
             return nil
         }
+    }
+
+    private var displayedRefinerBilling: ModelBillingInfo? {
+        guard let p = refinerCatalogProvider else { return nil }
+        return ModelBillingCatalog.info(provider: p, model: displayedRefinerModel)
     }
 
     private var displayedSTTModel: String {
@@ -620,8 +682,6 @@ struct APIKeyRow: View {
             let result = await KeyTester.verify(provider: provider, key: key)
             testing = false
             testResult = result
-            // إذا نجح الاختبار نُحفظ المفتاح تلقائياً — حتى لا يظن المستخدم أنه
-            // مضبوط بينما لم يُحفظ في Keychain (وهو ما كان يمنع تحويل HLS).
             if result.hasPrefix("✅") {
                 KeychainStore.set(key, for: keyID)
                 ProviderUsageStore.shared.invalidate(keyID: keyID)
@@ -640,8 +700,6 @@ enum KeyTester {
         }
 
         if provider == "openrouter" {
-            // /models على OpenRouter عام ولا يتحقق من المفتاح، لذا نستخدم /key
-            // الذي يتطلب مصادقة ويرفض المفاتيح غير الصالحة بـ 401.
             do {
                 let (_, resp) = try await HTTP.request("GET", "https://openrouter.ai/api/v1/key",
                                                         headers: ["Authorization": "Bearer \(key)"], timeout: 30)

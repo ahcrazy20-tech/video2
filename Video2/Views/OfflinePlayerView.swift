@@ -553,12 +553,14 @@ struct OfflinePlayerView: View {
     let video: SavedVideo
     @EnvironmentObject var library: LibraryStore
     @EnvironmentObject var lang: LanguageStore
+    @EnvironmentObject var translations: TranslationManager
     @Environment(\.dismiss) var dismiss
     @StateObject private var vm: OfflinePlayerModel
     @State private var dragStart: Double?
     @State private var showSpeed = false
     @State private var showAirPlay = false
     @State private var showSearch = false
+    @State private var showSubtitleReview = false
 
     init(video: SavedVideo) {
         self.video = video
@@ -617,6 +619,14 @@ struct OfflinePlayerView: View {
             .padding(20)
             .presentationDetents([.height(120)])
         }
+        .sheet(isPresented: $showSubtitleReview, onDismiss: {
+            vm.loadSubtitles()
+        }) {
+            SubtitleReviewView(video: video)
+                .environmentObject(library)
+                .environmentObject(lang)
+                .environmentObject(translations)
+        }
     }
 
     /// قائمة "المزيد" — مميزات ثانوية في مكان واحد عشان الشريط العلوي يفضل مرتب
@@ -630,6 +640,11 @@ struct OfflinePlayerView: View {
                 Button(lang.t("pl.sleep.off")) { vm.startSleep(0) }
             }
             Button { vm.snapshot() } label: { Label(lang.t("pl.snapshot"), systemImage: "camera") }
+            if vm.hasSubtitles {
+                Button { showSubtitleReview = true } label: {
+                    Label("مراجعة وتعديل الترجمة", systemImage: "pencil.and.list.clipboard")
+                }
+            }
             Button { showAirPlay = true } label: { Label(lang.t("pl.airplay"), systemImage: "dot.radiowaves.left.and.right") }
             Button { vm.rotate() } label: {
                 Label(vm.isLandscapeNow ? lang.t("pl.portrait") : lang.t("pl.landscape"), systemImage: "rotate.right")
