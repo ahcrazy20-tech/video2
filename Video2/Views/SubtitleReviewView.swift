@@ -354,7 +354,7 @@ struct SubtitleReviewView: View {
                     throw APIError(status: 401, body: "أدخل مفتاح الترجمة من الإعدادات.")
                 }
 
-                var config = TranslateService.Config(
+                let config = TranslateService.Config(
                     provider: chain[0],
                     model: TranslateService.modelSelection(for: chain[0]),
                     temperature: 0.15,

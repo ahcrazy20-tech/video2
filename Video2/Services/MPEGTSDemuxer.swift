@@ -190,7 +190,8 @@ enum MPEGTSDemuxer {
     }
 
     private static func crypt(_ data: Data, key: Data, iv: Data, options: CCOptions) -> Data? {
-        var out = Data(count: data.count + kCCBlockSizeAES128)
+        let outCapacity = data.count + kCCBlockSizeAES128
+        var out = Data(count: outCapacity)
         var moved = 0
         let status: CCCryptorStatus = out.withUnsafeMutableBytes { outBytes in
             data.withUnsafeBytes { dataBytes in
@@ -202,7 +203,7 @@ enum MPEGTSDemuxer {
                                 keyBytes.baseAddress, kCCKeySizeAES128,
                                 ivBytes.baseAddress,
                                 dataBytes.baseAddress, data.count,
-                                outBytes.baseAddress, out.count,
+                                outBytes.baseAddress, outCapacity,
                                 &moved)
                     }
                 }

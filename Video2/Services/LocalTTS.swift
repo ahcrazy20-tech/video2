@@ -109,21 +109,15 @@ enum LocalTTS {
         state.wavURL = wavURL
         state.fallback = estimateDuration(for: text)
 
-        let duration: Double
-        do {
-            duration = await withCheckedContinuation { (cont: CheckedContinuation<Double, Never>) in
-                state.continuation = cont
-                synth.delegate = state
-                // حارس زمني: لو لم ينتهِ النطق خلال 90 ثانية نكمل رغم ذلك
-                // لتفادي تعليق الدبلجة بالكامل (النطق الفعلي أقل بكثير عادةً).
-                DispatchQueue.main.asyncAfter(deadline: .now() + 90) { [weak state] in
-                    state?.finish()
-                }
-                synth.speak(utterance)
+        let duration: Double = await withCheckedContinuation { (cont: CheckedContinuation<Double, Never>) in
+            state.continuation = cont
+            synth.delegate = state
+            // حارس زمني: لو لم ينتهِ النطق خلال 90 ثانية نكمل رغم ذلك
+            // لتفادي تعليق الدبلجة بالكامل (النطق الفعلي أقل بكثير عادةً).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 90) { [weak state] in
+                state?.finish()
             }
-        } catch {
-            recorder.stop()
-            throw DubbingError.localSynthesisFailed
+            synth.speak(utterance)
         }
 
         // تحويل WAV → M4A (AAC) لتوافق AVFoundation واقتصاد الحجم
