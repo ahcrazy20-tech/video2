@@ -101,7 +101,7 @@ enum ModelBillingCatalog {
             // كل ما ينتهي بـ :free على OpenRouter مجاني بالكامل بلا فيزا.
             if id.hasSuffix(":free") {
                 return ModelBillingInfo(kind: .free,
-                                        detailAR: "موديل مجاني بالكامل على OpenRouter — 50 طلب/يوم بلا شحن (1000 بعد شحن 10$ اختياري). لا يحتاج فيزا.")
+                                        detailAR: "موديل مجاني بالكامل على OpenRouter — 20 طلب/دقيقة و50 طلب/يوم بلا شحن (1000/يوم بعد شحن 10$ لمرة واحدة). لا يحتاج فيزا.")
             }
             return ModelBillingInfo(kind: .paid,
                                     detailAR: "موديل مدفوع بالـ token من رصيد OpenRouter؛ الموديلات المنتهية بـ :free مجانية فاخترها أولاً.")
@@ -318,6 +318,14 @@ final class ModelCatalog: ObservableObject {
 
     private let cacheKey = "modelcatalog.cache.v1"
     private let cacheTTL: TimeInterval = 60 * 60 * 6 // 6 ساعات
+    /// قائمة OpenRouter المجانية تتغيّر كثيراً (نسخ :free تُضاف وتُسحب أسبوعياً)،
+    /// فنافذتها أقصر بكثير حتى لا يرى المستخدم قائمة قديمة ويظن أن التطبيق لا يحدّث.
+    private let openRouterTTL: TimeInterval = 60 * 30 // 30 دقيقة
+
+    /// نافذة الصلاحية الفعلية لكل مزوّد.
+    private func ttl(for provider: ModelProvider) -> TimeInterval {
+        provider.hasLiveFreeCatalog ? openRouterTTL : cacheTTL
+    }
 
     private init() {
         loadCache()
@@ -337,10 +345,10 @@ final class ModelCatalog: ObservableObject {
         }
     }
 
-    /// البيانات المحفوظة للمزوّد غائبة أو أقدم من TTL التخزين المؤقت.
+    /// البيانات المحفوظة للمزوّد غائبة أو أقدم من نافذة صلاحيته.
     func isStale(_ provider: ModelProvider) -> Bool {
         guard let fetched = lastFetched[provider] else { return true }
-        return Date().timeIntervalSince(fetched) > cacheTTL
+        return Date().timeIntervalSince(fetched) > ttl(for: provider)
     }
 
     // MARK: التحميل
@@ -888,6 +896,10 @@ enum ModelCatalogParser {
               let raw = json["data"] as? [[String: Any]] else { return [] }
         var out: [ModelEntry] = []
         for m in raw {
+            // مهم: المجاني على OpenRouter هو ما ينتهي بـ ":free" تحديداً — هذه
+            // النسخ معفاة من الرصيد (50 طلب/يوم، 20/دقيقة لمن شحن أقل من 10$).
+            // موديلات بسعر 0 بدون اللاحقة (مثل stealth/ox-alpha) تُمضي من رصيد
+            // الحساب وتتطلب رصيداً موجباً، لذا لا نعرضها كمجانية.
             guard let id = m["id"] as? String, id.hasSuffix(":free") else { continue }
             guard let pricing = m["pricing"] as? [String: Any],
                   HTTP.num(pricing["prompt"]) == 0,

@@ -255,7 +255,16 @@ final class TranslationManager: ObservableObject {
                     j.errorMessage = nil
                 }
                 saveIndex()
-                verifiedGeminiModel = try await TranslateService.preflightGeminiModel()
+                do {
+                    verifiedGeminiModel = try await TranslateService.preflightGeminiModel()
+                } catch where TranslateService.isQuotaOrLimitError(error) {
+                    // حصة Gemini المجانية منتهية الآن: لا نُفشِل المهمة قبل استخراج
+                    // صوت قد يدوم دقائق — سلسلة التبديل ستنتقل لمزود آخر عند الترجمة.
+                    setJob(jobID) { j in
+                        j.errorMessage = "Gemini وصل حدّه المجاني حالياً — سيُستخدم مزود بديل تلقائياً عند الترجمة."
+                    }
+                    saveIndex()
+                }
             }
 
             // ——— المرحلة 1: الصوت (تُتخطى إذا كانت الجُمل جاهزة) ———
@@ -506,35 +515,6 @@ final class TranslationManager: ObservableObject {
                 }
             }
 
-            // لكل مزود موديله المستقل؛ يمنع إرسال اسم موديل Gemini إلى SiliconFlow.
-            let resolvedTranslator = TranslateService.resolved(provider: job.translator)
-            let translatorModel: String
-            switch resolvedTranslator {
-            case .gemini:
-                translatorModel = verifiedGeminiModel
-                    ?? ModelSelection.selected(purpose: "translator", provider: .gemini,
-                                               fallback: TranslateService.defaultGeminiModel)
-            case .groqLLM:
-                translatorModel = ModelSelection.selected(purpose: "translator", provider: .groq,
-                                                          fallback: "openai/gpt-oss-120b")
-            case .openRouter:
-                translatorModel = ModelSelection.selected(purpose: "translator", provider: .openRouter,
-                                                          fallback: TranslateService.defaultOpenRouterModel)
-            case .cerebras:
-                translatorModel = ModelSelection.selected(purpose: "translator", provider: .cerebras,
-                                                          fallback: TranslateService.defaultCerebrasModel)
-            case .sambaNova:
-                translatorModel = ModelSelection.selected(purpose: "translator", provider: .sambaNova,
-                                                          fallback: TranslateService.defaultSambaNovaModel)
-            case .deepL:
-                translatorModel = "DeepL API"
-            case .auto:
-                translatorModel = ""
-            }
-            let translatorConfig = TranslateService.Config(provider: job.translator,
-                                                          model: translatorModel,
-                                                          temperature: 0.15,
-                                                          maxOutputTokens: 4096)
             let pendingBatches = batches.filter { translationsByStart[$0.startIndex] == nil }
             var doneBatches = batches.count - pendingBatches.count
             setJob(jobID) { j in
@@ -553,66 +533,126 @@ final class TranslationManager: ObservableObject {
                 }
             }
 
-            // Gemini المجاني يحدّ الطلبات/الدقيقة وقد يضع الطلبين المتوازيين في طابور.
-            // نرسل دفعة واحدة له كي تظهر أول نتيجة سريعاً بدل بقاء العداد 0/N؛ بقية المزودين
-            // تبقى على نافذة من طلبين للاستفادة من سرعتها.
-            let maxConcurrentBatches = resolvedTranslator == .gemini ? 1 : 2
-            let translatorName = TranslateService.providerName(resolvedTranslator)
+            // لكل مزود موديله المستقل؛ يمنع إرسال اسم موديل Gemini إلى مزود آخر.
+            // سلسلة تبديل: المزود المطلوب أولاً ثم أي مزود آخر يملك مفتاحاً —
+            // فلو نفدت حصة Gemini المجانية اليومية تنتقل المهمة تلقائياً بدل السقوط.
+            let chain = TranslateService.failoverChain(from: job.translator)
+            guard !chain.isEmpty else {
+                throw APIError(status: 401,
+                               body: "لا يوجد مزود ترجمة بمفتاح مُدخل. أدخل مفتاحاً واحداً على الأقل من الإعدادات (Groq أو Gemini أو OpenRouter أو Cerebras أو SambaNova).")
+            }
+            var chainIndex = 0
+            var activeConfig = TranslateService.Config(
+                provider: chain[0],
+                model: TranslateService.modelSelection(for: chain[0],
+                                                       geminiOverride: verifiedGeminiModel),
+                temperature: 0.15,
+                maxOutputTokens: 4096)
+            let chainCount = chain.count
+            var currentProviderName = TranslateService.providerName(chain[0])
+            var maxConcurrentBatches = chain[0] == .gemini ? 1 : 2
+
+            /// يحاول الدفعة على المزود الحالي، وعند نفاد حصته ينتقل للتالي في
+            /// السلسلة ويعيد نفس الدفعة — فلا يُفقد أي تقدم ولا تسقط المهمة.
+            func runWindow(_ window: [TranslateService.Batch],
+                           tail: [(String, String)],
+                           source: SubLang,
+                           target: SubLang,
+                           title: String) async throws {
+                while true {
+                    do {
+                        let cfg = activeConfig
+                        try await withThrowingTaskGroup(of: (Int, [String]).self) { group in
+                            for batch in window {
+                                group.addTask {
+                                    let out = try await TranslateService.translateBatch(
+                                        config: cfg,
+                                        batch: batch,
+                                        contextTail: tail,
+                                        source: source,
+                                        target: target,
+                                        videoTitle: title)
+                                    return (batch.startIndex, out)
+                                }
+                            }
+                            for try await (startIdx, translated) in group {
+                                translationsByStart[startIdx] = translated
+                                if let data = try? JSONEncoder().encode(translated) {
+                                    try? data.write(to: dir.appendingPathComponent("trans-\(startIdx).json"), options: .atomic)
+                                }
+                                if let arr = translationsByStart[startIdx],
+                                   let b = batches.first(where: { $0.startIndex == startIdx }), !arr.isEmpty {
+                                    contextTail = Array(zip(b.texts.suffix(1), [arr.last ?? ""].map { ($0.0, $0.1.isEmpty ? $0.0 : $0.1) }))
+                                }
+                                doneBatches += 1
+                                let db = doneBatches
+                                let totalB = max(1, batches.count)
+                                let label = currentProviderName
+                                setJob(jobID) { j in
+                                    j.doneBatches = db
+                                    j.progress = 0.70 + 0.24 * Double(db) / Double(totalB)
+                                    if db < totalB {
+                                        j.errorMessage = "\(label): اكتملت الدفعة \(db) من \(totalB)…"
+                                    } else {
+                                        j.errorMessage = nil
+                                    }
+                                }
+                            }
+                        }
+                        return
+                    } catch where Task.isCancelled {
+                        throw CancellationError()
+                    } catch {
+                        guard TranslateService.isQuotaOrLimitError(error),
+                              chainIndex + 1 < chainCount else { throw error }
+                        let failed = TranslateService.providerName(chain[chainIndex])
+                        chainIndex += 1
+                        let next = chain[chainIndex]
+                        activeConfig = TranslateService.Config(
+                            provider: next,
+                            model: TranslateService.modelSelection(for: next),
+                            temperature: 0.15,
+                            maxOutputTokens: 4096)
+                        currentProviderName = TranslateService.providerName(next)
+                        maxConcurrentBatches = next == .gemini ? 1 : 2
+                        let note = "\(failed) وصل حدّه المجاني — تحوّل تلقائي إلى \(currentProviderName) (\(chainIndex + 1)/\(chainCount)) والمتابعة من نفس النقطة…"
+                        setJob(jobID) { j in j.errorMessage = note }
+                        saveIndex()
+                        // حدّ المزود الجديد قد لا يكون قد اتّسع بعد: انتظار قصير قبل الإعادة.
+                        try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    }
+                }
+            }
+
             var w = 0
             while w < pendingBatches.count {
                 if Task.isCancelled { throw CancellationError() }
-                let window = Array(pendingBatches[w..<min(w + maxConcurrentBatches, pendingBatches.count)])
+                let span = min(w + maxConcurrentBatches, pendingBatches.count)
+                let window = Array(pendingBatches[w..<span])
                 w += window.count
                 let firstInFlight = doneBatches + 1
                 let lastInFlight = min(doneBatches + window.count, batches.count)
+                let label = currentProviderName
                 setJob(jobID) { j in
                     if firstInFlight == lastInFlight {
-                        j.errorMessage = "\(translatorName): جارٍ إرسال وترجمة الدفعة \(firstInFlight) من \(batches.count)…"
+                        j.errorMessage = "\(label): جارٍ إرسال وترجمة الدفعة \(firstInFlight) من \(batches.count)…"
                     } else {
-                        j.errorMessage = "\(translatorName): جارٍ إرسال الدفعات \(firstInFlight)–\(lastInFlight) من \(batches.count)…"
+                        j.errorMessage = "\(label): جارٍ إرسال الدفعات \(firstInFlight)–\(lastInFlight) من \(batches.count)…"
                     }
                 }
                 saveIndex()
-                try await withThrowingTaskGroup(of: (Int, [String]).self) { group in
-                    for batch in window {
-                        let tail = contextTail
-                        let cfg = translatorConfig
-                        group.addTask {
-                            let out = try await TranslateService.translateBatch(
-                                config: cfg,
-                                batch: batch,
-                                contextTail: tail,
-                                source: job.sourceLang,
-                                target: job.targetLang,
-                                videoTitle: job.videoTitle)
-                            return (batch.startIndex, out)
-                        }
-                    }
-                    for try await (startIdx, translated) in group {
-                        translationsByStart[startIdx] = translated
-                        if let data = try? JSONEncoder().encode(translated) {
-                            try? data.write(to: dir.appendingPathComponent("trans-\(startIdx).json"), options: .atomic)
-                        }
-                        if let arr = translationsByStart[startIdx],
-                           let b = batches.first(where: { $0.startIndex == startIdx }), !arr.isEmpty {
-                            contextTail = Array(zip(b.texts.suffix(1), [arr.last ?? ""]).map { ($0.0, $0.1.isEmpty ? $0.0 : $0.1) })
-                        }
-                        doneBatches += 1
-                        let db = doneBatches
-                        let totalB = max(1, batches.count)
-                        setJob(jobID) { j in
-                            j.doneBatches = db
-                            j.progress = 0.70 + 0.24 * Double(db) / Double(totalB)
-                            if db < totalB {
-                                j.errorMessage = "\(translatorName): اكتملت الدفعة \(db) من \(totalB)…"
-                            } else {
-                                j.errorMessage = nil
-                            }
-                        }
-                    }
-                }
+                try await runWindow(window,
+                                    tail: contextTail,
+                                    source: job.sourceLang,
+                                    target: job.targetLang,
+                                    title: job.videoTitle)
                 saveIndex()
             }
+            // حفظ آخر مزود نجح فعلياً ليعرفه المستخدم في الملخص.
+            if job.translator != chain[chainIndex] {
+                setJob(jobID) { j in j.translator = chain[chainIndex] }
+            }
+
 
             for b in batches {
                 guard let arr = translationsByStart[b.startIndex] else { continue }

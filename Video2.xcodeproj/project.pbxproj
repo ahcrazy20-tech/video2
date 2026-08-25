@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A1000000000000010000004A /* OrientationLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000004A /* OrientationLock.swift */; };
 		A10000000000000100000001 /* Video2App.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000001 /* Video2App.swift */; };
 		A10000000000000100000002 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000002 /* Models.swift */; };
 		A10000000000000100000003 /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000003 /* LibraryStore.swift */; };
@@ -97,6 +98,7 @@
 		B10000000000000100000047 /* TTSProviders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSProviders.swift; sourceTree = "<group>"; };
 		B10000000000000100000048 /* DubbingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DubbingView.swift; sourceTree = "<group>"; };
 		B10000000000000100000049 /* LocalTTS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalTTS.swift; sourceTree = "<group>"; };
+		B1000000000000010000004A /* OrientationLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrientationLock.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -177,6 +179,7 @@
 				B10000000000000100000046 /* DubbingService.swift */,
 				B10000000000000100000047 /* TTSProviders.swift */,
 				B10000000000000100000049 /* LocalTTS.swift */,
+				B1000000000000010000004A /* OrientationLock.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -320,6 +323,7 @@
 				A10000000000000100000047 /* TTSProviders.swift in Sources */,
 				A10000000000000100000048 /* DubbingView.swift in Sources */,
 				A10000000000000100000049 /* LocalTTS.swift in Sources */,
+				A1000000000000010000004A /* OrientationLock.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

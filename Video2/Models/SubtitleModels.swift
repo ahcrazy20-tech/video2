@@ -170,7 +170,7 @@ enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
     var detailAR: String {
         switch self {
         case .auto:
-            return "يفضّل Gemini ثم Groq ثم OpenRouter/Cerebras — كلها بدون فيزا ومجانية أو بشريحة. اختر مزوداً صراحةً للتحكم في الموديل."
+            return "يبدأ بأفضل مزود عندك ثم ينتقل تلقائياً للتالي لو نفدت حصته المجانية — لا تتوقف المهمة في منتصف الفيديو. الترتيب: Gemini ← Groq ← Cerebras ← SambaNova ← DeepL ← OpenRouter."
         case .gemini:
             return "ترجمة طبيعية تفهم السياق والمصطلحات. للدفعات السريعة يضبط التطبيق التفكير المنخفض تلقائياً. مفتاح Google AI Studio مجاني بدون فيزا."
         case .groqLLM:
@@ -178,7 +178,7 @@ enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
         case .deepL:
             return "DeepL — 500 ألف حرف/شهر مجاناً، جودة عالية للترجمة السياقية. يحتاج مفتاح DeepL (deepl)."
         case .openRouter:
-            return "قائمة حيّة من الموديلات المجانية (‎:free) — التطبيق يقرأ ما هو مجاني فعلاً الآن بدون فيزا نهائياً. 50 طلب/يوم (1000 بعد شحن 10$ اختياري)."
+            return "قائمة حيّة من الموديلات المجانية (‎:free) تُحدَّث كل 30 دقيقة — التطبيق يقرأ ما هو مجاني فعلاً الآن بدون فيزا. حدود الشريحة المجانية الرسمية: 20 طلب/دقيقة و50 طلب/يوم (تصبح 1000/يوم بعد شحن 10$ لمرة واحدة). لهذا هو أبطأ المزودين — لو عندك مفتاح Groq أو Cerebras فالتطبيق يقدّمهما عليه تلقائياً."
         case .cerebras:
             return "مليون token يومياً مجاناً وسريع جداً. Llama 3.3 70B / Qwen3 / GLM. بدون فيزا."
         case .sambaNova:
