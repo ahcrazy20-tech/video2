@@ -4,34 +4,43 @@ import AVFoundation
 /// خدمة CloudConvert لتحويل الملفات عبر الإنترنت
 /// مجاني 25 conversion/day
 /// سجل في: https://cloudconvert.com
-/// اعمل API Key من: Dashboard → API Keys
-/// أضف الـ Key في Info.plist:
-///   <key>CLOUDCONVERT_API_KEY</key>
-///   <string>your-key-here</string>
+/// اعمل API Key من: Dashboard → API Keys مع تفعيل task.read و task.write
 final class CloudConvertService {
-    
+
     static let shared = CloudConvertService()
-    
+
     private init() {}
-    
+
+    /// نجرّب أكثر من نطاق: الإنتاج الأوروبي/الأمريكي ثم الـ sandbox.
+    /// بعض الشبكات (خصوصاً مع Cloudflare) ترفض نطاقاً وتعمل مع آخر.
+    private static let apiBases = [
+        "https://api.cloudconvert.com/v2",
+        "https://eu-central.api.cloudconvert.com/v2",
+        "https://us-east.api.cloudconvert.com/v2",
+        "https://api.sandbox.cloudconvert.com/v2"
+    ]
+
     // MARK: - الأخطاء
-    
+
     enum CloudConvertError: LocalizedError {
         case missingAPIKey
         case invalidResponse
         case uploadFailed(Int)
+        case createJobFailed(Int, String)
         case jobFailed(String)
         case timeout
         case noResultURL
-        
+
         var errorDescription: String? {
             switch self {
             case .missingAPIKey:
-                return "CloudConvert API key غير موجود في Info.plist"
+                return "CloudConvert API key غير موجود — أضفه من الإعدادات"
             case .invalidResponse:
                 return "استجابة غير صالحة من CloudConvert"
             case .uploadFailed(let code):
-                return "فشل رفع الملف: HTTP \(code)"
+                return "فشل رفع الملف إلى CloudConvert: HTTP \(code)"
+            case .createJobFailed(let code, let detail):
+                return CloudConvertService.describeCreateFailure(status: code, body: detail)
             case .jobFailed(let msg):
                 return "فشل التحويل: \(msg)"
             case .timeout:
@@ -41,29 +50,59 @@ final class CloudConvertService {
             }
         }
     }
-    
+
+    static func describeCreateFailure(status: Int, body: String) -> String {
+        let lower = body.lowercased()
+        if status == 401 {
+            return "CloudConvert: المفتاح غير صحيح أو منتهي (401)"
+        }
+        if status == 402 || lower.contains("credit") || lower.contains("quota") || lower.contains("payment") {
+            return "CloudConvert: نفدت الحصة المجانية (25 تحويل/يوم) — انتظر الغد أو استخدم ConvertAPI / ffmpeg-api"
+        }
+        if status == 403 {
+            if lower.contains("cloudflare") || lower.contains("<html") || lower.contains("just a moment") || lower.contains("attention required") {
+                return "CloudConvert: الشبكة محجوبة (Cloudflare 403) — بدّل Wi-Fi/البيانات أو جرّب VPN"
+            }
+            if lower.contains("sandbox") {
+                return "CloudConvert: هذا مفتاح Sandbox على بيئة Live أو العكس — أنشئ مفتاح Live من اللوحة"
+            }
+            if lower.contains("unauthorized") || lower.contains("unauthenticated") || lower.contains("scope")
+                || lower.contains("permission") || lower.contains("task.write") || lower.contains("forbidden") {
+                return "CloudConvert: المفتاح بلا صلاحية task.write — أنشئ مفتاحاً جديداً وفعّل task.read و task.write"
+            }
+            return "CloudConvert: مرفوض 403 — فعّل task.write في المفتاح، أو بدّل الشبكة، أو استخدم التحويل المحلي/مزوداً بديلاً"
+        }
+        if status == 422 {
+            return "CloudConvert: طلب التحويل مرفوض (422) — صيغة الملف غير مدعومة أو الخيارات غير صالحة"
+        }
+        if status == 429 {
+            return "CloudConvert: حد الطلبات مؤقتاً (429) — أُعيدت المحاولة تلقائياً"
+        }
+        let snippet = body.replacingOccurrences(of: "\n", with: " ")
+        let short = snippet.count > 160 ? String(snippet.prefix(160)) + "…" : snippet
+        return "CloudConvert: فشل إنشاء المهمة — HTTP \(status) \(short)"
+    }
+
     // MARK: - API Key
-    
-    /// يجلب API key من Keychain (الأولوية) ثم Info.plist
+
     static func apiKey() -> String? {
         if let key = KeychainStore.get("cloudconvert"), !key.isEmpty {
-            return key
+            return KeychainStore.normalized(key)
         }
         if let key = Bundle.main.infoDictionary?["CLOUDCONVERT_API_KEY"] as? String {
-            return key.isEmpty || key.contains("ضع") ? nil : key
+            let clean = KeychainStore.normalized(key)
+            return clean.isEmpty || clean.contains("ضع") ? nil : clean
         }
         return nil
     }
-    
-    /// يتحقق من توفر API key
+
     static var isAvailable: Bool {
         guard let key = apiKey() else { return false }
         return !key.isEmpty && key != "ضع_الـAPI_Key_هنا"
     }
-    
+
     // MARK: - التحويل الرئيسي
-    
-    /// يحول ملف فيديو إلى MP4. يبقى للتحويل/التصدير اليدوي للفيديو.
+
     func convertToMP4(
         inputFile: URL,
         apiKey: String? = nil,
@@ -75,7 +114,6 @@ final class CloudConvertService {
                           progress: progress)
     }
 
-    /// يحول الإدخال إلى M4A صوتي فقط. هذا هو المسار المناسب للتفريغ والترجمة.
     func convertToM4A(
         inputFile: URL,
         apiKey: String? = nil,
@@ -93,7 +131,7 @@ final class CloudConvertService {
         apiKey: String?,
         progress: @escaping (Double) -> Void
     ) async throws -> URL {
-        let key = apiKey ?? Self.apiKey()
+        let key = apiKey.flatMap { KeychainStore.normalized($0) } ?? Self.apiKey()
         guard let apiKey = key, !apiKey.isEmpty else {
             throw CloudConvertError.missingAPIKey
         }
@@ -104,11 +142,11 @@ final class CloudConvertService {
         print("[CloudConvert] Input size: \(fileSize / 1024 / 1024) MB")
 
         progress(0.05)
-        let jobID = try await createJob(apiKey: apiKey, outputFormat: outputFormat)
-        print("[CloudConvert] ✅ Job created: \(jobID)")
+        let job = try await createJob(apiKey: apiKey, outputFormat: outputFormat)
+        print("[CloudConvert] ✅ Job created: \(job.id) @ \(job.base)")
 
         progress(0.10)
-        let uploadInfo = try await getUploadURL(apiKey: apiKey, jobID: jobID)
+        let uploadInfo = try await getUploadURL(apiKey: apiKey, job: job)
         print("[CloudConvert] Upload URL ready")
 
         progress(0.15)
@@ -116,7 +154,7 @@ final class CloudConvertService {
         print("[CloudConvert] ✅ File uploaded")
 
         progress(0.50)
-        let downloadURL = try await waitForJob(apiKey: apiKey, jobID: jobID, maxWait: 600) { p in
+        let downloadURL = try await waitForJob(apiKey: apiKey, job: job, maxWait: 600) { p in
             progress(0.50 + 0.40 * p)
         }
         print("[CloudConvert] ✅ Conversion complete")
@@ -130,41 +168,40 @@ final class CloudConvertService {
         return outputFile
     }
 
-    // MARK: - HLS → M4A
-    
-    /// يحول HLS (m3u8) إلى M4A صوتي فقط لتفريغ/ترجمة أسرع.
+    // MARK: - HLS → صوت/فيديو
+
+    /// يحول HLS (m3u8) عبر دمج الأجزاء ثم التحويل السحابي. للترجمة نطلب M4A.
     func convertHLS(
         m3u8URL: URL,
+        outputFormat: String = "m4a",
         apiKey: String? = nil,
         progress: @escaping (Double) -> Void = { _ in }
     ) async throws -> URL {
-        
+
         print("[CloudConvert] ═══════════════════════════════════════")
-        print("[CloudConvert] HLS → M4A audio conversion")
-        
+        print("[CloudConvert] HLS → \(outputFormat.uppercased())")
+
         guard FileManager.default.fileExists(atPath: m3u8URL.path) else {
             throw AudioPipelineError.exportFailed("ملف HLS غير موجود")
         }
-        
-        // نقرأ playlist ونستخرج .ts paths
+
         guard let playlistContent = try? String(contentsOf: m3u8URL, encoding: .utf8) else {
             throw AudioPipelineError.exportFailed("تعذر قراءة m3u8")
         }
-        
+
         let lines = playlistContent.components(separatedBy: .newlines)
         let segmentPaths: [String] = lines.compactMap { line in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return nil }
             return trimmed
         }
-        
+
         guard !segmentPaths.isEmpty else {
             throw AudioPipelineError.exportFailed("ملف m3u8 فارغ")
         }
-        
+
         print("[CloudConvert] Found \(segmentPaths.count) segments")
-        
-        // نلحم كل .ts في ملف واحد
+
         progress(0.01)
         let mergedTS = try await mergeTSSegments(
             paths: segmentPaths,
@@ -172,42 +209,57 @@ final class CloudConvertService {
         ) { p in
             progress(0.01 + 0.09 * p)
         }
-        
+
         defer { try? FileManager.default.removeItem(at: mergedTS) }
-        
+
         let mergedSize = (try? mergedTS.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         print("[CloudConvert] Merged TS: \(mergedSize / 1024 / 1024) MB")
-        
-        // نحتاج الصوت فقط للتفريغ، فلا نعيد ترميز أو ننزّل فيديو MP4 كاملاً.
-        let result = try await convertToM4A(
+
+        return try await convert(
             inputFile: mergedTS,
+            outputFormat: outputFormat,
             apiKey: apiKey,
             progress: { p in
                 progress(0.10 + 0.90 * p)
             }
         )
-        
-        return result
     }
-    
-    // MARK: - Helper: إنشاء Job
-    
-    private func createJob(apiKey: String, outputFormat: String) async throws -> String {
-        let url = URL(string: "https://api.cloudconvert.com/v2/jobs")!
+
+    // MARK: - HTTP
+
+    private struct JobRef {
+        let id: String
+        let base: String
+    }
+
+    private func authorizedRequest(url: URL, method: String, apiKey: String, body: Data? = nil, timeout: TimeInterval = 60) -> URLRequest {
         var request = URLRequest(url: url)
-        request.httpMethod = "POST"
+        request.httpMethod = method
+        request.timeoutInterval = timeout
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 60
-        
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Mobile/15E148 Safari/604.1 Video2/1.0", forHTTPHeaderField: "User-Agent")
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = body
+        }
+        return request
+    }
+
+    private func jobBody(outputFormat: String, includeEngine: Bool) -> Data? {
         var convertTask: [String: Any] = [
             "operation": "convert",
             "input": ["task-import"],
-            "output_format": outputFormat,
-            "engine": "ffmpeg",
-            "engine_version": "latest"
+            "output_format": outputFormat
         ]
-        if outputFormat.lowercased() == "m4a" {
+        if includeEngine {
+            convertTask["engine"] = "ffmpeg"
+        }
+        if outputFormat.lowercased() == "m4a" || outputFormat.lowercased() == "mp3" {
+            convertTask["audio_codec"] = "aac"
+        }
+        if outputFormat.lowercased() == "mp4" {
+            convertTask["video_codec"] = "h264"
             convertTask["audio_codec"] = "aac"
         }
         let body: [String: Any] = [
@@ -217,86 +269,104 @@ final class CloudConvertService {
                 "task-export": [
                     "operation": "export/url",
                     "input": ["task-convert"],
-                    "multiple": false
+                    "inline": false
                 ]
             ],
             "tag": outputFormat.lowercased() == "m4a" ? "video2-audio" : "video2-app"
         ]
-        
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
-        let (data, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResp = response as? HTTPURLResponse else {
-            throw CloudConvertError.invalidResponse
-        }
-        
-        guard (200...299).contains(httpResp.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? "unknown"
-            print("[CloudConvert] ❌ Create job failed: \(msg)")
-            throw CloudConvertError.uploadFailed(httpResp.statusCode)
-        }
-        
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let jobData = json["data"] as? [String: Any],
-              let jobID = jobData["id"] as? String else {
-            throw CloudConvertError.invalidResponse
-        }
-        
-        return jobID
+        return try? JSONSerialization.data(withJSONObject: body)
     }
-    
-    // MARK: - Helper: الحصول على Upload URL
-    
+
+    private func createJob(apiKey: String, outputFormat: String) async throws -> JobRef {
+        let payloads = [jobBody(outputFormat: outputFormat, includeEngine: false),
+                        jobBody(outputFormat: outputFormat, includeEngine: true)].compactMap { $0 }
+        var lastStatus = 0
+        var lastBody = ""
+
+        for base in Self.apiBases {
+            for payload in payloads {
+                if Task.isCancelled { throw CancellationError() }
+                guard let url = URL(string: "\(base)/jobs") else { continue }
+                let request = authorizedRequest(url: url, method: "POST", apiKey: apiKey, body: payload, timeout: 60)
+                do {
+                    let (data, response) = try await URLSession.shared.data(for: request)
+                    guard let http = response as? HTTPURLResponse else { continue }
+                    lastStatus = http.statusCode
+                    lastBody = String(data: data, encoding: .utf8) ?? ""
+                    print("[CloudConvert] create job \(base) → HTTP \(http.statusCode)")
+                    if (200...299).contains(http.statusCode),
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let jobData = json["data"] as? [String: Any],
+                       let jobID = jobData["id"] as? String {
+                        return JobRef(id: jobID, base: base)
+                    }
+                    // 401 على نطاق معيّن (sandbox vs live) — نجرّب التالي
+                    if http.statusCode == 401 || http.statusCode == 404 {
+                        break
+                    }
+                    // 422 بسبب الخيارات — نجرّب الـ payload الآخر على نفس النطاق
+                    if http.statusCode == 422 {
+                        continue
+                    }
+                    // 403: إمّا حجب شبكة (نطاق آخر قد ينجح) أو صلاحيات (ستفشل كلها)
+                    if http.statusCode == 403 {
+                        break
+                    }
+                } catch {
+                    print("[CloudConvert] create job network error on \(base): \(error.localizedDescription)")
+                    lastBody = error.localizedDescription
+                    lastStatus = 0
+                }
+            }
+        }
+
+        throw CloudConvertError.createJobFailed(lastStatus == 0 ? 403 : lastStatus, lastBody)
+    }
+
     private struct UploadInfo {
         let url: URL
         let taskID: String
         let params: [String: Any]
     }
-    
-    private func getUploadURL(apiKey: String, jobID: String) async throws -> UploadInfo {
-        let url = URL(string: "https://api.cloudconvert.com/v2/jobs/\(jobID)")!
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        
-        let (data, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResp = response as? HTTPURLResponse, (200...299).contains(httpResp.statusCode) else {
+
+    private func getUploadURL(apiKey: String, job: JobRef) async throws -> UploadInfo {
+        guard let url = URL(string: "\(job.base)/jobs/\(job.id)") else {
             throw CloudConvertError.invalidResponse
         }
-        
-        // CloudConvert v2 يعيد المهمة داخل data، والمهام داخل data.tasks.
-        // لا توجد طبقة JSON:API باسم relationships في هذه الاستجابة.
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let job = json["data"] as? [String: Any],
-              let tasks = job["tasks"] as? [[String: Any]] else {
-            throw CloudConvertError.invalidResponse
+        let waitStart = Date()
+        while Date().timeIntervalSince(waitStart) < 30 {
+            let request = authorizedRequest(url: url, method: "GET", apiKey: apiKey)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                throw CloudConvertError.invalidResponse
+            }
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let jobData = json["data"] as? [String: Any],
+                  let tasks = jobData["tasks"] as? [[String: Any]] else {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+                continue
+            }
+            if let uploadTask = tasks.first(where: { $0["operation"] as? String == "import/upload" }),
+               let taskID = uploadTask["id"] as? String,
+               let form = (uploadTask["result"] as? [String: Any])?["form"] as? [String: Any],
+               let urlStr = form["url"] as? String,
+               let uploadURL = URL(string: urlStr) {
+                let formParams = (form["parameters"] as? [String: Any]) ?? [:]
+                return UploadInfo(url: uploadURL, taskID: taskID, params: formParams)
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
         }
-        
-        // في CloudConvert v2 بيانات الرفع تظهر في result.form (وليس params.upload_url)
-        guard let uploadTask = tasks.first(where: { $0["operation"] as? String == "import/upload" }),
-              let taskID = uploadTask["id"] as? String,
-              let form = (uploadTask["result"] as? [String: Any])?["form"] as? [String: Any],
-              let urlStr = form["url"] as? String,
-              let uploadURL = URL(string: urlStr) else {
-            throw CloudConvertError.invalidResponse
-        }
-        
-        let formParams = (form["parameters"] as? [String: Any]) ?? [:]
-        return UploadInfo(url: uploadURL, taskID: taskID, params: formParams)
+        throw CloudConvertError.invalidResponse
     }
-    
-    // MARK: - Helper: رفع الملف
-    
+
     private func uploadFile(fileURL: URL, uploadURL: URL, formParams: [String: Any]) async throws {
         let boundary = "Boundary-\(UUID().uuidString)"
         var request = URLRequest(url: uploadURL)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_4 like Mac OS X) AppleWebKit/605.1.15 Video2/1.0", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 600
 
-        // نجمع multipart على القرص ثم نرفعه من ملف؛ Data(contentsOf:) لملف HLS
-        // طويل كانت قد تضاعف الذاكرة وتُسقط التطبيق.
         let bodyURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("cloudconvert-body-\(UUID().uuidString).bin")
         defer { try? FileManager.default.removeItem(at: bodyURL) }
@@ -334,38 +404,36 @@ final class CloudConvertService {
             throw CloudConvertError.uploadFailed(httpResp.statusCode)
         }
     }
-    
-    // MARK: - Helper: انتظار انتهاء التحويل
-    
+
     private func waitForJob(
         apiKey: String,
-        jobID: String,
+        job: JobRef,
         maxWait: TimeInterval,
         progress: @escaping (Double) -> Void
     ) async throws -> String {
-        
-        let url = URL(string: "https://api.cloudconvert.com/v2/jobs/\(jobID)")!
+
+        guard let url = URL(string: "\(job.base)/jobs/\(job.id)") else {
+            throw CloudConvertError.invalidResponse
+        }
         let startTime = Date()
-        
+
         while Date().timeIntervalSince(startTime) < maxWait {
-            var request = URLRequest(url: url)
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-            
+            if Task.isCancelled { throw CancellationError() }
+            let request = authorizedRequest(url: url, method: "GET", apiKey: apiKey)
             let (data, response) = try await URLSession.shared.data(for: request)
-            
+
             guard let httpResp = response as? HTTPURLResponse, (200...299).contains(httpResp.statusCode) else {
                 throw CloudConvertError.invalidResponse
             }
-            
+
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let jobData = json["data"] as? [String: Any] else {
                 throw CloudConvertError.invalidResponse
             }
-            
+
             let status = jobData["status"] as? String ?? "unknown"
-            
+
             if status == "finished" {
-                // CloudConvert v2: data.tasks مباشرة، وليس relationships.tasks.data.
                 if let tasks = jobData["tasks"] as? [[String: Any]] {
                     for task in tasks {
                         if task["operation"] as? String == "export/url",
@@ -380,33 +448,32 @@ final class CloudConvertService {
                 }
                 throw CloudConvertError.noResultURL
             }
-            
+
             if status == "error" {
-                let msg = jobData["message"] as? String ?? "خطأ غير معروف"
-                throw CloudConvertError.jobFailed(msg)
+                var msg = jobData["message"] as? String
+                if msg == nil, let tasks = jobData["tasks"] as? [[String: Any]] {
+                    msg = tasks.first(where: { $0["status"] as? String == "error" })?["message"] as? String
+                }
+                throw CloudConvertError.jobFailed(msg ?? "خطأ غير معروف")
             }
-            
+
             let elapsed = Date().timeIntervalSince(startTime)
-            let estimated = min(0.99, elapsed / maxWait)
-            progress(estimated)
-            
+            progress(min(0.99, elapsed / maxWait))
             try await Task.sleep(nanoseconds: 5_000_000_000)
         }
-        
+
         throw CloudConvertError.timeout
     }
-    
-    // MARK: - Helper: تنزيل النتيجة
-    
+
     private func downloadResult(url downloadURL: String, originalName: String, outputExtension: String) async throws -> URL {
         guard let url = URL(string: downloadURL) else {
             throw CloudConvertError.noResultURL
         }
-        
+
         var request = URLRequest(url: url)
         request.timeoutInterval = 600
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_4 like Mac OS X) AppleWebKit/605.1.15 Video2/1.0", forHTTPHeaderField: "User-Agent")
 
-        // تنزيل الملف إلى القرص مباشرة بدلاً من وضع نتيجة تحويل كبيرة في الذاكرة.
         let (temporaryURL, response) = try await URLSession.shared.download(for: request)
         guard let httpResp = response as? HTTPURLResponse, (200...299).contains(httpResp.statusCode) else {
             throw CloudConvertError.uploadFailed((response as? HTTPURLResponse)?.statusCode ?? 0)
@@ -418,48 +485,44 @@ final class CloudConvertService {
         try FileManager.default.moveItem(at: temporaryURL, to: outputFile)
         return outputFile
     }
-    
-    // MARK: - Helper: دمج .ts segments
-    
+
     private func mergeTSSegments(
         paths: [String],
         baseFolder: URL,
         progress: @escaping (Double) -> Void
     ) async throws -> URL {
-        
+
         let mergedURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("cloudconvert-merge-\(UUID().uuidString).ts")
-        
+
         guard FileManager.default.createFile(atPath: mergedURL.path, contents: nil, attributes: nil) else {
             throw AudioPipelineError.exportFailed("تعذر إنشاء ملف مؤقت")
         }
-        
+
         let fileHandle = try FileHandle(forWritingTo: mergedURL)
         defer { try? fileHandle.close() }
-        
+
         for (index, segPath) in paths.enumerated() {
             if Task.isCancelled {
                 try? FileManager.default.removeItem(at: mergedURL)
                 throw CancellationError()
             }
-            
+
             if segPath.hasPrefix("/") {
                 let segURL = URL(fileURLWithPath: segPath)
-                let data = try Data(contentsOf: segURL)
-                fileHandle.write(data)
+                try fileHandle.write(contentsOf: Data(contentsOf: segURL, options: [.mappedIfSafe]))
             } else if segPath.hasPrefix("http://") || segPath.hasPrefix("https://") {
                 guard let u = URL(string: segPath) else { continue }
                 let (data, _) = try await URLSession.shared.data(from: u)
-                fileHandle.write(data)
+                try fileHandle.write(contentsOf: data)
             } else {
                 let segURL = baseFolder.appendingPathComponent(segPath)
-                let data = try Data(contentsOf: segURL)
-                fileHandle.write(data)
+                try fileHandle.write(contentsOf: Data(contentsOf: segURL, options: [.mappedIfSafe]))
             }
-            
+
             progress(Double(index + 1) / Double(paths.count))
         }
-        
+
         return mergedURL
     }
 }

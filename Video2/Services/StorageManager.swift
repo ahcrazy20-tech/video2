@@ -29,7 +29,7 @@ enum StorageManager {
     static func purgeTemporary() -> Int64 {
         var removed: Int64 = 0
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        let prefixes = ["v2-", "merge-", "cc-", "ffmpeg-api-", "hls-", "audio-"]
+        let prefixes = ["v2-", "merge-", "cc-", "ffmpeg-api-", "hls-", "audio-", "convertapi-", "cloudconvert-", "hls-ts-"]
         if let items = try? FileManager.default.contentsOfDirectory(at: tmp, includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey]) {
             for item in items {
                 let name = item.lastPathComponent

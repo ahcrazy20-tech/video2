@@ -268,26 +268,31 @@ final class FormatConverter: ObservableObject {
             return
         }
 
-        // HLS يحتاج معالجة خاصة — تحويل من ملف محلي m3u8
+        // HLS: AVFoundation لا يقرأ file:// m3u8 — نقدّمه عبر HTTP محلي أولاً.
         var sourceURL = video.localURL
         var tempHLSFile: URL? = nil
 
         if video.kind == .hls {
-            // لا ندمج أجزاء HLS يدوياً: هذا يكسر الـ timestamps والصوت و EXT-X-MAP.
-            // AVFoundation يفهم الـ playlist المحلي ويختار الـ audio/video renditions
-            // ويحافظ على التزامن. نستخدم المسار القديم فقط كـ fallback للـ playlists
-            // التي لا يستطيع النظام فتحها.
             jobs[i].phase = .converting
             jobs[i].progress = 0.05
             saveIndex()
-            sourceURL = video.localURL
+            do {
+                sourceURL = try LocalFileServer.shared.hlsURL(forPlaylist: video.localURL)
+            } catch {
+                sourceURL = video.localURL
+            }
         }
 
-        var asset = AVURLAsset(url: sourceURL)
+        var asset = AVURLAsset(url: sourceURL, options: [
+            AVURLAssetPreferPreciseDurationAndTimingKey: true
+        ])
         if video.kind == .hls {
             do {
                 let playable = try await asset.load(.isPlayable)
-                guard playable else { throw ConversionError.exportFailed("قائمة HLS غير قابلة للتشغيل") }
+                let tracks = (try? await asset.loadTracks(withMediaType: .video)) ?? []
+                if !playable && tracks.isEmpty {
+                    throw ConversionError.exportFailed("قائمة HLS غير قابلة للتشغيل")
+                }
             } catch {
                 do {
                     tempHLSFile = try await AudioPipeline.exportHLSToTempMP4(video.localURL)
