@@ -1047,6 +1047,3 @@ enum AudioPipeline {
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("duration.txt"))
     }
 }
-tem(at: dir.appendingPathComponent("duration.txt"))
-    }
-}

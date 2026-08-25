@@ -226,9 +226,20 @@ enum MPEGTSDemuxer {
         let bytes = [UInt8](ts)
         while offset + 188 <= bytes.count {
             if bytes[offset] != 0x47 {
-                if let next = (offset + 1..<min(offset + 188, bytes.count)).first(where: {
-                    bytes[$0] == 0x47 && $0 + 188 < bytes.count && bytes[$0 + 188] == 0x47
-                }) {
+                let searchEnd = min(offset + 188, bytes.count)
+                var nextSync: Int?
+                var probe = offset + 1
+                while probe < searchEnd {
+                    let hasSync = bytes[probe] == 0x47
+                    let nextPacket = probe + 188
+                    let nextInRange = nextPacket < bytes.count
+                    if hasSync && nextInRange && bytes[nextPacket] == 0x47 {
+                        nextSync = probe
+                        break
+                    }
+                    probe += 1
+                }
+                if let next = nextSync {
                     offset = next
                     continue
                 }
