@@ -1,32 +1,20 @@
 import UIKit
 import SwiftUI
 
-/// إدارة اتجاه الشاشة.
+/// إدارة اتجاه الشاشة بدون قفل التطبيق على الوضع الأفقي أو العمودي.
 ///
-/// المشكلة التي يحلها هذا الملف: المشغّل كان يفرض الوضع الأفقي عبر
-/// `UIDevice.current.setValue(...forKey:"orientation")` ولا يُعيده أبداً. هذا
-/// الـ API مهجور منذ iOS 16 ويترك حالة الجهاز متعارضة مع الاتجاه الفعلي،
-/// فتظهر شاشات لاحقة (مثل الإعدادات) مقلوبة رأساً على عقب أو معكوسة كمرآة
-/// حتى يلفّ المستخدم الهاتف بيده.
-///
-/// الحل: مصدر واحد للحقيقة (`mask`) مع قفل عمودي لكل التطبيق، ويُسمح
-/// بالأفقي فقط أثناء وجود المشغّل على الشاشة — عبر الـ API الحديث
-/// `requestGeometryUpdate` الذي لا يترك تعارضاً في الحالة.
+/// يعلن التطبيق الاتجاهات المعتادة للآيفون (عمودي وأفقي يمين/يسار)، لذلك
+/// يتبع دوران الجهاز تلقائياً في كل الشاشات. الدالة الوحيدة هنا هي زر التدوير
+/// الاختياري داخل المشغّل، وتطلب تغييراً لحظياً للاتجاه من دون تغيير الاتجاهات
+/// التي يسمح بها التطبيق.
 @MainActor
 final class OrientationLock: NSObject {
 
     static let shared = OrientationLock()
 
-    /// هل المشغّل معروض الآن؟ الأفقي مسموح فقط أثناء تشغيل فيديو.
-    /// الكتابة داخلية (وليست خاصة) ليتمكن AppDelegate من فرض الرأسي عند الإقلاع.
-    var playerVisible = false
-
-    /// الاتجاهات المسموحة حالياً — يقرأها AppDelegate عند كل طلب دوران.
-    /// `allButUpsideDown` يستثني الوضع المقلوب رأساً على عقب صراحةً، وهو الوضع
-    /// الذي كان يشتكي منه المستخدم في شاشة الإعدادات.
-    var mask: UIInterfaceOrientationMask {
-        playerVisible ? .allButUpsideDown : .portrait
-    }
+    /// الاتجاهات التي يسمح بها التطبيق دائماً. الوضع المقلوب رأساً على عقب
+    /// مستبعد لأنه ليس اتجاهاً طبيعياً للاستخدام في الآيفون.
+    var mask: UIInterfaceOrientationMask { .allButUpsideDown }
 
     private override init() { super.init() }
 
@@ -35,25 +23,9 @@ final class OrientationLock: NSObject {
         return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
     }
 
-    /// يحدّث حالة القفل ثم يطلب من النظام إعادة تقييم الاتجاه فوراً.
-    func setPlayerVisible(_ visible: Bool) {
-        guard playerVisible != visible else { return }
-        playerVisible = visible
-        apply()
-    }
-
-    /// يعيد فرض القناع الحالي على النظام.
-    func apply() {
-        guard let scene = activeScene else { return }
-        // يخبر النظام أن الجهات المسموحة تغيّرت؛ بدون هذه الخطوة يستمر في
-        // قبول الدوران الحر لأن قناع Info.plist يشمل الأفقي.
-        scene.keyWindow?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
-        scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in
-            // الفشل هنا غير حرج: القناع يُحترم عند أي تدوير قادم على أي حال.
-        }
-    }
-
-    /// تدوير يدوي داخل المشغّل بين الأفقي والرأسي.
+    /// تدوير اختياري داخل المشغّل بين الأفقي والرأسي.
+    /// لا يثبت التطبيق على الاتجاه المطلوب؛ بعد الطلب يظل الدوران التلقائي
+    /// متاحاً لأن `mask` لا يتغير.
     func toggleLandscape(currentlyLandscape: Bool) {
         guard let scene = activeScene else { return }
         let targetMask: UIInterfaceOrientationMask = currentlyLandscape ? .portrait : .landscape
@@ -62,19 +34,15 @@ final class OrientationLock: NSObject {
     }
 }
 
-// MARK: - ربط القفل بدورة حياة التطبيق
+// MARK: - ربط الاتجاهات بدورة حياة التطبيق
 
-/// @MainActor لأن `OrientationLock` مُعلَّم به، ونداءات UIApplicationDelegate
-/// تأتي على الخيط الرئيسي أصلاً.
 @MainActor
 final class AppDelegate: NSObject, UIApplicationDelegate {
 
-    /// الاتجاهات المقبولة من النظام. بدون هذا التفويض يتجاهل iOS قيمة
-    /// `OrientationLock.mask` ويعتمد Info.plist وحده (الذي يشمل الأفقي).
+    /// الاتجاهات المعتادة متاحة في التطبيق كله؛ لا يتم فرض الوضع الأفقي عند
+    /// فتح المشغّل ولا يتم قفل بقية الشاشات على الوضع العمودي.
     func application(_ application: UIApplication,
                      supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
-        // `playerVisible` يبدأ false، فالتطبيق يفتح عمودياً دائماً حتى لو أُغلق
-        // سابقاً داخل المشغّل وهو أفقي.
         OrientationLock.shared.mask
     }
 }

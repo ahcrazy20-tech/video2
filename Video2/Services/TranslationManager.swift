@@ -582,7 +582,7 @@ final class TranslationManager: ObservableObject {
                                 }
                                 if let arr = translationsByStart[startIdx],
                                    let b = batches.first(where: { $0.startIndex == startIdx }), !arr.isEmpty {
-                                    contextTail = Array(zip(b.texts.suffix(1), [arr.last ?? ""].map { ($0.0, $0.1.isEmpty ? $0.0 : $0.1) }))
+                                    contextTail = Array(zip(b.texts.suffix(1), arr.suffix(1).map { $0.isEmpty ? b.texts.last ?? "" : $0 }))
                                 }
                                 doneBatches += 1
                                 let db = doneBatches
