@@ -284,7 +284,8 @@ final class TranslationManager: ObservableObject {
                 let (chunks, dur) = try await AudioPipeline.extractChunks(
                     from: video.localURL,
                     into: dir,
-                    singleFile: singleFile) { [weak self] p in
+                    singleFile: singleFile,
+                    isHLS: video.kind == .hls || video.localURL.pathExtension.lowercased() == "m3u8") { [weak self] p in
                         Task { @MainActor in
                             self?.setJob(jobID) { j in
                                 if j.state == .extracting { j.progress = 0.02 + 0.10 * p }

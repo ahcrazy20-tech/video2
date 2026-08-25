@@ -847,9 +847,106 @@ enum AudioPipeline {
     // MARK: الاستخراج والتقطيع الصوتي
     // ═════════════════════════════════════════════════════════════════
 
+    /// نفس بوابة التحويل: قائمة HLS محلية (`file://`) لا يقرأها AVFoundation.
+    private static func isHLSPlaylist(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        if ext == "m3u8" || ext == "m3u" { return true }
+        guard let head = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        return head.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#EXTM3U")
+    }
+
+    private static func persistHLSSource(_ temporary: URL, into dir: URL) throws -> URL {
+        let ext: String
+        switch temporary.pathExtension.lowercased() {
+        case "m4a": ext = "m4a"
+        case "aac": ext = "aac"
+        default: ext = "mp4"
+        }
+        let destination = dir.appendingPathComponent("hls-source.\(ext)")
+        if temporary.standardizedFileURL == destination.standardizedFileURL {
+            return destination
+        }
+        try? FileManager.default.removeItem(at: destination)
+        do { try FileManager.default.moveItem(at: temporary, to: destination) }
+        catch { try FileManager.default.copyItem(at: temporary, to: destination) }
+        guard FileManager.default.fileExists(atPath: destination.path) else {
+            throw AudioPipelineError.exportFailed("فقد ملف HLS الصوتي المحوّل")
+        }
+        return destination
+    }
+
+    /// مسار الترجمة لـ HLS يجب أن يطابق التحويل: HTTP محلي + AVFoundation أولاً،
+    /// ثم استخراج MPEG-TS، ثم السحابة. لا نحتفظ بنسخة مخبأة غير قابلة للقراءة.
+    private static func resolveHLSAudioSource(playlist: URL,
+                                             into dir: URL,
+                                             progress: @escaping (Double) -> Void) async throws -> URL {
+        let candidates = [
+            dir.appendingPathComponent("hls-source.m4a"),
+            dir.appendingPathComponent("hls-source.aac"),
+            dir.appendingPathComponent("hls-source.mp4")
+        ]
+        for candidate in candidates {
+            guard FileManager.default.fileExists(atPath: candidate.path) else { continue }
+            if await isReadableAudio(candidate) {
+                print("[AudioPipeline] Using cached HLS audio \(candidate.lastPathComponent)")
+                return candidate
+            }
+            print("[AudioPipeline] Discarding unreadable HLS cache \(candidate.lastPathComponent)")
+            try? FileManager.default.removeItem(at: candidate)
+        }
+
+        progress(0.02)
+        var lastError: Error = AudioPipelineError.exportFailed("تعذّر استخراج صوت HLS")
+
+        do {
+            print("[AudioPipeline] ═══ Translation HLS: local HTTP + AVFoundation (same as convert)...")
+            let temporary = try await exportLocalHLSAudio(playlist)
+            guard await isReadableAudio(temporary) else {
+                try? FileManager.default.removeItem(at: temporary)
+                throw AudioPipelineError.exportFailed("تصدير AVFoundation أنتج ملفاً بلا مسار صوتي")
+            }
+            print("[AudioPipeline] ✅ Local HLS audio export succeeded")
+            return try persistHLSSource(temporary, into: dir)
+        } catch {
+            lastError = error
+            print("[AudioPipeline] ⚠️ Local HLS AVFoundation failed: \(error.localizedDescription)")
+        }
+
+        do {
+            print("[AudioPipeline] ═══ Translation HLS: local MPEG-TS AAC extract...")
+            let temporary = try await MPEGTSDemuxer.extractAudio(fromPlaylist: playlist)
+            guard await isReadableAudio(temporary) else {
+                try? FileManager.default.removeItem(at: temporary)
+                throw AudioPipelineError.exportFailed("ملف AAC المستخرج غير قابل للقراءة")
+            }
+            print("[AudioPipeline] ✅ Local MPEG-TS AAC extract succeeded")
+            return try persistHLSSource(temporary, into: dir)
+        } catch {
+            lastError = error
+            print("[AudioPipeline] ⚠️ MPEG-TS extract failed: \(error.localizedDescription)")
+        }
+
+        do {
+            print("[AudioPipeline] ═══ Translation HLS: cloud / remux fallbacks...")
+            let temporary = try await exportHLSToTempAudio(playlist)
+            guard await isReadableAudio(temporary) else {
+                try? FileManager.default.removeItem(at: temporary)
+                throw AudioPipelineError.exportFailed("ملف HLS المحوّل غير قابل للقراءة")
+            }
+            print("[AudioPipeline] ✅ HLS fallback conversion succeeded")
+            return try persistHLSSource(temporary, into: dir)
+        } catch {
+            lastError = error
+            print("[AudioPipeline] ⚠️ HLS fallbacks failed: \(error.localizedDescription)")
+        }
+
+        throw lastError
+    }
+
     static func extractChunks(from videoURL: URL,
                               into dir: URL,
                               singleFile: Bool,
+                              isHLS: Bool = false,
                               progress: @escaping (Double) -> Void) async throws -> (chunks: [AudioChunk], duration: Double) {
 
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -858,57 +955,11 @@ enum AudioPipeline {
         let manifestURL = dir.appendingPathComponent("chunks.json")
 
         var sourceURL = videoURL
-        // شريط التقدم داخل مرحلة الاستخراج: HLS MPEG-TS يحتاج معالجة إضافية.
-        // نطلب M4A فقط من CloudConvert بدلاً من MP4 كامل، لذلك لا نعيد ترميز
-        // الفيديو ولا ننزله ثانية من السحابة لمجرد تفريغ الصوت.
+        // شريط التقدم داخل مرحلة الاستخراج: HLS يحتاج معالجة إضافية قبل AVAssetReader.
         var progressBase: Double = 0
         var progressSpan: Double = 1
-        if videoURL.pathExtension.lowercased() == "m3u8" {
-            let audioCache = dir.appendingPathComponent("hls-source.m4a")
-            let aacCache = dir.appendingPathComponent("hls-source.aac")
-            let videoCache = dir.appendingPathComponent("hls-source.mp4")
-            let cached: URL
-            if FileManager.default.fileExists(atPath: audioCache.path) {
-                cached = audioCache
-            } else if FileManager.default.fileExists(atPath: aacCache.path) {
-                cached = aacCache
-            } else if FileManager.default.fileExists(atPath: videoCache.path) {
-                // توافق مع المهام التي بدأت قبل هذا التحديث.
-                cached = videoCache
-            } else {
-                progress(0.02)
-                let temporary: URL
-                do {
-                    print("[AudioPipeline] ═══ Trying local MPEG-TS AAC extract (no cloud)...")
-                    temporary = try await MPEGTSDemuxer.extractAudio(fromPlaylist: videoURL)
-                    print("[AudioPipeline] ✅ Local MPEG-TS AAC extract succeeded")
-                } catch {
-                    print("[AudioPipeline] ⚠️ MPEG-TS extract failed: \(error.localizedDescription)")
-                    do {
-                        print("[AudioPipeline] ═══ Trying local HLS → M4A via AVFoundation...")
-                        temporary = try await exportLocalHLSAudio(videoURL)
-                        print("[AudioPipeline] ✅ Local HLS audio export succeeded")
-                    } catch {
-                        print("[AudioPipeline] ⚠️ Local HLS audio export failed: \(error.localizedDescription) — using cloud fallbacks")
-                        temporary = try await exportHLSToTempAudio(videoURL)
-                    }
-                }
-                let ext: String
-                switch temporary.pathExtension.lowercased() {
-                case "m4a": ext = "m4a"
-                case "aac": ext = "aac"
-                default: ext = "mp4"
-                }
-                let destination = dir.appendingPathComponent("hls-source.\(ext)")
-                try? FileManager.default.removeItem(at: destination)
-                do { try FileManager.default.moveItem(at: temporary, to: destination) }
-                catch { try FileManager.default.copyItem(at: temporary, to: destination) }
-                cached = destination
-            }
-            guard FileManager.default.fileExists(atPath: cached.path) else {
-                throw AudioPipelineError.exportFailed("فقد ملف HLS الصوتي المحوّل")
-            }
-            sourceURL = cached
+        if isHLS || isHLSPlaylist(videoURL) {
+            sourceURL = try await resolveHLSAudioSource(playlist: videoURL, into: dir, progress: progress)
             progressBase = 0.4
             progressSpan = 0.6
             progress(progressBase)
@@ -1042,11 +1093,9 @@ enum AudioPipeline {
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("chunks", isDirectory: true))
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("hls-source.mp4"))
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("hls-source.m4a"))
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("hls-source.aac"))
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("merged.ts"))
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("chunks.json"))
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("duration.txt"))
-    }
-}
-tem(at: dir.appendingPathComponent("duration.txt"))
     }
 }
