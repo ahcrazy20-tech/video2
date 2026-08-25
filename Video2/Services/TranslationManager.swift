@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import UIKit
 
-/// مدير مهام الترجمة: طابور تسلسلي، حفظ واستئناف، تتبع تقدم لكل مرحلة.
+/// مدير مهام الترجمة: طابور تسلسلي، حفظ واستئناف، تتبع تقدم لكل مرحلة (استخراج -> تفريغ -> مراجعة وتدقيق نصوص -> ترجمة -> حفظ).
 @MainActor
 final class TranslationManager: ObservableObject {
 
@@ -92,6 +92,7 @@ final class TranslationManager: ObservableObject {
                   source: SubLang,
                   target: SubLang,
                   stt: STTProviderKind,
+                  refiner: SubtitleRefinerKind = .auto,
                   translator: TranslatorKind) {
 
         guard validationMessage(for: video, target: target) == nil else { return }
@@ -99,6 +100,7 @@ final class TranslationManager: ObservableObject {
         let resolvedSTT = Self.resolvedSTT(stt)
         guard Self.sttHasKey(resolvedSTT) != nil else { return }
 
+        let resolvedRefiner = SubtitleRefineService.resolved(provider: refiner)
         let resolvedTranslator = TranslateService.resolved(provider: translator)
 
         let job = TranslationJob(id: UUID(),
@@ -108,11 +110,14 @@ final class TranslationManager: ObservableObject {
                                  sourceLang: source,
                                  targetLang: target,
                                  sttProvider: resolvedSTT,
+                                 refinerProvider: resolvedRefiner,
                                  translator: resolvedTranslator,
                                  state: .queued,
                                  progress: 0,
                                  totalChunks: 0,
                                  doneChunks: 0,
+                                 totalRefineBatches: 0,
+                                 doneRefineBatches: 0,
                                  totalBatches: 0,
                                  doneBatches: 0,
                                  detectedLang: nil,
@@ -233,6 +238,7 @@ final class TranslationManager: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         // هل اكتمل التفريغ سابقاً؟ (إعادة ترجمة فقط بدون لمس الصوت)
+        let rawCuesURL = dir.appendingPathComponent("cues-raw.json")
         let cuesURL = dir.appendingPathComponent("cues.json")
         var allCues: [SubCue] = []
         var detected: String? = job.detectedLang
@@ -242,13 +248,17 @@ final class TranslationManager: ObservableObject {
         if let data = try? Data(contentsOf: cuesURL),
            let cached = try? JSONDecoder().decode([SubCue].self, from: data), !cached.isEmpty {
             allCues = cached
+        } else if let rawData = try? Data(contentsOf: rawCuesURL),
+                  let rawCached = try? JSONDecoder().decode([SubCue].self, from: rawData), !rawCached.isEmpty {
+            allCues = rawCached
         }
 
         do {
             // نتأكد من Gemini قبل أي استخراج HLS طويل. بعض مفاتيح المشاريع
             // تحتفظ باسم موديل قديم في الإعدادات فيظهر 404 بعد دقائق من التحويل.
             var verifiedGeminiModel: String?
-            if TranslateService.resolved(provider: job.translator) == .gemini {
+            if TranslateService.resolved(provider: job.translator) == .gemini ||
+                SubtitleRefineService.resolved(provider: job.refinerProvider) == .gemini {
                 setJob(jobID) { j in
                     j.state = .preparing
                     j.progress = min(max(j.progress, 0.01), 0.02)
@@ -258,10 +268,8 @@ final class TranslationManager: ObservableObject {
                 do {
                     verifiedGeminiModel = try await TranslateService.preflightGeminiModel()
                 } catch where TranslateService.isQuotaOrLimitError(error) {
-                    // حصة Gemini المجانية منتهية الآن: لا نُفشِل المهمة قبل استخراج
-                    // صوت قد يدوم دقائق — سلسلة التبديل ستنتقل لمزود آخر عند الترجمة.
                     setJob(jobID) { j in
-                        j.errorMessage = "Gemini وصل حدّه المجاني حالياً — سيُستخدم مزود بديل تلقائياً عند الترجمة."
+                        j.errorMessage = "Gemini وصل حدّه المجاني حالياً — سيُستخدم مزود بديل تلقائياً."
                     }
                     saveIndex()
                 }
@@ -288,21 +296,20 @@ final class TranslationManager: ObservableObject {
 
                 setJob(jobID) { j in
                     j.totalChunks = chunks.count
-                    j.progress = 0.13
+                    j.progress = 0.12
                 }
                 saveIndex()
             } else {
                 audioChunks = (try? JSONDecoder().decode([AudioChunk].self,
                                                          from: Data(contentsOf: dir.appendingPathComponent("chunks.json")))) ?? []
                 setJob(jobID) { j in
-                    j.state = .transcribing
                     j.cueCount = allCues.count
-                    j.progress = 0.72
+                    j.progress = 0.60
                 }
                 saveIndex()
             }
 
-            // ——— المرحلة 2: التفريغ ———
+            // ——— المرحلة 2: التفريغ الصوتي ———
             if allCues.isEmpty {
                 setJob(jobID) { $0.state = .transcribing }
                 saveIndex()
@@ -336,7 +343,7 @@ final class TranslationManager: ObservableObject {
                         j.totalChunks = 1
                         j.cueCount = allCues.count
                         j.errorMessage = nil
-                        j.progress = 0.72
+                        j.progress = 0.60
                     }
                 } else if job.sttProvider == .sttai {
                     let audioFile = dir.appendingPathComponent("chunks/audio-full.m4a")
@@ -356,7 +363,7 @@ final class TranslationManager: ObservableObject {
                         j.totalChunks = 1
                         j.cueCount = allCues.count
                         j.errorMessage = nil
-                        j.progress = 0.72
+                        j.progress = 0.60
                     }
                 } else if job.sttProvider == .speechmatics {
                     let audioFile = dir.appendingPathComponent("chunks/audio-full.m4a")
@@ -376,10 +383,9 @@ final class TranslationManager: ObservableObject {
                         j.totalChunks = 1
                         j.cueCount = allCues.count
                         j.errorMessage = nil
-                        j.progress = 0.72
+                        j.progress = 0.60
                     }
                 } else if job.sttProvider == .siliconflow {
-                    // SiliconFlow SenseVoice - تقطيع لأجزاء متوازية
                     let chunksDir = dir.appendingPathComponent("chunks", isDirectory: true)
                     var pending: [AudioChunk] = []
                     var doneCount = 0
@@ -412,7 +418,7 @@ final class TranslationManager: ObservableObject {
                                 self?.setJob(jobID) { j in
                                     j.doneChunks += 1
                                     let total = max(1, j.totalChunks)
-                                    j.progress = 0.13 + 0.57 * Double(j.doneChunks) / Double(total)
+                                    j.progress = 0.12 + 0.48 * Double(j.doneChunks) / Double(total)
                                 }
                                 self?.saveIndex()
                             }
@@ -428,10 +434,9 @@ final class TranslationManager: ObservableObject {
                     setJob(jobID) { j in
                         j.detectedLang = detected
                         j.cueCount = allCues.count
-                        j.progress = 0.70
+                        j.progress = 0.60
                     }
                 } else {
-                    // Groq مع تخطّي الأجزاء المفرّغة سابقاً (استئناف)
                     let chunksDir = dir.appendingPathComponent("chunks", isDirectory: true)
                     var pending: [AudioChunk] = []
                     var doneCount = 0
@@ -462,12 +467,11 @@ final class TranslationManager: ObservableObject {
                                 self?.setJob(jobID) { j in
                                     j.doneChunks += 1
                                     let total = max(1, j.totalChunks)
-                                    j.progress = 0.13 + 0.57 * Double(j.doneChunks) / Double(total)
+                                    j.progress = 0.12 + 0.48 * Double(j.doneChunks) / Double(total)
                                 }
                                 self?.saveIndex()
                             }
                         } chunkResult: { idx, cues, lang in
-                            // حفظ فوري لكل جزء = استئناف من نفس النقطة
                             if let data = try? JSONEncoder().encode(cues) {
                                 try? data.write(to: dir.appendingPathComponent("stt-\(String(format: "%03d", idx)).json"), options: .atomic)
                             }
@@ -479,7 +483,7 @@ final class TranslationManager: ObservableObject {
                     setJob(jobID) { j in
                         j.detectedLang = detected
                         j.cueCount = allCues.count
-                        j.progress = 0.70
+                        j.progress = 0.60
                     }
                 }
 
@@ -487,13 +491,174 @@ final class TranslationManager: ObservableObject {
                     throw APIError(status: 0, body: "لم يُكتشف أي كلام قابل للتفريغ في الفيديو.")
                 }
 
-                // حفظ الجُمل المدمجة (تُستخدم مباشرة عند إعادة الترجمة)
+                // حفظ النص الخام الأصلي للتفريغ
+                if let rawData = try? JSONEncoder().encode(allCues) {
+                    try? rawData.write(to: rawCuesURL, options: .atomic)
+                }
+            }
+
+            // ——— المرحلة 3: مراجعة وتدقيق نصوص التفريغ بالذكاء الاصطناعي ———
+            let resolvedRefiner = SubtitleRefineService.resolved(provider: job.refinerProvider)
+            if resolvedRefiner != .off {
+                setJob(jobID) { $0.state = .refining }
+                saveIndex()
+
+                let refineBatches = SubtitleRefineService.makeBatches(cues: allCues)
+                setJob(jobID) { j in
+                    j.totalRefineBatches = refineBatches.count
+                }
+                saveIndex()
+
+                var refinedByStart: [Int: [String]] = [:]
+                for b in refineBatches {
+                    let f = dir.appendingPathComponent("refine-\(b.startIndex).json")
+                    if let data = try? Data(contentsOf: f),
+                       let cached = try? JSONDecoder().decode([String].self, from: data),
+                       cached.count == b.cueIDs.count {
+                        refinedByStart[b.startIndex] = cached
+                    }
+                }
+
+                let pendingRefine = refineBatches.filter { refinedByStart[$0.startIndex] == nil }
+                var doneRefine = refineBatches.count - pendingRefine.count
+                setJob(jobID) { j in
+                    j.doneRefineBatches = doneRefine
+                    let total = max(1, j.totalRefineBatches)
+                    j.progress = 0.60 + 0.15 * Double(doneRefine) / Double(total)
+                }
+
+                let refineChain = SubtitleRefineService.failoverChain(from: job.refinerProvider)
+                if !refineChain.isEmpty && refineChain != [.off] {
+                    var rChainIndex = 0
+                    var activeRefineConfig = SubtitleRefineService.Config(
+                        provider: refineChain[0],
+                        model: SubtitleRefineService.modelSelection(for: refineChain[0],
+                                                                    geminiOverride: verifiedGeminiModel),
+                        temperature: 0.1,
+                        maxOutputTokens: 4096
+                    )
+                    var currentRefineProviderName = SubtitleRefineService.providerName(refineChain[0])
+
+                    func runRefineWindow(_ window: [SubtitleRefineService.Batch],
+                                         tail: [String],
+                                         source: SubLang,
+                                         title: String) async throws {
+                        while true {
+                            do {
+                                let cfg = activeRefineConfig
+                                try await withThrowingTaskGroup(of: (Int, [String]).self) { group in
+                                    for batch in window {
+                                        group.addTask {
+                                            let out = try await SubtitleRefineService.refineBatch(
+                                                config: cfg,
+                                                batch: batch,
+                                                contextTail: tail,
+                                                source: source,
+                                                videoTitle: title)
+                                            return (batch.startIndex, out)
+                                        }
+                                    }
+                                    for try await (startIdx, refined) in group {
+                                        refinedByStart[startIdx] = refined
+                                        if let data = try? JSONEncoder().encode(refined) {
+                                            try? data.write(to: dir.appendingPathComponent("refine-\(startIdx).json"), options: .atomic)
+                                        }
+                                        doneRefine += 1
+                                        let dr = doneRefine
+                                        let totalR = max(1, refineBatches.count)
+                                        let label = currentRefineProviderName
+                                        setJob(jobID) { j in
+                                            j.doneRefineBatches = dr
+                                            j.progress = 0.60 + 0.15 * Double(dr) / Double(totalR)
+                                            if dr < totalR {
+                                                j.errorMessage = "\(label): اكتملت مراجعة الدفعة \(dr) من \(totalR)…"
+                                            } else {
+                                                j.errorMessage = nil
+                                            }
+                                        }
+                                    }
+                                }
+                                return
+                            } catch where Task.isCancelled {
+                                throw CancellationError()
+                            } catch {
+                                guard SubtitleRefineService.isQuotaOrLimitError(error),
+                                      rChainIndex + 1 < refineChain.count else {
+                                    // إذا فشل المزود ولا يوجد بديل، نكمل بالنص الأصلي دون إسقاط المهمة
+                                    break
+                                }
+                                let failed = SubtitleRefineService.providerName(refineChain[rChainIndex])
+                                rChainIndex += 1
+                                let next = refineChain[rChainIndex]
+                                activeRefineConfig = SubtitleRefineService.Config(
+                                    provider: next,
+                                    model: SubtitleRefineService.modelSelection(for: next),
+                                    temperature: 0.1,
+                                    maxOutputTokens: 4096)
+                                currentRefineProviderName = SubtitleRefineService.providerName(next)
+                                let note = "\(failed) وصل حدّه — تحوّل تلقائي إلى \(currentRefineProviderName) لمراجعة النصوص…"
+                                setJob(jobID) { j in j.errorMessage = note }
+                                saveIndex()
+                                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                            }
+                        }
+                    }
+
+                    var rw = 0
+                    var refineContextTail: [String] = []
+                    while rw < pendingRefine.count {
+                        if Task.isCancelled { throw CancellationError() }
+                        let span = min(rw + 2, pendingRefine.count)
+                        let window = Array(pendingRefine[rw..<span])
+                        rw += window.count
+                        let firstInFlight = doneRefine + 1
+                        let lastInFlight = min(doneRefine + window.count, refineBatches.count)
+                        let label = currentRefineProviderName
+                        setJob(jobID) { j in
+                            if firstInFlight == lastInFlight {
+                                j.errorMessage = "\(label): جارٍ مراجعة وتدقيق الدفعة \(firstInFlight) من \(refineBatches.count)…"
+                            } else {
+                                j.errorMessage = "\(label): جارٍ مراجعة الدفعات \(firstInFlight)–\(lastInFlight) من \(refineBatches.count)…"
+                            }
+                        }
+                        saveIndex()
+                        try await runRefineWindow(window,
+                                                  tail: refineContextTail,
+                                                  source: job.sourceLang,
+                                                  title: job.videoTitle)
+                        if let lastStart = window.map(\.startIndex).max(),
+                           let arr = refinedByStart[lastStart], let lastLine = arr.last, !lastLine.isEmpty {
+                            refineContextTail.append(lastLine)
+                        }
+                        saveIndex()
+                    }
+
+                    // تطبيق النصوص المراجعة على مصفوفة الجمل
+                    for b in refineBatches {
+                        guard let arr = refinedByStart[b.startIndex] else { continue }
+                        for (offset, cueID) in b.cueIDs.enumerated() {
+                            if let idx = allCues.firstIndex(where: { $0.id == cueID }) {
+                                let t = arr[offset].trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !t.isEmpty {
+                                    allCues[idx].text = t
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // حفظ الجمل بعد المراجعة
+                if let data = try? JSONEncoder().encode(allCues) {
+                    try? data.write(to: cuesURL, options: .atomic)
+                }
+            } else {
+                // حفظ الجمل مباشرة بدون مراجعة
                 if let data = try? JSONEncoder().encode(allCues) {
                     try? data.write(to: cuesURL, options: .atomic)
                 }
             }
 
-            // ——— المرحلة 3: الترجمة ———
+            // ——— المرحلة 4: الترجمة النصية السياقية ———
             setJob(jobID) { $0.state = .translating }
             saveIndex()
 
@@ -520,7 +685,7 @@ final class TranslationManager: ObservableObject {
             setJob(jobID) { j in
                 j.doneBatches = doneBatches
                 let total = max(1, j.totalBatches)
-                j.progress = 0.70 + 0.24 * Double(doneBatches) / Double(total)
+                j.progress = 0.75 + 0.20 * Double(doneBatches) / Double(total)
             }
 
             var contextTail: [(String, String)] = []
@@ -533,9 +698,6 @@ final class TranslationManager: ObservableObject {
                 }
             }
 
-            // لكل مزود موديله المستقل؛ يمنع إرسال اسم موديل Gemini إلى مزود آخر.
-            // سلسلة تبديل: المزود المطلوب أولاً ثم أي مزود آخر يملك مفتاحاً —
-            // فلو نفدت حصة Gemini المجانية اليومية تنتقل المهمة تلقائياً بدل السقوط.
             let chain = TranslateService.failoverChain(from: job.translator)
             guard !chain.isEmpty else {
                 throw APIError(status: 401,
@@ -552,8 +714,6 @@ final class TranslationManager: ObservableObject {
             var currentProviderName = TranslateService.providerName(chain[0])
             var maxConcurrentBatches = chain[0] == .gemini ? 1 : 2
 
-            /// يحاول الدفعة على المزود الحالي، وعند نفاد حصته ينتقل للتالي في
-            /// السلسلة ويعيد نفس الدفعة — فلا يُفقد أي تقدم ولا تسقط المهمة.
             func runWindow(_ window: [TranslateService.Batch],
                            tail: [(String, String)],
                            source: SubLang,
@@ -590,7 +750,7 @@ final class TranslationManager: ObservableObject {
                                 let label = currentProviderName
                                 setJob(jobID) { j in
                                     j.doneBatches = db
-                                    j.progress = 0.70 + 0.24 * Double(db) / Double(totalB)
+                                    j.progress = 0.75 + 0.20 * Double(db) / Double(totalB)
                                     if db < totalB {
                                         j.errorMessage = "\(label): اكتملت الدفعة \(db) من \(totalB)…"
                                     } else {
@@ -618,7 +778,6 @@ final class TranslationManager: ObservableObject {
                         let note = "\(failed) وصل حدّه المجاني — تحوّل تلقائي إلى \(currentProviderName) (\(chainIndex + 1)/\(chainCount)) والمتابعة من نفس النقطة…"
                         setJob(jobID) { j in j.errorMessage = note }
                         saveIndex()
-                        // حدّ المزود الجديد قد لا يكون قد اتّسع بعد: انتظار قصير قبل الإعادة.
                         try? await Task.sleep(nanoseconds: 5_000_000_000)
                     }
                 }
@@ -648,11 +807,9 @@ final class TranslationManager: ObservableObject {
                                     title: job.videoTitle)
                 saveIndex()
             }
-            // حفظ آخر مزود نجح فعلياً ليعرفه المستخدم في الملخص.
             if job.translator != chain[chainIndex] {
                 setJob(jobID) { j in j.translator = chain[chainIndex] }
             }
-
 
             for b in batches {
                 guard let arr = translationsByStart[b.startIndex] else { continue }
@@ -664,7 +821,7 @@ final class TranslationManager: ObservableObject {
                 }
             }
 
-            // ——— المرحلة 4: الحفظ ———
+            // ——— المرحلة 5: الحفظ ———
             setJob(jobID) { $0.state = .saving; $0.progress = 0.95 }
             saveIndex()
 
@@ -718,6 +875,33 @@ final class TranslationManager: ObservableObject {
             }
             saveIndex()
         }
+    }
+
+    // MARK: حفظ ترجمات معدلة يدوياً
+
+    func saveEditedSubtitles(video: SavedVideo, cues: [SubCue]) {
+        let subsDir = LibraryStore.documents.appendingPathComponent("Subtitles", isDirectory: true)
+        let videoSubsDir = subsDir.appendingPathComponent(video.id.uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: videoSubsDir, withIntermediateDirectories: true)
+        let lang = video.subtitleTargetLang ?? "ar"
+        let origURL = videoSubsDir.appendingPathComponent("orig.srt")
+        let targetURL = videoSubsDir.appendingPathComponent("\(lang).srt")
+        let biURL = videoSubsDir.appendingPathComponent("\(lang)-bilingual.srt")
+
+        try? SubtitleCodec.writeSRT(cues, translated: false, bilingual: false)
+            .write(to: origURL, atomically: true, encoding: .utf8)
+        try? SubtitleCodec.writeSRT(cues, translated: true, bilingual: false)
+            .write(to: targetURL, atomically: true, encoding: .utf8)
+        try? SubtitleCodec.writeSRT(cues, translated: false, bilingual: true)
+            .write(to: biURL, atomically: true, encoding: .utf8)
+
+        var updated = video
+        updated.subtitleFiles = [
+            "orig": "Subtitles/\(video.id.uuidString)/orig.srt",
+            "target": "Subtitles/\(video.id.uuidString)/\(lang).srt",
+            "bilingual": "Subtitles/\(video.id.uuidString)/\(lang)-bilingual.srt"
+        ]
+        library?.update(updated)
     }
 
     // MARK: إعدادات

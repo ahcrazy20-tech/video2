@@ -137,9 +137,12 @@ enum L10n {
         "tv.new.target.lang": "لغة الترجمة",
         "tv.new.providers": "مزودو الخدمة",
         "tv.new.stt": "التفريغ الصوتي",
+        "tv.new.refiner": "مراجعة وتدقيق النصوص",
         "tv.new.translator": "الترجمة النصية",
         "tv.new.start": "بدء الترجمة",
         "tv.new.footer": "يُحفظ كل جزء فور اكتماله، ويمكن إيقاف المهمة واستئنافها لاحقاً من نفس النقطة.",
+        "tv.review.title": "مراجعة وتعديل الترجمة",
+        "tv.review.ai": "تدقيق بالذكاء الاصطناعي",
 
         // MARK: Format Conversion
         "fc.title": "تحويل الصيغ",
@@ -433,9 +436,12 @@ enum L10n {
         "tv.new.target.lang": "Translation language",
         "tv.new.providers": "Service providers",
         "tv.new.stt": "Speech transcription",
+        "tv.new.refiner": "Text Refinement & Review",
         "tv.new.translator": "Text translation",
         "tv.new.start": "Start translation",
         "tv.new.footer": "Each chunk is saved as soon as it finishes. You can pause the job and resume later from the same point.",
+        "tv.review.title": "Review & Edit Subtitles",
+        "tv.review.ai": "AI Review",
 
         // MARK: Format Conversion
         "fc.title": "Convert formats",

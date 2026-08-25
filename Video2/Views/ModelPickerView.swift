@@ -19,6 +19,7 @@ struct ModelPickerView: View {
     enum ModelPurpose: String, CaseIterable, Identifiable {
         case translation
         case transcription
+        case refinement
         case tts
         case any
 
@@ -28,6 +29,7 @@ struct ModelPickerView: View {
             switch self {
             case .translation: return "الترجمة النصية"
             case .transcription: return "التفريغ الصوتي"
+            case .refinement: return "مراجعة وتدقيق النصوص"
             case .tts: return "تحويل النص إلى كلام (دبلجة)"
             case .any: return "أي استخدام"
             }
@@ -36,7 +38,7 @@ struct ModelPickerView: View {
         /// الفلاتر الافتراضية لكل غرض
         var defaultCapabilities: [ModelCapability] {
             switch self {
-            case .translation: return [.translation]
+            case .translation, .refinement: return [.translation]
             case .transcription: return [.transcription]
             case .tts: return [.tts]
             case .any: return []
@@ -48,6 +50,7 @@ struct ModelPickerView: View {
             switch self {
             case .translation: return "translator.model"
             case .transcription: return "stt.model"
+            case .refinement: return "refiner.model"
             case .tts: return "tts.model"
             case .any: return "model.generic"
             }
@@ -78,14 +81,8 @@ struct ModelPickerView: View {
                 }
                 .searchable(text: $searchText, prompt: "ابحث في الموديلات")
         }
-        // نحافظ على إحداثيات الشاشة LTR هنا لأن iOS 16 كان يعكس الـ List كاملة
-        // داخل الـ sheet في الواجهة العربية (فتظهر حتى أسماء الموديلات بالمقلوب).
-        // النص العربي نفسه يظل يُرسم RTL تلقائياً بواسطة Unicode.
         .environment(\.layoutDirection, .leftToRight)
         .task {
-            // اجلب الموديلات تلقائياً عند الفتح إذا لم تكن محفوظة.
-            // OpenRouter: قائمته المجانية تتغيّر باستمرار — لو القائمة
-            // المحفوظة قديمة (> TTL) نحدّثها لنعرض ما هو مجاني فعلياً الآن.
             if catalog.models(for: provider).isEmpty
                 || (provider.hasLiveFreeCatalog && catalog.isStale(provider)) {
                 await catalog.refresh(provider)
@@ -94,8 +91,6 @@ struct ModelPickerView: View {
     }
 
     @ViewBuilder private var content: some View {
-        // مزوّدات القائمة الثابتة (OpenRouter/Cerebras/SambaNova) نسمح بمقارنة
-        // موديلاتها وحصصها قبل حفظ المفتاح، بينما يبقى التشغيل/اختبار المفتاح محمياً.
         if !provider.isAvailable && !provider.hasStaticCatalog {
             missingKeyView
         } else if let error = catalog.lastError[provider], catalog.models(for: provider).isEmpty {
@@ -269,6 +264,7 @@ struct ModelPickerView: View {
         switch purpose {
         case .translation: return "translator"
         case .transcription: return "stt"
+        case .refinement: return "refiner"
         case .tts: return "tts"
         case .any: return "generic"
         }

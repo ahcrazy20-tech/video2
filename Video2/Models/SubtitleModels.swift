@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Cue (سطر ترجمة واحد بتوقيته)
 
-struct SubCue: Codable, Equatable, Sendable {
+struct SubCue: Codable, Equatable, Sendable, Identifiable {
     var id: Int
     var start: Double
     var end: Double
@@ -148,6 +148,60 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - مزودو مراجعة وتدقيق نصوص التفريغ (Speech-to-Text Refinement & Proofreading)
+
+enum SubtitleRefinerKind: String, Codable, CaseIterable, Identifiable {
+    case auto, gemini, groqLLM, cerebras, sambaNova, openRouter, off
+    var id: String { rawValue }
+
+    var titleAR: String {
+        switch self {
+        case .auto: return "تلقائي (الأفضل المتاح)"
+        case .gemini: return "Gemini (مراجعة سياقية دقيقة)"
+        case .groqLLM: return "Groq LLM (GPT-OSS 120B — فائق السرعة)"
+        case .cerebras: return "Cerebras (سريع — مليون token/يوم)"
+        case .sambaNova: return "SambaNova (DeepSeek V3.2 — رصيد مجاني)"
+        case .openRouter: return "OpenRouter (موديلات مجانية :free)"
+        case .off: return "إيقاف المراجعة (ترجمة مباشرة)"
+        }
+    }
+
+    var detailAR: String {
+        switch self {
+        case .auto:
+            return "يبدأ بأفضل مزود متاح (Gemini ثم Groq ثم Cerebras ثم SambaNova ثم OpenRouter) لمراجعة نصوص التفريغ، إكمال الكلمات الناقصة، تصحيح الأخطاء الصوتية، وإزالة الهلاوس والتكرار قبل الترجمة."
+        case .gemini:
+            return "مراجعة سياقية ذكية تفهم المصطلحات وتكمل الجمل غير المكتملة عبر Google AI Studio مجاناً بدون فيزا."
+        case .groqLLM:
+            return "تدقيق فائق السرعة عبر GPT-OSS 120B أو Qwen على Groq بنفس مفتاح التفريغ."
+        case .cerebras:
+            return "مليون token/يوم مجاناً وسريع جداً عبر Llama 3.1 70B أو Qwen3 بدون فيزا."
+        case .sambaNova:
+            return "تدقيق عالي الجودة للسياق عبر DeepSeek V3.2 أو Llama 3.3 ضمن الرصيد المجاني."
+        case .openRouter:
+            return "قائمة حية من الموديلات المجانية (:free) لمراجعة وتدقيق النصوص بدون فيزا."
+        case .off:
+            return "تخطي مرحلة مراجعة التفريغ والانتقال مباشرة إلى الترجمة بدون تدقيق."
+        }
+    }
+
+    var keyID: String? {
+        switch self {
+        case .auto, .off: return nil
+        case .gemini: return "gemini"
+        case .groqLLM: return "groq"
+        case .cerebras: return "cerebras"
+        case .sambaNova: return "sambanova"
+        case .openRouter: return "openrouter"
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let raw = (try? decoder.singleValueContainer().decode(String.self)) ?? ""
+        self = SubtitleRefinerKind(rawValue: raw) ?? .auto
+    }
+}
+
 // MARK: - مزودو الترجمة النصية
 
 enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
@@ -214,6 +268,7 @@ enum TranslationPhase: String, Codable {
     case preparing
     case extracting
     case transcribing
+    case refining     // مراجعة وتدقيق نصوص التفريغ قبل الترجمة
     case translating
     case saving
     case done
@@ -227,6 +282,7 @@ enum TranslationPhase: String, Codable {
         case .preparing: return "تحضير"
         case .extracting: return "استخراج الصوت وتقطيعه"
         case .transcribing: return "تفريغ الكلام إلى نص"
+        case .refining: return "مراجعة وتدقيق النصوص"
         case .translating: return "ترجمة النصوص"
         case .saving: return "حفظ ملفات الترجمة"
         case .done: return "اكتملت الترجمة"
@@ -238,7 +294,7 @@ enum TranslationPhase: String, Codable {
 
     var isBusy: Bool {
         switch self {
-        case .queued, .preparing, .extracting, .transcribing, .translating, .saving: return true
+        case .queued, .preparing, .extracting, .transcribing, .refining, .translating, .saving: return true
         default: return false
         }
     }
@@ -261,12 +317,15 @@ struct TranslationJob: Identifiable, Codable, Hashable {
     var sourceLang: SubLang
     var targetLang: SubLang
     var sttProvider: STTProviderKind
+    var refinerProvider: SubtitleRefinerKind
     var translator: TranslatorKind
 
     var state: TranslationPhase
     var progress: Double
     var totalChunks: Int
     var doneChunks: Int
+    var totalRefineBatches: Int
+    var doneRefineBatches: Int
     var totalBatches: Int
     var doneBatches: Int
     var detectedLang: String?
@@ -279,15 +338,103 @@ struct TranslationJob: Identifiable, Codable, Hashable {
     var createdAt: Date
     var finishedAt: Date?
 
+    enum CodingKeys: String, CodingKey {
+        case id, videoID, videoTitle, isHLS, sourceLang, targetLang
+        case sttProvider, refinerProvider, translator
+        case state, progress, totalChunks, doneChunks
+        case totalRefineBatches, doneRefineBatches
+        case totalBatches, doneBatches, detectedLang, cueCount
+        case assemblyTranscriptID, errorMessage, createdAt, finishedAt
+    }
+
+    init(id: UUID = UUID(),
+         videoID: UUID,
+         videoTitle: String,
+         isHLS: Bool,
+         sourceLang: SubLang,
+         targetLang: SubLang,
+         sttProvider: STTProviderKind,
+         refinerProvider: SubtitleRefinerKind = .auto,
+         translator: TranslatorKind,
+         state: TranslationPhase,
+         progress: Double,
+         totalChunks: Int,
+         doneChunks: Int,
+         totalRefineBatches: Int = 0,
+         doneRefineBatches: Int = 0,
+         totalBatches: Int,
+         doneBatches: Int,
+         detectedLang: String?,
+         cueCount: Int,
+         assemblyTranscriptID: String? = nil,
+         errorMessage: String? = nil,
+         createdAt: Date = Date(),
+         finishedAt: Date? = nil) {
+        self.id = id
+        self.videoID = videoID
+        self.videoTitle = videoTitle
+        self.isHLS = isHLS
+        self.sourceLang = sourceLang
+        self.targetLang = targetLang
+        self.sttProvider = sttProvider
+        self.refinerProvider = refinerProvider
+        self.translator = translator
+        self.state = state
+        self.progress = progress
+        self.totalChunks = totalChunks
+        self.doneChunks = doneChunks
+        self.totalRefineBatches = totalRefineBatches
+        self.doneRefineBatches = doneRefineBatches
+        self.totalBatches = totalBatches
+        self.doneBatches = doneBatches
+        self.detectedLang = detectedLang
+        self.cueCount = cueCount
+        self.assemblyTranscriptID = assemblyTranscriptID
+        self.errorMessage = errorMessage
+        self.createdAt = createdAt
+        self.finishedAt = finishedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.videoID = try container.decode(UUID.self, forKey: .videoID)
+        self.videoTitle = try container.decode(String.self, forKey: .videoTitle)
+        self.isHLS = try container.decodeIfPresent(Bool.self, forKey: .isHLS) ?? false
+        self.sourceLang = try container.decodeIfPresent(SubLang.self, forKey: .sourceLang) ?? .auto
+        self.targetLang = try container.decodeIfPresent(SubLang.self, forKey: .targetLang) ?? .ar
+        self.sttProvider = try container.decodeIfPresent(STTProviderKind.self, forKey: .sttProvider) ?? .auto
+        self.refinerProvider = try container.decodeIfPresent(SubtitleRefinerKind.self, forKey: .refinerProvider) ?? .auto
+        self.translator = try container.decodeIfPresent(TranslatorKind.self, forKey: .translator) ?? .auto
+        self.state = try container.decodeIfPresent(TranslationPhase.self, forKey: .state) ?? .queued
+        self.progress = try container.decodeIfPresent(Double.self, forKey: .progress) ?? 0
+        self.totalChunks = try container.decodeIfPresent(Int.self, forKey: .totalChunks) ?? 0
+        self.doneChunks = try container.decodeIfPresent(Int.self, forKey: .doneChunks) ?? 0
+        self.totalRefineBatches = try container.decodeIfPresent(Int.self, forKey: .totalRefineBatches) ?? 0
+        self.doneRefineBatches = try container.decodeIfPresent(Int.self, forKey: .doneRefineBatches) ?? 0
+        self.totalBatches = try container.decodeIfPresent(Int.self, forKey: .totalBatches) ?? 0
+        self.doneBatches = try container.decodeIfPresent(Int.self, forKey: .doneBatches) ?? 0
+        self.detectedLang = try container.decodeIfPresent(String.self, forKey: .detectedLang)
+        self.cueCount = try container.decodeIfPresent(Int.self, forKey: .cueCount) ?? 0
+        self.assemblyTranscriptID = try container.decodeIfPresent(String.self, forKey: .assemblyTranscriptID)
+        self.errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
+        self.createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        self.finishedAt = try container.decodeIfPresent(Date.self, forKey: .finishedAt)
+    }
+
     var statusLineAR: String {
         switch state {
         case .extracting:
             return "استخراج الصوت…"
         case .transcribing:
             return totalChunks > 0 ? "التفريغ: \(doneChunks)/\(totalChunks) جزء" : "التفريغ…"
+        case .refining:
+            if let active = errorMessage,
+               active.contains("جارٍ مراجعة") || active.contains("اكتملت مراجعة") {
+                return active
+            }
+            return totalRefineBatches > 0 ? "المراجعة: \(doneRefineBatches)/\(totalRefineBatches) دفعة" : "مراجعة وتدقيق النصوص…"
         case .translating:
-            // لا نعرض 0/N وحدها أثناء انتظار أول رد من المزود: هي صحيحة حسابياً
-            // لكنها توحي بأن المهمة علقت. مدير الترجمة يضع وصف الدفعة المرسلة هنا.
             if let active = errorMessage,
                active.contains("جارٍ إرسال") || active.contains("اكتملت الدفعة") {
                 return active

@@ -8,6 +8,7 @@ struct TranslateView: View {
     @EnvironmentObject var library: LibraryStore
     @EnvironmentObject var lang: LanguageStore
     @State private var showNewJob = false
+    @State private var reviewVideo: SavedVideo? = nil
 
     var body: some View {
         NavigationStack {
@@ -35,7 +36,11 @@ struct TranslateView: View {
                 } else {
                     List {
                         ForEach(translations.jobs) { job in
-                            TranslationJobRow(job: job)
+                            TranslationJobRow(job: job, onOpenReview: {
+                                if let v = library.videos.first(where: { $0.id == job.videoID }) {
+                                    reviewVideo = v
+                                }
+                            })
                         }
                         .onDelete { indexSet in
                             for i in indexSet.sorted(by: >) {
@@ -64,6 +69,12 @@ struct TranslateView: View {
                     .environmentObject(library)
                     .environmentObject(lang)
             }
+            .sheet(item: $reviewVideo) { v in
+                SubtitleReviewView(video: v)
+                    .environmentObject(library)
+                    .environmentObject(lang)
+                    .environmentObject(translations)
+            }
         }
     }
 }
@@ -72,8 +83,10 @@ struct TranslateView: View {
 
 struct TranslationJobRow: View {
     @EnvironmentObject private var translations: TranslationManager
+    @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var lang: LanguageStore
     let job: TranslationJob
+    var onOpenReview: (() -> Void)? = nil
 
     private var progress: Double {
         min(max(job.progress, 0), 1)
@@ -87,9 +100,13 @@ struct TranslationJobRow: View {
         job.state == .done || job.state == .paused || job.state == .failed || job.state == .cancelled
     }
 
+    private var hasSubtitlesReady: Bool {
+        job.state == .done || job.cueCount > 0
+    }
+
     private func isLiveTranslationStatus(_ message: String) -> Bool {
-        job.state == .translating &&
-        (message.contains("جارٍ إرسال") || message.contains("اكتملت الدفعة"))
+        (job.state == .translating && (message.contains("جارٍ إرسال") || message.contains("اكتملت الدفعة"))) ||
+        (job.state == .refining && (message.contains("جارٍ مراجعة") || message.contains("اكتملت مراجعة")))
     }
 
     var body: some View {
@@ -157,6 +174,16 @@ struct TranslationJobRow: View {
                     .controlSize(.small)
                 }
 
+                if hasSubtitlesReady, let onOpenReview {
+                    Button {
+                        onOpenReview()
+                    } label: {
+                        Label("مراجعة وتعديل", systemImage: "pencil.and.list.clipboard")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
                 if canDelete {
                     Spacer(minLength: 0)
                     Button(role: .destructive) {
@@ -175,8 +202,9 @@ struct TranslationJobRow: View {
 
     private var providerLine: String {
         let stt = job.sttProvider.titleAR
+        let refiner = job.refinerProvider == .off ? "بدون تدقيق" : SubtitleRefineService.providerName(job.refinerProvider)
         let translator = TranslateService.providerName(job.translator)
-        return "\(stt) · \(translator) · \(job.targetLang.nameAR)"
+        return "\(stt) · مراجعة: \(refiner) · ترجمة: \(translator) · \(job.targetLang.nameAR)"
     }
 
     private var iconName: String {
@@ -185,6 +213,8 @@ struct TranslationJobRow: View {
         case .failed: return "exclamationmark.triangle.fill"
         case .paused, .cancelled: return "pause.circle.fill"
         case .queued: return "clock.fill"
+        case .refining: return "sparkles"
+        case .translating: return "globe"
         default: return "waveform.and.mic"
         }
     }
@@ -194,6 +224,8 @@ struct TranslationJobRow: View {
         case .done: return .green
         case .failed: return .red
         case .paused, .cancelled: return .orange
+        case .refining: return V2Theme.gold
+        case .translating: return V2Theme.mint
         default: return V2Theme.gold
         }
     }
@@ -208,6 +240,7 @@ struct NewTranslationView: View {
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("stt.provider") private var sttProviderRaw: String = STTProviderKind.auto.rawValue
+    @AppStorage("refiner.provider") private var refinerProviderRaw: String = SubtitleRefinerKind.auto.rawValue
     @AppStorage("tr.provider") private var translatorRaw: String = TranslatorKind.auto.rawValue
 
     private let preselected: SavedVideo?
@@ -232,12 +265,20 @@ struct NewTranslationView: View {
         STTProviderKind(rawValue: sttProviderRaw) ?? .auto
     }
 
+    private var refinerProvider: SubtitleRefinerKind {
+        SubtitleRefinerKind(rawValue: refinerProviderRaw) ?? .auto
+    }
+
     private var translator: TranslatorKind {
         TranslatorKind(rawValue: translatorRaw) ?? .auto
     }
 
     private var resolvedSTT: STTProviderKind {
         TranslationManager.resolvedSTT(sttProvider)
+    }
+
+    private var resolvedRefiner: SubtitleRefinerKind {
+        SubtitleRefineService.resolved(provider: refinerProvider)
     }
 
     private var resolvedTranslator: TranslatorKind {
@@ -370,6 +411,7 @@ struct NewTranslationView: View {
 
     private var providerSection: some View {
         Section(lang.t("tv.new.providers")) {
+            // مزود التفريغ
             Picker(lang.t("tv.new.stt"), selection: $sttProviderRaw) {
                 ForEach(STTProviderKind.allCases) { provider in
                     Text(provider.titleAR).tag(provider.rawValue)
@@ -379,6 +421,17 @@ struct NewTranslationView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
+            // مزود مراجعة وتدقيق النصوص
+            Picker("مراجعة وتدقيق النصوص", selection: $refinerProviderRaw) {
+                ForEach(SubtitleRefinerKind.allCases) { provider in
+                    Text(provider.titleAR).tag(provider.rawValue)
+                }
+            }
+            Text(refinerProvider == .auto ? SubtitleRefinerKind.auto.detailAR : refinerProvider.detailAR)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            // مزود الترجمة
             Picker(lang.t("tv.new.translator"), selection: $translatorRaw) {
                 ForEach(TranslatorKind.allCases) { provider in
                     Text(provider.titleAR).tag(provider.rawValue)
@@ -388,14 +441,26 @@ struct NewTranslationView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
+            // بطاقة الملخص
             VStack(alignment: .leading, spacing: 6) {
-                Label("سيُستخدم فعلياً", systemImage: "cpu")
+                Label("الخطة والتنفيذ الفعلي", systemImage: "cpu")
                     .font(.caption.bold())
                     .foregroundStyle(V2Theme.gold)
-                Text("التفريغ: \(resolvedSTT.titleAR)")
+                Text("١. التفريغ: \(resolvedSTT.titleAR)")
                     .font(.caption2)
                 BidiText(text: sttModelName, font: .caption.monospaced(), lineLimit: 2)
-                Text("الترجمة: \(resolvedTranslator.titleAR)")
+
+                if resolvedRefiner != .off {
+                    Text("٢. المراجعة: \(resolvedRefinerProviderName)")
+                        .font(.caption2)
+                    BidiText(text: refinerModelName, font: .caption.monospaced(), lineLimit: 2)
+                } else {
+                    Text("٢. المراجعة: معطلة (مباشر للترجمة)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("٣. الترجمة: \(resolvedTranslator.titleAR)")
                     .font(.caption2)
                 BidiText(text: translatorModelName, font: .caption.monospaced(), lineLimit: 2)
             }
@@ -422,6 +487,14 @@ struct NewTranslationView: View {
         case .speechmatics: return "default"
         case .auto: return "—"
         }
+    }
+
+    private var resolvedRefinerProviderName: String {
+        resolvedRefiner == .auto ? "تلقائي" : (resolvedRefiner == .off ? "معطل" : resolvedRefiner.titleAR)
+    }
+
+    private var refinerModelName: String {
+        SubtitleRefineService.modelSelection(for: resolvedRefiner)
     }
 
     private var translatorModelName: String {
@@ -457,6 +530,7 @@ struct NewTranslationView: View {
                                   source: source,
                                   target: target,
                                   stt: sttProvider,
+                                  refiner: refinerProvider,
                                   translator: translator)
         }
         dismiss()

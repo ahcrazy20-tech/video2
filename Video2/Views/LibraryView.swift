@@ -17,6 +17,7 @@ struct LibraryView: View {
     @State private var translateVideo: SavedVideo?
     @State private var convertVideo: SavedVideo?
     @State private var dubbingVideo: SavedVideo?
+    @State private var reviewSubtitlesVideo: SavedVideo?
     @State private var showConverter = false
     @State private var filter: LibraryFilter = .all
     @State private var showImporter = false
@@ -85,11 +86,19 @@ struct LibraryView: View {
             .fullScreenCover(item: $playing) { v in
                 OfflinePlayerView(video: v)
                     .environmentObject(library)
+                    .environmentObject(translations)
             }
             .sheet(item: $translateVideo) { v in
                 NewTranslationView(preselected: v)
                     .environmentObject(translations)
                     .environmentObject(library)
+                    .environmentObject(lang)
+            }
+            .sheet(item: $reviewSubtitlesVideo) { v in
+                SubtitleReviewView(video: v)
+                    .environmentObject(library)
+                    .environmentObject(lang)
+                    .environmentObject(translations)
             }
             .sheet(item: $dubbingVideo) { v in
                 DubbingView(video: v) { relativePath, result in
@@ -292,6 +301,13 @@ struct LibraryView: View {
             } label: {
                 Label(lang.t("lib.translate"), systemImage: "captions.bubble")
             }
+            if v.hasSubtitles {
+                Button {
+                    reviewSubtitlesVideo = v
+                } label: {
+                    Label("مراجعة وتعديل الترجمة", systemImage: "pencil.and.list.clipboard")
+                }
+            }
             Button {
                 dubbingVideo = v
             } label: {
@@ -370,7 +386,6 @@ struct LibraryView: View {
     }
 
     private func meta(_ v: SavedVideo) -> String {
-        // النوع بالعربي أولاً حتى يبقى ترتيب السطر ثابتاً في الواجهة العربية
         var parts = [v.kind.titleAR]
         if let d = v.duration, d > 0 { parts.append(fmt(d)) }
         parts.append(ByteCountFormatter.string(fromByteCount: v.fileSize, countStyle: .file))
@@ -385,7 +400,6 @@ struct LibraryView: View {
 }
 
 /// نص يُعرض باتجاهه الطبيعي: عربي يمين-لليسار، لاتيني يسار-لليمين
-/// — يمنع تقلّب ترتيب كلمات العناوين الإنجليزية/المختلطة في الواجهة العربية
 struct BidiText: View {
     let text: String
     var font: Font = .headline
