@@ -121,3 +121,32 @@ MagicSearchService (ViewModel: ObservableObject)
 - المصادر النظيفة تماماً: Internet Archive (ملكية عامة)، Dailymotion API الرسمي، يوتيوب للمحتوى المرخّص/CC.
 - سيرفر yt-dlp للاستخدام الشخصي على جهازك — لكن **تحميل محتوى محمي بحقوق** من مواقع القرصنة مسؤولية المستخدم، والتطبيق يعرض المصدر بوضوح لكل نتيجة.
 - المحتوى المشفّر (FairPlay/Widevine) → يظهر نفس تحذير DRM الموجود ولا يُحمَّل.
+
+---
+
+## 6) ما نُفِّذ فعلياً — التحديث الحالي (تشغيل + صيد + تحميل داخل التبويب)
+
+> هذا القسم يوثّق الكود الموجود في المستودع الآن، ويتجاوز بعض افتراضات الخطة الأصلية أعلاه.
+
+### الملفات
+
+| ملف | الدور |
+|---|---|
+| `Video2/Services/MagicQuery.swift` | محلّل «صيغة البحث»: `مدة: min: max: سنة: موقع: جودة: استبعد: مصدر: ترتيب:` + اقتباسات «…» + رابط ملصوق. يبني نص البحث لكل محرك (مع `site:` وفلاتر المدة)، ويزن/يفلتر النتائج (`accepts`, `distance`). |
+| `Video2/Services/MagicSearchService.swift` | المزوّدات (`InternetArchive`, `Piped`, `Invidious`, `Dailymotion`, `PeerTube` عبر sepiasearch، `Vimeo`، `WebSearchProvider` بحث ميتا متعدد المحركات مع Bing Videos) + `MagicSearchStore` (بحث متوازٍ، دمج وفك تكرار وترتيب، كاش مصادر التشغيل، تجهيز مسبق، Now Playing، `importLink`). |
+| `Video2/Services/MagicResolver.swift` | تحويل النتيجة إلى `MagicStreamVariant[]`: ملفات الأرشيف، `player/metadata` لداليموشن (توسيع قائمة HLS الأُم إلى جودات)، `config` لفيميو، `api/v1/videos/{uuid}` لـ PeerTube، Piped/Invidious ليوتيوب، `og:video`/`<source>`/JSON-LD لأي صفحة ويب، وويكيميديا كومنز عبر `imageinfo`. |
+| `Video2/Services/MagicPageHunter.swift` | «الصيد العميق»: WKWebView غير ظاهر (إطار خارج الشاشة) بنفس `ExtractorScript` + خطّاف `fetch/XHR` لالتقاط `streamingData` من `youtubei/v1/player`، ثم ingest للنتائج مع استبعاد ما عليه DRM. |
+| `Video2/Services/MagicStreamProxy.swift` | وسيط HTTP محلي على `127.0.0.1` (منافذ 8770/8771/8772/18770): يمرّر Range والترويسات، ويعيد كتابة قوائم HLS (متداخلة + `EXT-X-MAP` + `EXT-X-KEY`). **للتشغيل فقط**. |
+| `Video2/Views/MagicPlayerView.swift` | `MagicPlaybackModel` (AVPlayer + AVPlayerLayer): سلسلة نجات (مباشر ← وسيط ← مصدر آخر ← رسالة بدائل)، تبديل جودة مع حفظ الموضع،سرعات، Now Playing/MPRemoteCommandCenter، شريط «يُشغَّل الآن». |
+| `Video2/Views/MagicSearchView.swift` | لوحة البحث + رقائق المدة + رقائق الأوامر + مفاتيح (صيد عميق / تجهيز مسبق)، حالة كل مصدر، بطاقة نتيجة ( badges + أزرار تشغيل/تحميل/صيد/متصفح + رقائق جودات + شريط تقدم التحميل)، ورقة شرح الصيغة، لصق رابط للصيد، و`.fullScreenCover` للمشغّل. |
+
+### مبادئ ثابتة (لا تتغير)
+1. **التحميل يمرّ بـ `DownloadManager.enqueueManual` كما هو** — أضيف فقط `kindHint:` (يُستخدم فقط حين الاستنتاج يعطي `.other` حتى لا تُسمّى روابط googlevideo بـ `.bin`) و`job(matchingURL:)` لقراءة التقدم.
+2. **لا كسر DRM**: أي `SAMPLE-AES`/FairPlay/Widevine/`drm/`/`cenc`/`cbcs` أو قائمة `protected_delivery` → استبعاد المصدر + رسالة + «افتح في المتصفح». الوسيط المحلي لا يُستخدم في التحميل أبداً.
+3. **لا تعديل على نواة المتصفح/الاستخراج**: الصياد نسخة معزولة تستدعي `ExtractorScript` فقط، ولا تلمس `BrowserModel` ولا `SmartMediaRadar`.
+4. المحلل يرجّع ملاحظة نصية مترجمة عند الفشل (`resolve.*`, `yt.blocked`, `web.noDirectFile`) بدل الصمت.
+
+### قيود معروفة (مختبَرة حيّاً)
+- النسخ العامة لـ Piped/Invidious لا تعطي روابط تشغيل مستقرة (يوتيوب يحظر IPs السيرفرات)؛ لذلك يوتيوب = صيد من الصفحة، وإلا متصفح.
+- روابط googlevideo المنتزعة من المتصفح الخفي تنتهي صلاحيتها بعد دقائق: تُستهلك للتشغيل الفوري أو التحميل مباشرة، ولا تُخزَّن.
+- `AVPlayer` لا يدعم WebM/DASH: تظهر كخيارات تحميل فقط.
