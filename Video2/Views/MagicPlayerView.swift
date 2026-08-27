@@ -124,7 +124,8 @@ final class MagicPlaybackModel: ObservableObject {   // ليس NSObject: نست�
                     self.handleFailure(item: item, variant: variant)
                 case .readyToPlay:
                     self.failed = false
-                    if let d = item.duration.seconds, d.isFinite, d > 0 { self.duration = d }
+                    let d = item.duration.seconds
+                    if d.isFinite && d > 0 { self.duration = d }
                     self.player.isMuted = self.muted
                     self.play()
                 default:
@@ -339,7 +340,7 @@ final class MagicPlaybackModel: ObservableObject {   // ليس NSObject: نست�
         let now = Date()
         if now.timeIntervalSince(nowPlayingAt) < 1 { return }
         nowPlayingAt = now
-        var info: [String: Any] = [
+        let info: [String: Any] = [
             MPMediaItemPropertyTitle: title,
             MPMediaItemPropertyAlbumTitle: "فيديو ٢ · بحث سحري",
             MPNowPlayingInfoPropertyElapsedPlaybackTime: current,

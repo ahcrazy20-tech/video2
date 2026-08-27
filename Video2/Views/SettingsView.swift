@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var passwordMessage: String?
     @State private var adblock = AdBlock.isEnabled
     @State private var mode = AdBlock.mode
+    @State private var filterVideoAds = AdBlock.filterVideoAds
 
     @AppStorage("stt.provider") private var sttProviderRaw: String = STTProviderKind.auto.rawValue
     @AppStorage("refiner.provider") private var refinerProviderRaw: String = SubtitleRefinerKind.auto.rawValue
@@ -83,6 +84,10 @@ struct SettingsView: View {
                     .onChange(of: mode) { v in
                         AdBlock.mode = v
                     }
+                    Toggle(lang.t("set.ad.filterVideoAds"), isOn: $filterVideoAds)
+                        .onChange(of: filterVideoAds) { v in
+                            AdBlock.filterVideoAds = v
+                        }
                     Text(lang.t("set.ad.hint"))
                         .font(.caption)
                         .foregroundStyle(.secondary)

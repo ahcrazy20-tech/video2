@@ -13,6 +13,7 @@ enum SmartMediaRadar {
         var order: [String] = []
 
         for candidate in media where !candidate.isFragment {
+            if AdBlock.filterVideoAds && AdBlock.isAdMedia(candidate) { continue }
             let key = groupKey(for: candidate)
             if buckets[key] == nil {
                 order.append(key)
@@ -45,6 +46,9 @@ enum SmartMediaRadar {
     }
 
     static func score(_ media: DetectedMedia) -> Int {
+        if AdBlock.isAdMedia(media) {
+            return -20_000
+        }
         if media.drm.isProtected || media.url.hasPrefix("blob:") || media.url.hasPrefix("data:") {
             return -10_000
         }

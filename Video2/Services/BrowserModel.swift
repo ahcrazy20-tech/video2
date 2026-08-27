@@ -85,6 +85,9 @@ final class BrowserModel: ObservableObject {
     }
 
     func ingest(media: DetectedMedia, tab: BrowserTab) {
+        if AdBlock.filterVideoAds && AdBlock.isAdMedia(media) {
+            return
+        }
         if let i = tab.detected.firstIndex(where: { $0.url == media.url }) {
             var old = tab.detected[i]
             if media.drm.isProtected { old.drm = media.drm }

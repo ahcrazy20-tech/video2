@@ -7,6 +7,30 @@ enum ExtractorScript {
       window.__v2installed = true;
       const found = new Map();
 
+      function isAdURL(url) {
+        if (!url || typeof url !== 'string') return false;
+        const u = url.toLowerCase();
+        if (/doubleclick|googlesyndication|googleadservices|pagead|vungle|teads|connatix|aniview|spotxchange|spotx\\.tv|serving-sys|flashtalking|innovid|springserve|vidazoo|primis|vi-serve|exoclick|trafficjunky|adsterra|popads|popcash|clickadu|hilltopads|trafficstars|outbrain|taboola|revcontent|mgid|adnxs|smartadserver|ad-delivery|ad-maven|videohub|moatads|imasdk\\.googleapis/i.test(u)) return true;
+        if (/[?&/](adformat|ad_type|ad_unit|ad_tag|adtag|ad_slot|ad_break|ad_system|preroll|midroll|postroll|vast|vpaid|daast|vmap|videoads|advideo|instream_ad|outstream)[/=?&_]/i.test(u)) return true;
+        return false;
+      }
+
+      function isAdElement(el) {
+        if (!el) return false;
+        try {
+          if (el.closest && el.closest('.video-ads, .ytp-ad-module, .videoAdUi, .ad-container, .ad-slot, .ad-banner, .ima-ad, ins.adsbygoogle, [class*="popup-ad"], [id*="popunder"], [class*="ad-overlay"], [id*="ad-overlay"], [data-ad], [data-ad-slot], [data-ad-client], [data-ad-unit], [data-is-ad="true"]')) {
+            return true;
+          }
+          if (el.getAttribute && (el.getAttribute('data-ad') || el.getAttribute('data-is-ad') || el.getAttribute('data-ad-slot'))) {
+            return true;
+          }
+          if (el.videoWidth && el.videoHeight) {
+            if ((el.videoWidth <= 2 && el.videoHeight <= 2) || (el.videoWidth <= 320 && el.videoHeight <= 60)) return true;
+          }
+        } catch (e) {}
+        return false;
+      }
+
       function kindFrom(url, mime) {
         const u = (url || '').split('?')[0].toLowerCase();
         const m = (mime || '').toLowerCase();
@@ -27,10 +51,11 @@ enum ExtractorScript {
       }
 
       function emit(item) {
-        if (!item || !item.url) return;
+        if (!item || !item.url || isAdURL(item.url)) return;
         try {
           const abs = new URL(item.url, location.href).href;
           item.url = abs;
+          if (isAdURL(item.url)) return;
         } catch (e) { return; }
         if (item.url.startsWith('blob:') || item.url.startsWith('data:')) {
           item.drm = item.drm && item.drm !== 'none' ? item.drm : 'unknownProtected';
@@ -46,8 +71,9 @@ enum ExtractorScript {
 
       function scanVideos() {
         document.querySelectorAll('video, audio, source').forEach(function(el) {
+          if (isAdElement(el)) return;
           const url = el.currentSrc || el.src || el.getAttribute('src');
-          if (!url) return;
+          if (!url || isAdURL(url)) return;
           var dur = 0;
           try { if (el.duration && isFinite(el.duration)) dur = el.duration; } catch (e) {}
           emit({
@@ -89,7 +115,7 @@ enum ExtractorScript {
       }
 
       function consider(url, method) {
-        if (!url || typeof url !== 'string') return;
+        if (!url || typeof url !== 'string' || isAdURL(url)) return;
         const u = url.toLowerCase();
         const hit = /\\.(m3u8|mp4|m4v|mov|webm|mpd|mkv|avi|3gp|3gpp|mp3|aac|wav|ogg)(\\?|$)/.test(u)
           || u.includes('m3u8') || u.includes('mime=video') || u.includes('videourl');

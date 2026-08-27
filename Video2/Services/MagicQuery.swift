@@ -97,7 +97,7 @@ struct MagicQuery {
 
         var kept: [String] = []
         for tokenRaw in working.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" }) {
-            var token = String(tokenRaw)
+            let token = String(tokenRaw)
             if token.isEmpty { continue }
             if consume(token, into: &q) { continue }
             kept.append(token)
@@ -129,7 +129,7 @@ struct MagicQuery {
         guard let hit = sepRange else { return false }
         let key = String(token[token.startIndex..<hit.lowerBound])
             .lowercased()
-            .trimmingCharacters(in: .punctuationMarks)
+            .trimmingCharacters(in: .punctuationCharacters)
         let value = String(token[hit.upperBound...])
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return false }
