@@ -4,8 +4,8 @@ import Combine
 // MARK: - البحث السحري (Magic Search)
 //
 // طبقة بحث مجمّعة: تكتب اسم فيديو/فيلم فيبحث التطبيق في عدة مصادر في وقت واحد
-// (أرشيف الإنترنت، يوتيوب عبر Piped، داليموشن، والويب عبر DuckDuckGo)
-// ويعرض نتائج موحّدة بالمدة والجودات.
+// (أرشيف الإنترنت، يوتيوب عبر Piped، داليموشن، والويب عبر محركات متعددة
+// لكل المواقع وكل المناطق) ويعرض نتائج موحّدة بالمدة والجودات.
 //
 // مهم: هذه الطبقة للبحث والعرض فقط. التحميل يتم عبر خط التحميل الأصلي
 // نفسه دون أي تعديل: نتائج الأرشيف تُسلَّم لـ DownloadManager.enqueueManual،
@@ -157,18 +157,69 @@ enum MagicDuration {
 enum MagicNet {
     static let session: URLSession = {
         let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = 14
-        cfg.timeoutIntervalForResource = 30
-        cfg.httpAdditionalHeaders = ["User-Agent": DownloadAuth.safariUA]
+        cfg.timeoutIntervalForRequest = 12
+        cfg.timeoutIntervalForResource = 24
+        cfg.httpAdditionalHeaders = [
+            "User-Agent": DownloadAuth.safariUA,
+            "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+        ]
         return URLSession(configuration: cfg)
     }()
 
+    /// `URLComponents.asURL()` غير موجود في Swift — الخاصية هي `.url`.
+    static func makeURL(_ comps: URLComponents) throws -> URL {
+        guard let url = comps.url else { throw URLError(.badURL) }
+        return url
+    }
+
     static func json(_ url: URL) async throws -> Any {
-        let (data, resp) = try await session.data(from: url)
+        var req = URLRequest(url: url)
+        req.setValue("application/json,text/javascript;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw URLError(.badServerResponse)
         }
         return try JSONSerialization.jsonObject(with: data)
+    }
+
+    static func html(_ url: URL, referer: String? = nil) async throws -> String {
+        var req = URLRequest(url: url)
+        req.setValue("text/html,application/xhtml+xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        if let referer { req.setValue(referer, forHTTPHeaderField: "Referer") }
+        return try await string(req)
+    }
+
+    static func postForm(_ url: URL, fields: [String: String], referer: String? = nil) async throws -> String {
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        req.setValue("text/html,application/xhtml+xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        if let referer { req.setValue(referer, forHTTPHeaderField: "Referer") }
+        req.httpBody = formEncode(fields)
+        return try await string(req)
+    }
+
+    private static func string(_ req: URLRequest) async throws -> String {
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+        let raw = String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .isoLatin1)
+            ?? ""
+        if raw.count > 400_000 { return String(raw.prefix(400_000)) }
+        return raw
+    }
+
+    private static let formAllowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
+    private static func formEncode(_ fields: [String: String]) -> Data {
+        let s = fields.map { k, v in
+            let ek = k.addingPercentEncoding(withAllowedCharacters: formAllowed) ?? k
+            let ev = v.addingPercentEncoding(withAllowedCharacters: formAllowed) ?? v
+            return "\(ek)=\(ev)"
+        }.joined(separator: "&")
+        return Data(s.utf8)
     }
 }
 
@@ -179,19 +230,19 @@ enum InternetArchiveProvider {
     static func search(query: String) async throws -> [MagicSearchResult] {
         var comps = URLComponents(string: "https://archive.org/advancedsearch.php")!
         comps.queryItems = [
-            URLQueryItem(name: "q", value: "(\(query)) AND mediatype:(movies)"),
+            URLQueryItem(name: "q", value: "(\(query)) AND (mediatype:(movies) OR mediatype:(video))"),
             URLQueryItem(name: "fl[]", value: "identifier"),
             URLQueryItem(name: "fl[]", value: "title"),
             URLQueryItem(name: "fl[]", value: "downloads"),
-            URLQueryItem(name: "rows", value: "10"),
+            URLQueryItem(name: "rows", value: "20"),
             URLQueryItem(name: "page", value: "1"),
             URLQueryItem(name: "output", value: "json"),
             URLQueryItem(name: "sort[]", value: "downloads desc"),
         ]
-        let url = try comps.asURL()
+        let url = try MagicNet.makeURL(comps)
         let obj = try await MagicNet.json(url)
         let docs = ((obj as? [String: Any])?["response"] as? [String: Any])?["docs"] as? [[String: Any]] ?? []
-        let entries: [(String, String)] = docs.prefix(8).compactMap { d in
+        let entries: [(String, String)] = docs.prefix(12).compactMap { (d: [String: Any]) -> (String, String)? in
             guard let id = d["identifier"] as? String else { return nil }
             return (id, (d["title"] as? String) ?? id)
         }
@@ -355,7 +406,7 @@ enum DailymotionProvider {
             URLQueryItem(name: "limit", value: "15"),
             URLQueryItem(name: "fields", value: "id,title,duration,thumbnail_360_url,owner.screenname,views_total"),
         ]
-        let obj = try await MagicNet.json(try comps.asURL())
+        let obj = try await MagicNet.json(try MagicNet.makeURL(comps))
         let list = (obj as? [String: Any])?["list"] as? [[String: Any]] ?? []
         return list.compactMap { mapItem($0) }
     }
@@ -363,6 +414,7 @@ enum DailymotionProvider {
     private static func mapItem(_ item: [String: Any]) -> MagicSearchResult? {
         guard let id = item["id"] as? String else { return nil }
         let owner = item["owner"] as? [String: Any]
+        let uploader = (item["owner.screenname"] as? String) ?? (owner?["screenname"] as? String)
         return MagicSearchResult(
             id: "dm-\(id)",
             title: (item["title"] as? String) ?? "",
@@ -370,7 +422,7 @@ enum DailymotionProvider {
             thumbnailURL: item["thumbnail_360_url"] as? String,
             source: .dailymotion,
             pageURL: "https://www.dailymotion.com/video/\(id)",
-            uploader: owner?["screenname"] as? String,
+            uploader: uploader,
             views: (item["views_total"] as? NSNumber)?.intValue,
             snippet: nil,
             downloads: []
@@ -378,69 +430,327 @@ enum DailymotionProvider {
     }
 }
 
-// MARK: - المزوّد 4: الويب بالكامل (DuckDuckGo HTML/Lite)
+// MARK: - المزوّد 4: الويب بالكامل (كل المواقع، كل المناطق)
+//
+// سابقًا: DuckDuckGo فقط + نتيجة واحدة لكل نطاق + حد 12.
+// الآن: محركات متعددة بالتوازي، كل المناطق، بدون حصر على مواقع معروفة،
+// مع فكّ التكرار بالرابط لا بالنطاق حتى تظهر صفحات من أي موقع.
 
 enum WebSearchProvider {
 
     static func search(query: String) async throws -> [MagicSearchResult] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return [] }
+        let videoQ = q + " (video OR فيديو OR watch OR film OR فيلم)"
+
+        let lists = await withTaskGroup(of: [MagicSearchResult].self) { group -> [[MagicSearchResult]] in
+            group.addTask { (try? await duckDuckGo(query: q, offset: 0)) ?? [] }
+            group.addTask { (try? await duckDuckGo(query: q, offset: 30)) ?? [] }
+            group.addTask { (try? await duckDuckGo(query: videoQ, offset: 0)) ?? [] }
+            group.addTask { (try? await duckDuckGoLite(query: q)) ?? [] }
+            group.addTask { (try? await searxNG(query: q, videos: false)) ?? [] }
+            group.addTask { (try? await searxNG(query: q, videos: true)) ?? [] }
+            group.addTask { (try? await qwant(query: q, videos: false)) ?? [] }
+            group.addTask { (try? await qwant(query: q, videos: true)) ?? [] }
+            group.addTask { (try? await brave(query: q)) ?? [] }
+            group.addTask { (try? await mojeek(query: q)) ?? [] }
+            group.addTask { (try? await sepiasearch(query: q)) ?? [] }
+            group.addTask { (try? await wikimedia(query: q)) ?? [] }
+            var out: [[MagicSearchResult]] = []
+            for await list in group { out.append(list) }
+            return out
+        }
+        let merged = dedupe(lists.flatMap { $0 })
+        if merged.isEmpty { throw URLError(.cannotParseResponse) }
+        return merged
+    }
+
+    // MARK: DuckDuckGo (كل المناطق kl=wt-wt)
+
+    private static func duckDuckGo(query: String, offset: Int) async throws -> [MagicSearchResult] {
+        let fields = ["q": query, "s": "\(offset)", "kl": "wt-wt", "kp": "-1"]
+        let postURL = URL(string: "https://html.duckduckgo.com/html/")!
+        if let html = try? await MagicNet.postForm(postURL, fields: fields, referer: "https://html.duckduckgo.com/"),
+           !html.isEmpty {
+            let parsed = results(fromHTML: html, linkClass: "result__a", snippetClass: "result__snippet")
+            if !parsed.isEmpty { return parsed }
+            let generic = genericResults(html)
+            if !generic.isEmpty { return generic }
+        }
         var comps = URLComponents(string: "https://html.duckduckgo.com/html/")!
+        comps.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "s", value: "\(offset)"),
+            URLQueryItem(name: "kl", value: "wt-wt"),
+        ]
+        let html = try await MagicNet.html(try MagicNet.makeURL(comps), referer: "https://html.duckduckgo.com/")
+        let parsed = results(fromHTML: html, linkClass: "result__a", snippetClass: "result__snippet")
+        if !parsed.isEmpty { return parsed }
+        return genericResults(html)
+    }
+
+    private static func duckDuckGoLite(query: String) async throws -> [MagicSearchResult] {
+        var comps = URLComponents(string: "https://lite.duckduckgo.com/lite/")!
+        comps.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "kl", value: "wt-wt"),
+        ]
+        let html = try await MagicNet.html(try MagicNet.makeURL(comps), referer: "https://lite.duckduckgo.com/")
+        let parsed = results(fromHTML: html, linkClass: "result-link", snippetClass: "result-snippet")
+        if !parsed.isEmpty { return parsed }
+        return genericResults(html)
+    }
+
+    // MARK: SearXNG — ميتا بحث (Google/Bing/Wiki/… حسب النسخة)
+
+    private static let searxInstances: [String] = [
+        "https://searx.be",
+        "https://priv.au",
+        "https://opnxng.com",
+        "https://searx.tiekoetter.com",
+        "https://search.sapti.me",
+        "https://baresearch.org",
+        "https://search.inetol.net",
+        "https://search.ononoki.org",
+    ]
+
+    private static func searxNG(query: String, videos: Bool) async throws -> [MagicSearchResult] {
+        let picked = await withTaskGroup(of: [MagicSearchResult].self) { group -> [MagicSearchResult] in
+            for base in searxInstances.prefix(5) {
+                group.addTask { (try? await searxOnce(base: base, query: query, videos: videos)) ?? [] }
+            }
+            var best: [MagicSearchResult] = []
+            for await list in group {
+                if list.count > best.count { best = list }
+                if best.count >= 10 {
+                    group.cancelAll()
+                    break
+                }
+            }
+            return best
+        }
+        if picked.isEmpty { throw URLError(.cannotParseResponse) }
+        return picked
+    }
+
+    private static func searxOnce(base: String, query: String, videos: Bool) async throws -> [MagicSearchResult] {
+        let category = videos ? "videos" : "general"
+        var comps = URLComponents(string: "\(base)/search")!
+        comps.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "format", value: "json"),
+            URLQueryItem(name: "language", value: "all"),
+            URLQueryItem(name: "safesearch", value: "0"),
+            URLQueryItem(name: "categories", value: category),
+        ]
+        if let obj = try? await MagicNet.json(try MagicNet.makeURL(comps)) {
+            let rows = (obj as? [String: Any])?["results"] as? [[String: Any]] ?? []
+            let mapped = rows.compactMap { mapJSONResult($0) }
+            if !mapped.isEmpty { return mapped }
+        }
+        var htmlComps = URLComponents(string: "\(base)/search")!
+        htmlComps.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "language", value: "all"),
+            URLQueryItem(name: "categories", value: category),
+        ]
+        let html = try await MagicNet.html(try MagicNet.makeURL(htmlComps))
+        let articles = results(fromHTML: html, linkClass: "url_wrapper", snippetClass: "content")
+        if !articles.isEmpty { return articles }
+        return genericResults(html)
+    }
+
+    // MARK: Qwant API (ويب + فيديو، بدون مفتاح)
+
+    private static func qwant(query: String, videos: Bool) async throws -> [MagicSearchResult] {
+        let locale = query.unicodeScalars.contains(where: { (0x0600...0x06FF).contains(Int($0.value)) }) ? "ar_EG" : "en_US"
+        let path = videos ? "videos" : "web"
+        var comps = URLComponents(string: "https://api.qwant.com/v3/search/\(path)")!
+        comps.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "count", value: "10"),
+            URLQueryItem(name: "locale", value: locale),
+            URLQueryItem(name: "offset", value: "0"),
+            URLQueryItem(name: "device", value: "smartphone"),
+            URLQueryItem(name: "safesearch", value: "0"),
+        ]
+        let obj = try await MagicNet.json(try MagicNet.makeURL(comps))
+        let data = (obj as? [String: Any])?["data"] as? [String: Any]
+        let result = data?["result"] as? [String: Any]
+        var items: [[String: Any]] = []
+        if let mainline = (result?["items"] as? [String: Any])?["mainline"] as? [[String: Any]] {
+            for block in mainline {
+                if let nested = block["items"] as? [[String: Any]] { items.append(contentsOf: nested) }
+            }
+        }
+        if items.isEmpty, let flat = result?["items"] as? [[String: Any]] { items = flat }
+        let mapped = items.compactMap { mapJSONResult($0) }
+        if mapped.isEmpty { throw URLError(.cannotParseResponse) }
+        return mapped
+    }
+
+    // MARK: Brave / Mojeek HTML
+
+    private static func brave(query: String) async throws -> [MagicSearchResult] {
+        var comps = URLComponents(string: "https://search.brave.com/search")!
+        comps.queryItems = [URLQueryItem(name: "q", value: query), URLQueryItem(name: "source", value: "web")]
+        let html = try await MagicNet.html(try MagicNet.makeURL(comps))
+        let parsed = results(fromHTML: html, linkClass: "heading-serpresult", snippetClass: "snippet-description")
+        if !parsed.isEmpty { return parsed }
+        return genericResults(html)
+    }
+
+    private static func mojeek(query: String) async throws -> [MagicSearchResult] {
+        var comps = URLComponents(string: "https://www.mojeek.com/search")!
         comps.queryItems = [URLQueryItem(name: "q", value: query)]
-        if let url = try? comps.asURL(),
-           let results = try? await parse(url, linkClass: "result__a", snippetClass: "result__snippet"),
-           !results.isEmpty {
-            return results
-        }
-        var lite = URLComponents(string: "https://lite.duckduckgo.com/lite/")!
-        lite.queryItems = [URLQueryItem(name: "q", value: query)]
-        return try await parse(try lite.asURL(), linkClass: "result-link", snippetClass: "result-snippet")
+        let html = try await MagicNet.html(try MagicNet.makeURL(comps))
+        let parsed = results(fromHTML: html, linkClass: "ob", snippetClass: "s")
+        if !parsed.isEmpty { return parsed }
+        return genericResults(html)
     }
 
-    private static func parse(_ url: URL, linkClass: String, snippetClass: String) async throws -> [MagicSearchResult] {
-        let (data, resp) = try await MagicNet.session.data(from: url)
-        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw URLError(.badServerResponse)
+    // MARK: PeerTube (SepiaSearch) + Wikimedia Commons فيديو
+
+    private static func sepiasearch(query: String) async throws -> [MagicSearchResult] {
+        var comps = URLComponents(string: "https://sepiasearch.org/api/v1/search/videos")!
+        comps.queryItems = [
+            URLQueryItem(name: "search", value: query),
+            URLQueryItem(name: "count", value: "20"),
+        ]
+        let obj = try await MagicNet.json(try MagicNet.makeURL(comps))
+        let rows = (obj as? [String: Any])?["data"] as? [[String: Any]] ?? []
+        let mapped: [MagicSearchResult] = rows.compactMap { row in
+            let page = (row["url"] as? String) ?? (row["embedUrl"] as? String)
+            guard let page, page.hasPrefix("http") else { return nil }
+            let title = (row["name"] as? String) ?? page
+            let account = row["account"] as? [String: Any]
+            let duration: Double? = {
+                if let n = row["duration"] as? NSNumber { return n.doubleValue }
+                if let i = row["duration"] as? Int { return Double(i) }
+                return nil
+            }()
+            return makeResult(
+                title: title,
+                url: page,
+                snippet: row["description"] as? String,
+                uploader: account?["displayName"] as? String,
+                thumbnail: (row["thumbnailUrl"] as? String) ?? (row["previewUrl"] as? String),
+                duration: duration,
+                views: (row["views"] as? NSNumber)?.intValue
+            )
         }
-        let html = String(data: data, encoding: .utf8) ?? ""
-        guard !html.isEmpty else { throw URLError(.cannotParseResponse) }
+        if mapped.isEmpty { throw URLError(.cannotParseResponse) }
+        return mapped
+    }
 
-        let links = allAnchors(html, cssClass: linkClass)
-        let snippets = allAnchors(html, cssClass: snippetClass).map { $0.text }
-
-        var seen = Set<String>()
-        var out: [MagicSearchResult] = []
-        for (i, anchor) in links.enumerated() {
-            guard let resolved = resolveHref(anchor.href), resolved.hasPrefix("http"),
-                  let host = URL(string: resolved)?.host?.lowercased(),
-                  host != "duckduckgo.com", !host.hasSuffix(".duckduckgo.com"),
-                  host != "google.com", !host.hasSuffix(".google.com"),
-                  !host.hasPrefix("ad.") else { continue }
-            if !seen.insert(host).inserted { continue }
-            let snippet = i < snippets.count ? snippets[i] : nil
-            out.append(MagicSearchResult(
-                id: "web-\(i)-\(host)",
-                title: anchor.text.isEmpty ? host : anchor.text,
+    private static func wikimedia(query: String) async throws -> [MagicSearchResult] {
+        var comps = URLComponents(string: "https://commons.wikimedia.org/w/api.php")!
+        comps.queryItems = [
+            URLQueryItem(name: "action", value: "query"),
+            URLQueryItem(name: "list", value: "search"),
+            URLQueryItem(name: "srsearch", value: "\(query) filetype:video"),
+            URLQueryItem(name: "srnamespace", value: "6"),
+            URLQueryItem(name: "srlimit", value: "12"),
+            URLQueryItem(name: "format", value: "json"),
+            URLQueryItem(name: "origin", value: "*"),
+        ]
+        let obj = try await MagicNet.json(try MagicNet.makeURL(comps))
+        let hits = ((obj as? [String: Any])?["query"] as? [String: Any])?["search"] as? [[String: Any]] ?? []
+        let mapped: [MagicSearchResult] = hits.compactMap { h in
+            guard let title = h["title"] as? String else { return nil }
+            let encoded = title.replacingOccurrences(of: " ", with: "_")
+                .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? title
+            return makeResult(
+                title: title.replacingOccurrences(of: "File:", with: ""),
+                url: "https://commons.wikimedia.org/wiki/\(encoded)",
+                snippet: clean(h["snippet"] as? String ?? ""),
+                uploader: "Wikimedia Commons",
+                thumbnail: nil,
                 duration: nil,
-                thumbnailURL: nil,
-                source: .web,
-                pageURL: resolved,
-                uploader: nil,
-                views: nil,
-                snippet: snippet,
-                downloads: []
-            ))
-            if out.count >= 12 { break }
+                views: nil
+            )
         }
-        if out.isEmpty { throw URLError(.cannotParseResponse) }
-        return out
+        if mapped.isEmpty { throw URLError(.cannotParseResponse) }
+        return mapped
     }
+
+    // MARK: JSON → نتيجة
+
+    private static func mapJSONResult(_ item: [String: Any]) -> MagicSearchResult? {
+        let url = (item["url"] as? String)
+            ?? (item["href"] as? String)
+            ?? (item["link"] as? String)
+            ?? (item["iframe_src"] as? String)
+        guard let url, let resolved = resolveHref(url) ?? (url.hasPrefix("http") ? url : nil) else { return nil }
+        let title = (item["title"] as? String) ?? (item["name"] as? String) ?? ""
+        let snippet = (item["content"] as? String)
+            ?? (item["desc"] as? String)
+            ?? (item["description"] as? String)
+            ?? (item["snippet"] as? String)
+        let thumb = (item["thumbnail"] as? String)
+            ?? (item["thumbnailUrl"] as? String)
+            ?? (item["img"] as? String)
+        let duration: Double? = {
+            if let n = item["duration"] as? NSNumber, n.doubleValue > 0 { return n.doubleValue }
+            if let s = item["duration"] as? String { return MagicDuration.parseArchiveLength(s) ?? MagicDuration.parse(s) }
+            if let s = item["length"] as? String { return MagicDuration.parseArchiveLength(s) ?? MagicDuration.parse(s) }
+            return nil
+        }()
+        let uploader = (item["engine"] as? String) ?? (item["source"] as? String) ?? (item["channel"] as? String)
+        return makeResult(title: title, url: resolved, snippet: snippet, uploader: uploader, thumbnail: thumb, duration: duration, views: nil)
+    }
+
+    // MARK: HTML parsers
 
     private struct Anchor { var href: String; var text: String }
 
-    /// التقاط كل وسم <a> يحتوي صنف CSS محدداً مع رابطه ونصه.
+    private static func results(fromHTML html: String, linkClass: String, snippetClass: String) -> [MagicSearchResult] {
+        let links = allAnchors(html, cssClass: linkClass)
+        let snippets = allAnchors(html, cssClass: snippetClass).map(\.text)
+        var out: [MagicSearchResult] = []
+        var seen = Set<String>()
+        for (i, anchor) in links.enumerated() {
+            guard let resolved = resolveHref(anchor.href) else { continue }
+            let key = canonicalize(resolved)
+            guard seen.insert(key).inserted else { continue }
+            let snippet = i < snippets.count ? snippets[i] : nil
+            if let r = makeResult(title: anchor.text, url: resolved, snippet: snippet, uploader: nil, thumbnail: nil, duration: nil, views: nil) {
+                out.append(r)
+            }
+            if out.count >= 30 { break }
+        }
+        return out
+    }
+
+    private static func genericResults(_ html: String) -> [MagicSearchResult] {
+        guard let re = try? NSRegularExpression(
+            pattern: #"<a[^>]+href=["']([^"']+)["'][^>]*>(.*?)</a>"#,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]
+        ) else { return [] }
+        var seen = Set<String>()
+        var out: [MagicSearchResult] = []
+        re.enumerateMatches(in: html, range: NSRange(html.startIndex..., in: html)) { m, _, _ in
+            guard let m,
+                  let hrefR = Range(m.range(at: 1), in: html),
+                  let textR = Range(m.range(at: 2), in: html) else { return }
+            let title = clean(String(html[textR]))
+            guard title.count >= 8, title.count <= 220 else { return }
+            let lower = title.lowercased()
+            if ["cached", "similar", "translate", "sign in", "log in", "privacy", "cookie"].contains(where: { lower.contains($0) }) { return }
+            guard let resolved = resolveHref(String(html[hrefR])) else { return }
+            let key = canonicalize(resolved)
+            guard seen.insert(key).inserted else { return }
+            if let r = makeResult(title: title, url: resolved, snippet: nil, uploader: nil, thumbnail: nil, duration: nil, views: nil) {
+                out.append(r)
+            }
+        }
+        return Array(out.prefix(30))
+    }
+
     private static func allAnchors(_ html: String, cssClass: String) -> [Anchor] {
         guard let re = try? NSRegularExpression(
-            pattern: "<a([^>]*" + cssClass + "[^>]*)>(.*?)</a>",
-            options: [.dotMatchesLineSeparators]
+            pattern: "<a([^>]*" + NSRegularExpression.escapedPattern(for: cssClass) + "[^>]*)>(.*?)</a>",
+            options: [.dotMatchesLineSeparators, .caseInsensitive]
         ) else { return [] }
         var out: [Anchor] = []
         re.enumerateMatches(in: html, range: NSRange(html.startIndex..., in: html)) { m, _, _ in
@@ -449,9 +759,8 @@ enum WebSearchProvider {
                   let textRange = Range(m.range(at: 2), in: html) else { return }
             let attrs = String(html[attrsRange])
             let text = clean(String(html[textRange]))
-            // استخراج href من سمات الوسم (قد يسبق الصنف أو يليه)
             var href = ""
-            if let hre = try? NSRegularExpression(pattern: "href=\"([^\"]+)\""),
+            if let hre = try? NSRegularExpression(pattern: #"href=["']([^"']+)["']"#),
                let hm = hre.firstMatch(in: attrs, range: NSRange(attrs.startIndex..., in: attrs)),
                let hr = Range(hm.range(at: 1), in: attrs) {
                 href = String(attrs[hr])
@@ -461,9 +770,14 @@ enum WebSearchProvider {
         return out
     }
 
-    /// فك روابط التحويل الخاصة بـ DDG (uddg=) أو استخدام الرابط المباشر.
+    /// فك روابط التحويل (DDG uddg=، /url?q=، …) أو الرابط المباشر.
     private static func resolveHref(_ raw: String) -> String? {
-        let href = raw.replacingOccurrences(of: "&amp;", with: "&")
+        var href = raw
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&#x2F;", with: "/")
+            .replacingOccurrences(of: "&#47;", with: "/")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if href.hasPrefix("//") { href = "https:" + href }
         if let range = href.range(of: "uddg=") {
             let rest = String(href[range.upperBound...])
             let encoded = rest.split(separator: "&").first.map(String.init) ?? rest
@@ -471,19 +785,120 @@ enum WebSearchProvider {
                 return decoded
             }
         }
+        if let comps = URLComponents(string: href), let items = comps.queryItems {
+            for key in ["uddg", "url", "u", "target"] {
+                if let v = items.first(where: { $0.name == key })?.value {
+                    let decoded = v.removingPercentEncoding ?? v
+                    if decoded.hasPrefix("http") { return decoded }
+                }
+            }
+            if let v = items.first(where: { $0.name == "q" })?.value {
+                let decoded = v.removingPercentEncoding ?? v
+                if decoded.hasPrefix("http") { return decoded }
+            }
+        }
         if href.hasPrefix("http") { return href }
         return nil
     }
 
-    /// إزالة الوسوم وفكّ أبسط الكيانات.
     private static func clean(_ html: String) -> String {
         var s = html.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
         let entities: [String: String] = [
             "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"",
             "&#x27;": "'", "&#39;": "'", "&nbsp;": " ", "&hellip;": "…", "&mdash;": "—",
+            "&#x2F;": "/",
         ]
         for (k, v) in entities { s = s.replacingOccurrences(of: k, with: v) }
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isSearchChrome(_ host: String) -> Bool {
+        let h = host.lowercased()
+        if h.hasPrefix("ad.") || h.hasPrefix("ads.") || h.hasPrefix("doubleclick.") { return true }
+        let blocked: [String] = [
+            "duckduckgo.com", "google.com", "google.ae", "google.co.uk", "google.fr",
+            "bing.com", "yahoo.com", "brave.com", "mojeek.com", "startpage.com",
+            "qwant.com", "searx.be", "priv.au", "opnxng.com", "sepiasearch.org",
+        ]
+        for b in blocked {
+            if h == b || h.hasSuffix("." + b) { return true }
+        }
+        if h.contains("searx") || h.contains("searxng") { return true }
+        return false
+    }
+
+    private static func canonicalize(_ raw: String) -> String {
+        guard var comps = URLComponents(string: raw) else { return raw.lowercased() }
+        comps.scheme = comps.scheme?.lowercased()
+        comps.host = comps.host?.lowercased()
+        if let host = comps.host, host.hasPrefix("www.") {
+            comps.host = String(host.dropFirst(4))
+        }
+        comps.fragment = nil
+        let drop: Set<String> = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid", "yclid"]
+        comps.queryItems = comps.queryItems?.filter { !drop.contains($0.name.lowercased()) }
+        if comps.queryItems?.isEmpty == true { comps.queryItems = nil }
+        if comps.path.count > 1, comps.path.hasSuffix("/") {
+            comps.path.removeLast()
+        }
+        return comps.string ?? raw.lowercased()
+    }
+
+    private static func makeResult(
+        title: String,
+        url: String,
+        snippet: String?,
+        uploader: String?,
+        thumbnail: String?,
+        duration: Double?,
+        views: Int?
+    ) -> MagicSearchResult? {
+        guard url.hasPrefix("http"),
+              let host = URL(string: url)?.host?.lowercased(),
+              !isSearchChrome(host) else { return nil }
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let snippetClean: String? = {
+            guard let snippet else { return nil }
+            let c = clean(snippet)
+            return c.isEmpty ? nil : c
+        }()
+        return MagicSearchResult(
+            id: "web-\(canonicalize(url))",
+            title: trimmed.isEmpty ? host : trimmed,
+            duration: duration,
+            thumbnailURL: thumbnail,
+            source: .web,
+            pageURL: url,
+            uploader: uploader,
+            views: views,
+            snippet: snippetClean,
+            downloads: []
+        )
+    }
+
+    /// فك التكرار بالرابط (كل المواقع)، مع سقف لطيف لكل نطاق حتى لا يغرق مصدر واحد القائمة.
+    private static func dedupe(_ raw: [MagicSearchResult], limit: Int = 60) -> [MagicSearchResult] {
+        var seenURL = Set<String>()
+        var perHost: [String: Int] = [:]
+        var preferred: [MagicSearchResult] = []
+        var overflow: [MagicSearchResult] = []
+        for r in raw {
+            let key = canonicalize(r.pageURL)
+            guard seenURL.insert(key).inserted else { continue }
+            let host = URL(string: r.pageURL)?.host?.lowercased() ?? ""
+            let n = perHost[host, default: 0]
+            if n < 5 {
+                perHost[host] = n + 1
+                preferred.append(r)
+            } else {
+                overflow.append(r)
+            }
+        }
+        var out = preferred
+        if out.count < limit {
+            out.append(contentsOf: overflow.prefix(limit - out.count))
+        }
+        return Array(out.prefix(limit))
     }
 }
 
@@ -579,7 +994,7 @@ final class MagicSearchStore: ObservableObject {
     static func merge(buckets: [[MagicSearchResult]], target: Double?, minDuration: Double?) -> [MagicSearchResult] {
         let minDur = minDuration ?? 0
 
-        var filtered: [[MagicSearchResult]] = buckets.map { bucket in
+        let filtered: [[MagicSearchResult]] = buckets.map { bucket in
             bucket.filter { r in
                 if r.isShort { return false } // استبعاد Shorts نهائياً
                 guard minDur > 0, let d = r.duration else { return true }
