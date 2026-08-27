@@ -154,7 +154,7 @@ struct LockScreenView: View {
                 .environment(\.layoutDirection, .leftToRight)
                 .frame(maxWidth: 280)
             Button("دخول") {
-                error = !appLock.unlock(password: password)
+                error = !appLock.unlock(password)
                 if !error { password = "" }
             }
             .buttonStyle(.borderedProminent)

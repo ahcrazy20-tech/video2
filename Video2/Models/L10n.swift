@@ -388,15 +388,15 @@ enum L10n {
         "magic.badge.close": "قريب من المدة",
         "magic.badge.short": "مبتور/أقصر",
         "magic.badge.unknown": "مدة غير معروفة",
-        "magic.hint": "افتح أي نتيجة للتحقق منها في المتصفح، ثم حمّلها بالطريقة المعتادة (زر الاستخراج أو الرادار) — خط التحميل الأصلي دون أي تغيير. نتائج الأرشيف تُحمّل مباشرة بجوداتها المتاحة.",
-        "magic.searching": "جاري البحث في المصادر…",
+        "magic.hint": "البحث يشمل كل المواقع عبر محركات متعددة (كل المناطق). افتح أي نتيجة للتحقق منها في المتصفح، ثم حمّلها بالطريقة المعتادة (زر الاستخراج أو الرادار) — خط التحميل الأصلي دون أي تغيير. نتائج الأرشيف تُحمّل مباشرة بجوداتها المتاحة.",
+        "magic.searching": "جاري البحث في كل المواقع…",
         "magic.empty": "لا نتائج. جرّب صياغة أخرى أو خفّف فلتر المدة.",
-        "magic.intro": "اكتب اسم فيديو أو فيلم، وحدّد المدة إن أردت، وسيبحث التطبيق في عدة مصادر في وقت واحد (أرشيف الإنترنت، يوتيوب، داليموشن، والويب) ويعرض النتائج بالمدة والجودات.",
+        "magic.intro": "اكتب اسم فيديو أو فيلم، وحدّد المدة إن أردت، وسيبحث التطبيق في كل المواقع على الويب (محركات بحث متعددة + أرشيف الإنترنت ويوتيوب وداليموشن) ويعرض النتائج بالمدة والجودات.",
         "magic.count": "%d نتيجة من %d مصادر",
         "magic.source.archive": "أرشيف الإنترنت",
         "magic.source.youtube": "يوتيوب",
         "magic.source.dailymotion": "داليموشن",
-        "magic.source.web": "الويب",
+        "magic.source.web": "كل المواقع",
     ]
 
     static let en: [String: String] = [
@@ -748,14 +748,14 @@ enum L10n {
         "magic.badge.close": "Close duration",
         "magic.badge.short": "Truncated/short",
         "magic.badge.unknown": "Unknown duration",
-        "magic.hint": "Open any result to verify it in the browser, then download it the usual way (extractor or radar buttons) — the original download pipeline is untouched. Archive results download directly with their available qualities.",
-        "magic.searching": "Searching sources…",
+        "magic.hint": "Search covers all websites via multiple engines (all regions). Open any result to verify it in the browser, then download it the usual way (extractor or radar buttons) — the original download pipeline is untouched. Archive results download directly with their available qualities.",
+        "magic.searching": "Searching the whole web…",
         "magic.empty": "No results. Try different wording or relax the duration filter.",
-        "magic.intro": "Type a video or movie name, optionally set the duration, and the app searches several sources at once (Internet Archive, YouTube, Dailymotion, and the web) showing results with durations and qualities.",
+        "magic.intro": "Type a video or movie name, optionally set the duration, and the app searches the whole web (multiple search engines plus Internet Archive, YouTube, and Dailymotion) showing results with durations and qualities.",
         "magic.count": "%d results from %d sources",
         "magic.source.archive": "Internet Archive",
         "magic.source.youtube": "YouTube",
         "magic.source.dailymotion": "Dailymotion",
-        "magic.source.web": "Web",
+        "magic.source.web": "All sites",
     ]
 }
