@@ -94,7 +94,9 @@ enum MagicResolver {
 
     /// تحويل نتيجة بحث إلى مصادر تشغيل/تحميل.
     /// - Parameter deep: يفتح الصفحة في متصفح خفي لاصطياد ما تولّده السكربتات فقط.
-    static func resolve(_ result: MagicSearchResult, deep: Bool = false) async -> MagicResolution {
+    /// - Parameter forceHunt: طلب صريح من المستخدم (زر الصيد/التشغيل) — الصيد يعمل
+    ///   حتى لو كان مفتاح «الصيد العميق» مطفأً.
+    static func resolve(_ result: MagicSearchResult, deep: Bool = false, forceHunt: Bool = false) async -> MagicResolution {
         var out: MagicResolution
         switch result.source {
         case .archive: out = archive(result)
@@ -104,13 +106,14 @@ enum MagicResolver {
         case .vimeo: out = await vimeo(result)
         case .web: out = await webpage(result)
         }
-        if deep && out.playable.isEmpty {
-            let hunted = await MagicPageHunter.hunt(url: result.pageURL, title: result.title)
-            if !hunted.isEmpty {
-                out.variants.append(contentsOf: hunted)
-                out.note = nil
-                out.needsBrowser = false
-            }
+        // الصيد من متصفح خفي — نفس منطق المتصفح الظاهر (نفس سكربت الاستخراج +
+        // محاكاة نقرة التشغيل على المواقع التي لا تبدأ إلا بنقرة):
+        // • عند الطلب العميق أو الصريح،
+        // • وتلقائياً إن فشل جلب الصفحة مباشرة (مواقع ترفض غير المتصفحات) لأنه
+        //   يصبح حينها السبيل الوحيد المتبقي.
+        let shouldHunt = deep || forceHunt || out.note == "resolve.fetchFailed"
+        if shouldHunt && out.playable.isEmpty {
+            out = await mergeHunt(into: out, pageURL: result.pageURL, title: result.title)
         }
         var seen = Set<String>()
         out.variants = out.variants.filter { seen.insert($0.url).inserted }
@@ -137,18 +140,32 @@ enum MagicResolver {
                                      uploader: nil, views: nil, snippet: nil, downloads: [])
         var out = await webpage(fake)
         if out.playable.isEmpty {
-            let hunted = await MagicPageHunter.hunt(url: urlString, title: title)
-            if !hunted.isEmpty {
-                out.variants.append(contentsOf: hunted)
-                out.note = nil
-                out.needsBrowser = false
-            }
+            out = await mergeHunt(into: out, pageURL: urlString, title: title)
         }
         if out.variants.isEmpty {
             out.needsBrowser = true
-            out.note = "web.noDirectFile"
+            out.note = "resolve.huntNone"
         }
         return out
+    }
+
+    /// يدمج نتيجة الصيد الخفي في استنتاج سابق ويعيد رسالة مناسبة لكل حالة.
+    private static func mergeHunt(into out: MagicResolution, pageURL: String, title: String) async -> MagicResolution {
+        var merged = out
+        let hunted = await MagicPageHunter.hunt(url: pageURL, title: title)
+        if !hunted.isEmpty {
+            merged.variants.append(contentsOf: hunted)
+        }
+        if hunted.contains(where: { $0.isPlayableByEngine }) {
+            merged.note = nil
+            merged.needsBrowser = false
+        } else if !merged.variants.isEmpty {
+            // صيدنا ملفات لكنها بصيغ لا يشغّلها المشغّل مباشرة (تبقى قابلة للتحميل)
+            merged.note = "resolve.huntNoPlayable"
+        } else {
+            merged.note = "resolve.huntNone"
+        }
+        return merged
     }
 
     // MARK: - أرشيف الإنترنت (ملفات مباشرة في نتيجة البحث أصلاً)

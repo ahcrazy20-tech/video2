@@ -347,12 +347,14 @@ struct MagicSearchView: View {
             return
         }
         Task { @MainActor in
-            await store.resolve(result, deep: store.deepHunt)
+            // طلب تشغيل صريح: نعيد الحل بالكامل مع الصيد الخفي بنفس منطق المتصفح
+            // (المستخرج المحقون + محاكاة نقرة التشغيل) ولو فشل من قبل.
+            await store.resolve(result, deep: true, forceHunt: true, force: true)
             if let vm = store.play(result, variant: variant) {
                 attach(vm)
                 showPlayer = true
             } else {
-                showToast(lang.t("magic.play.unavailable"))
+                showToast(lang.t(store.notes[result.id] ?? "magic.play.unavailable"))
             }
         }
     }

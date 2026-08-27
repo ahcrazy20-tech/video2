@@ -1431,13 +1431,18 @@ final class MagicSearchStore: ObservableObject {
 
     // MARK: الصيد/الحل
 
+    /// - Parameter force: يفرّغ الكاش لهذه النتيجة ويحلّها من جديد (زر التشغيل بعد فشل سابق).
     @MainActor
-    func resolve(_ result: MagicSearchResult, deep: Bool? = nil) async {
+    func resolve(_ result: MagicSearchResult, deep: Bool? = nil, forceHunt: Bool = false, force: Bool = false) async {
         let id = result.id
+        if force {
+            variants.removeValue(forKey: id)
+            notes.removeValue(forKey: id)
+        }
         guard variants[id] == nil, !resolving.contains(id) else { return }
         resolving.insert(id)
         let useDeep = deep ?? deepHunt
-        let resolution = await MagicResolver.resolve(result, deep: useDeep)
+        let resolution = await MagicResolver.resolve(result, deep: useDeep, forceHunt: forceHunt)
         variants[id] = resolution.variants
         if let note = resolution.note {
             notes[id] = note
@@ -1487,7 +1492,7 @@ final class MagicSearchStore: ObservableObject {
     func rehunt(_ result: MagicSearchResult) async {
         variants.removeValue(forKey: result.id)
         notes.removeValue(forKey: result.id)
-        await resolve(result, deep: true)
+        await resolve(result, deep: true, forceHunt: true, force: true)
     }
 
     // MARK: التشغيل
