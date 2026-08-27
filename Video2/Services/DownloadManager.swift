@@ -99,13 +99,22 @@ final class DownloadManager: ObservableObject {
         pump()
     }
 
-    func enqueueManual(urlString: String, title: String, page: String?, auth: DownloadAuth? = nil) {
-        let kind = MediaKind.infer(url: urlString.lowercased(), mime: nil)
+    func enqueueManual(urlString: String, title: String, page: String?, auth: DownloadAuth? = nil,
+                       kindHint: MediaKind? = nil) {
+        // kindHint اختياري: روابط CDN بلا امتداد (googlevideo مثلًا) تُسمّى .bin وإلا،
+        // والتوجيه الصحيح للجودة/الامتداد يجعل المكتبة والمشغّل يتعاملان معه كما هو معتاد.
+        var kind = MediaKind.infer(url: urlString.lowercased(), mime: nil)
+        if let kindHint, kind == .other { kind = kindHint }
         var media = DetectedMedia(url: urlString, title: title.isEmpty ? "رابط يدوي" : title, kind: kind, mime: nil, qualityLabel: nil, drm: .none, pageURL: page, extractionMethod: "manual-url")
         var a = auth ?? .default
         if a.referer == nil { a.referer = page }
         media.pageURL = page
         enqueue(media, auth: a, maxHeight: Self.preferredMaxHeight)
+    }
+
+    /// مهمة نشطة مرتبطة برابط وسائط معيّن (لعرض شريط التقدّم داخل تبويب البحث).
+    func job(matchingURL url: String) -> DownloadJob? {
+        jobs.first(where: { $0.media.url == url })
     }
 
     static var preferredMaxHeight: Int? {
