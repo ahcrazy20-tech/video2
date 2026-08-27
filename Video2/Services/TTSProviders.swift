@@ -1,6 +1,99 @@
 import Foundation
 import AVFoundation
 
+// MARK: - Azure Speech Neural TTS/STT configuration
+
+/// Azure Speech uses one Speech resource key for both Neural TTS and the
+/// short-audio STT endpoint. The resource region is not part of the key, so it
+/// is stored separately in UserDefaults (never in the Keychain value).
+enum AzureSpeech {
+    static let defaultRegion = "eastus"
+    static let regionKey = "azure.speech.region"
+
+    static var normalizedRegion: String {
+        let raw = UserDefaults.standard.string(forKey: regionKey) ?? defaultRegion
+        let clean = raw.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "-" }
+        return clean.isEmpty ? defaultRegion : clean
+    }
+
+    static func locale(for language: SubLang) -> String {
+        switch language {
+        case .ar, .auto: return "ar-SA"
+        case .en: return "en-US"
+        case .hi: return "hi-IN"
+        case .ur: return "ur-PK"
+        case .fr: return "fr-FR"
+        case .tr: return "tr-TR"
+        case .de: return "de-DE"
+        case .es: return "es-ES"
+        case .ru: return "ru-RU"
+        case .fa: return "fa-IR"
+        case .id: return "id-ID"
+        }
+    }
+
+    /// REST القصير لا يكشف اللغة عند تمرير مصدر تلقائي؛ لا نعرض ar-SA
+    /// على أنه نتيجة كشف في تلك الحالة.
+    static func detectedLocale(for language: SubLang) -> String? {
+        language == .auto ? nil : locale(for: language)
+    }
+
+    /// يولّد MP3 من SSML باستخدام صوت Neural المحدد.
+    static func synthesize(text: String, voice: DubbingVoice, outputURL: URL) async throws -> Double {
+        guard let key = KeychainStore.get("azure") else {
+            throw APIError(status: 401, body: "أدخل مفتاح Azure Speech من الإعدادات")
+        }
+        let endpoint = "https://\(normalizedRegion).tts.speech.microsoft.com/cognitiveservices/v1"
+        let language = voice.language.isEmpty ? "ar-SA" : voice.language
+        let ssml = "<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" xml:lang=\"\(xmlEscape(language))\"><voice name=\"\(xmlEscape(voice.id))\">\(xmlEscape(text))</voice></speak>"
+        let payload = Data(ssml.utf8)
+        let (data, _) = try await HTTP.withRetry(attempts: 3, baseDelay: 2) {
+            try await HTTP.request("POST", endpoint,
+                                   headers: [
+                                    "Ocp-Apim-Subscription-Key": KeychainStore.normalized(key),
+                                    "Content-Type": "application/ssml+xml; charset=utf-8",
+                                    "X-Microsoft-OutputFormat": "audio-24khz-48kbitrate-mono-mp3",
+                                    "Accept": "audio/mpeg"
+                                   ],
+                                   body: payload,
+                                   timeout: 90)
+        }
+        try data.write(to: outputURL, options: .atomic)
+        let duration = CMTimeGetSeconds(AVURLAsset(url: outputURL).duration)
+        return duration.isFinite && duration > 0
+            ? duration
+            : EdgeTTSClient.approximateMP3Duration(bytes: data.count)
+    }
+
+    /// فحص خفيف للمفتاح والمنطقة عبر قائمة الأصوات الرسمية.
+    static func verifyKey(_ key: String) async -> String {
+        let endpoint = "https://\(normalizedRegion).tts.speech.microsoft.com/cognitiveservices/voices/list"
+        do {
+            _ = try await HTTP.request("GET", endpoint,
+                                       headers: ["Ocp-Apim-Subscription-Key": KeychainStore.normalized(key)],
+                                       timeout: 30)
+            return "✅ مفتاح Azure Speech يعمل في منطقة \(normalizedRegion) — راجع بوابة Azure لمعرفة الاستخدام"
+        } catch let error as APIError {
+            switch error.status {
+            case 401, 403: return "❌ مفتاح Azure Speech أو المنطقة غير صحيحين (HTTP \(error.status))"
+            case 429: return "⚠️ المفتاح يعمل لكن وصلت لحد Azure مؤقتاً (429)"
+            default: return "⚠️ استجابة Azure Speech غير متوقعة (HTTP \(error.status))"
+            }
+        } catch {
+            return "⚠️ تعذر الاتصال بـ Azure Speech — تحقق من المنطقة والإنترنت"
+        }
+    }
+
+    private static func xmlEscape(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
+    }
+}
+
 // MARK: - Groq PlayAI TTS
 // https://console.groq.com/docs/api-reference#audio
 

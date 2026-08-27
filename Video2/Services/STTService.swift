@@ -264,6 +264,322 @@ enum STTService {
         return STTResult(cues: cues, detectedLang: json["language"] as? String)
     }
 
+    // MARK: Deepgram Nova-3
+
+    /// تفريغ المقاطع عبر Deepgram Nova-3. نستخدم utterances حتى تعود
+    /// توقيتات مناسبة للـ SRT بدلاً من نص واحد للفيديو كله.
+    static func deepgramTranscribe(chunks: [AudioChunk],
+                                   chunksDir: URL,
+                                   language: SubLang,
+                                   apiKey: String,
+                                   concurrency: Int,
+                                   chunkDone: @escaping (Int) -> Void,
+                                   chunkResult: @escaping (Int, [SubCue], String?) -> Void) async throws -> STTResult {
+        var detected: String? = nil
+        var allCues: [SubCue] = []
+        var i = 0
+        while i < chunks.count {
+            if Task.isCancelled { throw CancellationError() }
+            let window = Array(chunks[i..<min(i + max(1, concurrency), chunks.count)])
+            i += window.count
+
+            try await withThrowingTaskGroup(of: (Int, [SubCue], String?).self) { group in
+                for chunk in window {
+                    group.addTask {
+                        let result = try await transcribeOneChunkDeepgram(chunk: chunk,
+                                                                          chunksDir: chunksDir,
+                                                                          language: language,
+                                                                          apiKey: apiKey)
+                        return (chunk.index, result.cues, result.detectedLang)
+                    }
+                }
+                for try await (idx, cues, lang) in group {
+                    allCues.append(contentsOf: cues)
+                    if detected == nil { detected = lang }
+                    chunkDone(idx)
+                    chunkResult(idx, cues, lang)
+                }
+            }
+        }
+        return STTResult(cues: allCues, detectedLang: detected)
+    }
+
+    private static func transcribeOneChunkDeepgram(chunk: AudioChunk,
+                                                   chunksDir: URL,
+                                                   language: SubLang,
+                                                   apiKey: String) async throws -> STTResult {
+        let fileURL = chunksDir.appendingPathComponent(chunk.fileName)
+        let fileData: Data
+        do { fileData = try Data(contentsOf: fileURL, options: [.mappedIfSafe]) }
+        catch { throw AudioPipelineError.readerFailed("تعذر قراءة ملف الجزء \(chunk.index)") }
+
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "api.deepgram.com"
+        components.path = "/v1/listen"
+        var query: [URLQueryItem] = [
+            URLQueryItem(name: "model", value: "nova-3-general"),
+            URLQueryItem(name: "smart_format", value: "true"),
+            URLQueryItem(name: "punctuate", value: "true"),
+            URLQueryItem(name: "utterances", value: "true")
+        ]
+        if let requestedLanguage = language.bcp47 {
+            query.append(URLQueryItem(name: "language", value: requestedLanguage))
+        } else {
+            query.append(URLQueryItem(name: "detect_language", value: "true"))
+        }
+        components.queryItems = query
+        guard let endpoint = components.url?.absoluteString else { throw URLError(.badURL) }
+
+        let (data, _) = try await HTTP.withRetry(attempts: 4, baseDelay: 3) {
+            try await HTTP.request("POST", endpoint,
+                                   headers: [
+                                    "Authorization": "Token \(KeychainStore.normalized(apiKey))",
+                                    "Content-Type": mimeType(forAudioURL: fileURL),
+                                    "Accept": "application/json"
+                                   ],
+                                   body: fileData,
+                                   timeout: 900)
+        }
+        return parseDeepgramResponse(HTTP.json(from: data), chunk: chunk, requestedLanguage: language)
+    }
+
+    private static func parseDeepgramResponse(_ json: [String: Any],
+                                              chunk: AudioChunk,
+                                              requestedLanguage: SubLang) -> STTResult {
+        let results = json["results"] as? [String: Any] ?? [:]
+        let channels = results["channels"] as? [[String: Any]] ?? []
+        let firstChannel = channels.first ?? [:]
+        let alternatives = firstChannel["alternatives"] as? [[String: Any]] ?? []
+        let best = alternatives.first ?? [:]
+        let detected = firstChannel["detected_language"] as? String
+            ?? (json["metadata"] as? [String: Any])?["language"] as? String
+            ?? requestedLanguage.bcp47
+
+        var cues: [SubCue] = []
+        if let utterances = results["utterances"] as? [[String: Any]] {
+            for utterance in utterances {
+                guard let text = utterance["transcript"] as? String else { continue }
+                let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let start = chunk.start + max(0, HTTP.num(utterance["start"]) ?? 0)
+                let end = chunk.start + max(0, HTTP.num(utterance["end"]) ?? (start - chunk.start + 2))
+                guard !clean.isEmpty, end > start else { continue }
+                cues.append(SubCue(id: cues.count, start: start, end: end, text: clean, translated: nil))
+            }
+        }
+
+        if cues.isEmpty, let words = best["words"] as? [[String: Any]] {
+            cues = cuesFromTimestampedWords(words, offset: chunk.start)
+        }
+        if cues.isEmpty, let paragraphs = (best["paragraphs"] as? [String: Any])?["paragraphs"] as? [[String: Any]] {
+            for paragraph in paragraphs {
+                guard let text = paragraph["text"] as? String else { continue }
+                let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let start = chunk.start + max(0, HTTP.num(paragraph["start"]) ?? 0)
+                let end = chunk.start + max(0, HTTP.num(paragraph["end"]) ?? (start - chunk.start + 2))
+                guard !clean.isEmpty, end > start else { continue }
+                cues.append(SubCue(id: cues.count, start: start, end: end, text: clean, translated: nil))
+            }
+        }
+        if cues.isEmpty, let text = best["transcript"] as? String {
+            let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !clean.isEmpty {
+                cues.append(SubCue(id: 0,
+                                   start: chunk.start,
+                                   end: chunk.start + max(2, chunk.duration),
+                                   text: clean,
+                                   translated: nil))
+            }
+        }
+        return STTResult(cues: cues, detectedLang: detected)
+    }
+
+    // MARK: Azure Speech short-audio STT
+
+    /// Azure's simple REST recognizer accepts PCM WAV clips under one minute.
+    /// AudioPipeline creates 50-second chunks for this provider and this method
+    /// converts each AAC chunk to the required 16 kHz mono PCM form on-device.
+    static func azureTranscribe(chunks: [AudioChunk],
+                                chunksDir: URL,
+                                language: SubLang,
+                                apiKey: String,
+                                concurrency: Int,
+                                chunkDone: @escaping (Int) -> Void,
+                                chunkResult: @escaping (Int, [SubCue], String?) -> Void) async throws -> STTResult {
+        var detected: String? = nil
+        var allCues: [SubCue] = []
+        var i = 0
+        while i < chunks.count {
+            if Task.isCancelled { throw CancellationError() }
+            let window = Array(chunks[i..<min(i + max(1, concurrency), chunks.count)])
+            i += window.count
+
+            try await withThrowingTaskGroup(of: (Int, [SubCue], String?).self) { group in
+                for chunk in window {
+                    group.addTask {
+                        let result = try await transcribeOneChunkAzure(chunk: chunk,
+                                                                        chunksDir: chunksDir,
+                                                                        language: language,
+                                                                        apiKey: apiKey)
+                        return (chunk.index, result.cues, result.detectedLang)
+                    }
+                }
+                for try await (idx, cues, lang) in group {
+                    allCues.append(contentsOf: cues)
+                    if detected == nil { detected = lang }
+                    chunkDone(idx)
+                    chunkResult(idx, cues, lang)
+                }
+            }
+        }
+        return STTResult(cues: allCues, detectedLang: detected ?? AzureSpeech.detectedLocale(for: language))
+    }
+
+    private static func transcribeOneChunkAzure(chunk: AudioChunk,
+                                                chunksDir: URL,
+                                                language: SubLang,
+                                                apiKey: String) async throws -> STTResult {
+        let inputURL = chunksDir.appendingPathComponent(chunk.fileName)
+        let wavURL = chunksDir.appendingPathComponent("azure-\(chunk.index).wav")
+        defer { try? FileManager.default.removeItem(at: wavURL) }
+        try await AudioPipeline.convertToAzureWAV(inputURL: inputURL, outputURL: wavURL)
+        let audioData = try Data(contentsOf: wavURL, options: [.mappedIfSafe])
+
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "\(AzureSpeech.normalizedRegion).stt.speech.microsoft.com"
+        components.path = "/speech/recognition/conversation/cognitiveservices/v1"
+        components.queryItems = [
+            URLQueryItem(name: "language", value: AzureSpeech.locale(for: language)),
+            URLQueryItem(name: "format", value: "detailed"),
+            URLQueryItem(name: "profanity", value: "raw")
+        ]
+        guard let endpoint = components.url?.absoluteString else { throw URLError(.badURL) }
+
+        let (data, _) = try await HTTP.withRetry(attempts: 4, baseDelay: 3) {
+            try await HTTP.request("POST", endpoint,
+                                   headers: [
+                                    "Ocp-Apim-Subscription-Key": KeychainStore.normalized(apiKey),
+                                    "Content-Type": "audio/wav; codecs=audio/pcm; samplerate=16000",
+                                    "Accept": "application/json"
+                                   ],
+                                   body: audioData,
+                                   timeout: 180)
+        }
+        return try parseAzureResponse(HTTP.json(from: data), chunk: chunk, language: language)
+    }
+
+    private static func parseAzureResponse(_ json: [String: Any],
+                                            chunk: AudioChunk,
+                                            language: SubLang) throws -> STTResult {
+        let status = (json["RecognitionStatus"] as? String ?? "").lowercased()
+        if status == "error" {
+            // HTTP 200 can still contain a service-level error; preserve it as a
+            // visible failure instead of silently treating it as no speech.
+            let detail = (json["DisplayText"] as? String) ?? "Azure Speech أعاد حالة Error"
+            throw APIError(status: 422, body: detail)
+        }
+
+        let tick: Double = 10_000_000
+        let offset = (HTTP.num(json["Offset"]) ?? 0) / tick
+        let duration = (HTTP.num(json["Duration"]) ?? 0) / tick
+        let base = chunk.start + max(0, offset)
+        let end = base + max(0.1, duration > 0 ? duration : chunk.duration)
+        let best = (json["NBest"] as? [[String: Any]])?.first ?? [:]
+        let text = (best["Display"] as? String)
+            ?? (json["DisplayText"] as? String)
+            ?? ""
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, status != "nomatch" else {
+            return STTResult(cues: [], detectedLang: AzureSpeech.detectedLocale(for: language))
+        }
+
+        if let words = best["Words"] as? [[String: Any]] {
+            let parsed = words.compactMap { word -> [String: Any]? in
+                guard let value = word["Word"] as? String else { return nil }
+                let wordOffset = (HTTP.num(word["Offset"]) ?? 0) / tick
+                let wordDuration = (HTTP.num(word["Duration"]) ?? 0) / tick
+                return ["word": value, "start": wordOffset, "end": wordOffset + wordDuration]
+            }
+            let cues = cuesFromTimestampedWords(parsed, offset: chunk.start)
+            if !cues.isEmpty { return STTResult(cues: cues, detectedLang: AzureSpeech.detectedLocale(for: language)) }
+        }
+
+        // The detailed short-audio response normally has one phrase rather than
+        // word timestamps. Split it into readable subtitle lines while preserving
+        // the service's measured time window (not fabricated video duration).
+        return STTResult(cues: approximateCues(text: clean, start: base, end: end),
+                         detectedLang: AzureSpeech.detectedLocale(for: language))
+    }
+
+    private static func approximateCues(text: String, start: Double, end: Double) -> [SubCue] {
+        let words = text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard !words.isEmpty else { return [] }
+        var groups: [String] = []
+        var current: [String] = []
+        for word in words {
+            current.append(word)
+            let ending = word.last.map(String.init) ?? ""
+            if current.count >= 12 || ".!?؟؛".contains(ending) {
+                groups.append(current.joined(separator: " "))
+                current.removeAll(keepingCapacity: true)
+            }
+        }
+        if !current.isEmpty { groups.append(current.joined(separator: " ")) }
+        let totalWeight = max(1, groups.reduce(0) { $0 + $1.count })
+        let span = max(0.2, end - start)
+        var cursor = start
+        return groups.enumerated().map { index, group in
+            let part = span * Double(group.count) / Double(totalWeight)
+            let cueEnd = index + 1 == groups.count ? end : min(end, cursor + max(0.2, part))
+            defer { cursor = cueEnd }
+            return SubCue(id: index, start: cursor, end: cueEnd, text: group, translated: nil)
+        }
+    }
+
+    private static func cuesFromTimestampedWords(_ words: [[String: Any]], offset: Double) -> [SubCue] {
+        struct Word { let text: String; let start: Double; let end: Double }
+        var parsed: [Word] = []
+        for word in words {
+            guard let text = (word["punctuated_word"] as? String)
+                    ?? (word["word"] as? String)
+                    ?? (word["Word"] as? String) else { continue }
+            let start = HTTP.num(word["start"]) ?? 0
+            let end = HTTP.num(word["end"]) ?? (start + 0.5)
+            guard end > start else { continue }
+            parsed.append(Word(text: text, start: start, end: end))
+        }
+        var cues: [SubCue] = []
+        var current: [Word] = []
+        func flush() {
+            guard let first = current.first, let last = current.last else { return }
+            let text = current.map(\.text).joined(separator: " ")
+                .replacingOccurrences(of: " ,", with: ",")
+                .replacingOccurrences(of: " .", with: ".")
+                .replacingOccurrences(of: " ؟", with: "؟")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                cues.append(SubCue(id: cues.count,
+                                   start: offset + first.start,
+                                   end: offset + last.end,
+                                   text: text,
+                                   translated: nil))
+            }
+            current.removeAll(keepingCapacity: true)
+        }
+        for (index, word) in parsed.enumerated() {
+            current.append(word)
+            let punctuation = word.text.last.map(String.init) ?? ""
+            let gap = index + 1 < parsed.count ? parsed[index + 1].start - word.end : 0
+            if current.count >= 18 || word.end - (current.first?.start ?? word.start) >= 7
+                || gap > 1.2 || ".!?؟؛".contains(punctuation) {
+                flush()
+            }
+        }
+        flush()
+        return cues
+    }
+
     // MARK: AssemblyAI
 
     static func assemblyTranscribe(audioURL: URL,

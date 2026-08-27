@@ -317,24 +317,30 @@ enum TranslateService {
         ["Content-Type": "application/json", "x-goog-api-key": key]
     }
 
-    /// يضيف إعداد تفكير مناسباً لطلب ترجمة الدفعة الذي يُرسل فعلياً. هذا مهم
-    /// عند الاسترداد التلقائي: قد يبدأ الطلب بـ Gemini 3 ثم يتحول إلى 2.5.
-    /// لا نعدّل طلب فحص المفتاح القصير؛ ترجمة الترجمة المصاحبة مهمة مباشرة ولا
-    /// تحتاج تفكيراً متوسطاً/عميقاً.
-    private static func optimizedGeminiPayload(_ payload: Data, model: String) -> Data {
+    /// يكيّف جسم الطلب بحسب عائلة Gemini قبل الإرسال الفعلي. هذا مهم عند
+    /// الاسترداد التلقائي: قد يبدأ الطلب بـ Gemini 3 ثم يتحول إلى 2.5.
+    /// Gemini 3.x يرفض معاملات أخذ العينات القديمة (temperature/topP/topK)،
+    /// بينما تبقى temperature مدعومة في Gemini 2.5. إبقاء هذا في دالة واحدة
+    /// يمنع اختلاف طلب الترجمة عن طلب مراجعة الترجمة.
+    static func optimizedGeminiPayload(_ payload: Data, model: String) -> Data {
         guard var body = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
-              var generationConfig = body["generationConfig"] as? [String: Any],
-              generationConfig["responseMimeType"] != nil else {
+              var generationConfig = body["generationConfig"] as? [String: Any] else {
             return payload
         }
 
         let id = normalizedGeminiModel(model).lowercased()
         if id.hasPrefix("gemini-3.") {
-            // Gemini 3.7 Flash يدعم low كأقل مستوى؛ موديلات Lite تستفيد من minimal.
-            let level = id.contains("lite") ? "minimal" : "low"
-            generationConfig["thinkingConfig"] = ["thinkingLevel": level]
+            // Gemini 3.7 Flash يدعم low/medium/high فقط؛ لا نرسل minimal.
+            generationConfig.removeValue(forKey: "temperature")
+            generationConfig.removeValue(forKey: "topP")
+            generationConfig.removeValue(forKey: "topK")
+            // Be defensive if a future caller supplies OpenAI-style snake_case.
+            generationConfig.removeValue(forKey: "top_p")
+            generationConfig.removeValue(forKey: "top_k")
+            generationConfig["thinkingConfig"] = ["thinkingLevel": "low"]
         } else if id.hasPrefix("gemini-2.5-") {
             // صيغة 2.5 مختلفة، لذا لا نرسل thinkingLevel الخاص بسلسلة Gemini 3.
+            generationConfig.removeValue(forKey: "thinkingConfig")
             generationConfig["thinkingConfig"] = ["thinkingBudget": 0]
         }
 
@@ -531,6 +537,9 @@ enum TranslateService {
                                                               attempts: 2,
                                                               timeout: 45)
             return result.model
+        } catch let error as APIError {
+            // احتفظ برمز HTTP والجسم حتى يلتقطه مسار fallback تلقائياً.
+            throw error
         } catch {
             throw GeminiServiceError(detail: error.localizedDescription)
         }
@@ -566,6 +575,10 @@ enum TranslateService {
                                                               timeout: 75)
             data = result.data
             response = result.response
+        } catch let error as APIError {
+            // لا نغلف أخطاء HTTP: TranslationManager يحتاج status/body ليتحول
+            // تلقائياً إلى مزود بديل عند 402/403/404/429 أو نفاد الحصة.
+            throw error
         } catch {
             throw GeminiServiceError(detail: error.localizedDescription)
         }

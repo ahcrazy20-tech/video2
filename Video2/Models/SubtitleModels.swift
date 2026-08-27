@@ -105,7 +105,7 @@ enum SubLang: String, CaseIterable, Codable, Identifiable, Hashable {
 // MARK: - مزودو التفريغ الصوتي (Speech-to-Text)
 
 enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
-    case auto, groq, assemblyai, sttai, speechmatics, siliconflow
+    case auto, groq, assemblyai, sttai, speechmatics, deepgram, azure, siliconflow
     var id: String { rawValue }
 
     var titleAR: String {
@@ -115,6 +115,8 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
         case .assemblyai: return "AssemblyAI (الأقوى للطويل)"
         case .sttai: return "STT.ai (600 دقيقة مجاناً/شهر)"
         case .speechmatics: return "Speechmatics (480 دقيقة مجاناً/شهر)"
+        case .deepgram: return "Deepgram Nova-3 (دقيق ومتعدد اللغات)"
+        case .azure: return "Azure Speech (Neural STT)"
         case .siliconflow: return "SiliconFlow SenseVoice (متعدد اللغات)"
         }
     }
@@ -122,7 +124,7 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
     var detailAR: String {
         switch self {
         case .auto:
-            return "يختار التطبيق أفضل مزود حسب المفاتيح المتاحة: AssemblyAI للفيديوهات الطويلة، وإلا Groq."
+            return "يختار التطبيق أفضل مزود حسب المفاتيح المتاحة: AssemblyAI للفيديوهات الطويلة، ثم المزودات الأخرى."
         case .groq:
             return "whisper-large-v3-turbo — أسرع وأرخص خيار، مع تقطيع الفيديو لأجزاء متوازية. مناسب للفيديوهات حتى 5 ساعات وأكثر."
         case .assemblyai:
@@ -131,6 +133,10 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
             return "STT.ai Enhanced Whisper — 600 دقيقة شهرية مجانية + 100 دقيقة API. بديل قوي وسريع."
         case .speechmatics:
             return "Speechmatics — 480 دقيقة مجانية شهرياً، دقة عالية لـ 55+ لغة مع دعم اللهجات."
+        case .deepgram:
+            return "Nova-3 مع utterances وتوقيتات لكل مقطع — يدعم العربية ومتعدد اللغات. رصيد التسجيل ولوحة الاستخدام من Deepgram."
+        case .azure:
+            return "Azure Speech STT — يرسل أجزاء WAV قصيرة إلى منطقة Speech التي تحددها في الإعدادات. الطبقة المجانية F0 تشمل 5 ساعات صوت شهرياً؛ مع مصدر (تلقائي) يستخدم ar-SA لأن REST القصير لا يكشف عدة لغات."
         case .siliconflow:
             return "SenseVoice Small من FunAudioLLM — موديل صيني مفتوح متفوق في الهندية والصينية ومتعدد اللغات، يدعم 50+ لغة منها العربية. مجاني تقريباً."
         }
@@ -143,6 +149,8 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
         case .assemblyai: return "assemblyai"
         case .sttai: return "sttai"
         case .speechmatics: return "speechmatics"
+        case .deepgram: return "deepgram"
+        case .azure: return "azure"
         case .siliconflow: return "siliconflow"
         }
     }

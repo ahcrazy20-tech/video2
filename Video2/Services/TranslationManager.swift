@@ -69,10 +69,14 @@ final class TranslationManager: ObservableObject {
     static func resolvedSTT(_ kind: STTProviderKind) -> STTProviderKind {
         switch kind {
         case .auto:
+            // نحافظ على ترتيب المزودات القديمة؛ المزودان الجديدان يأتيان بعد
+            // الخيارات الموجودة حتى لا يتغير سلوك Auto للمستخدم الحالي.
             if KeychainStore.has("assemblyai") { return .assemblyai }
             if KeychainStore.has("sttai") { return .sttai }
             if KeychainStore.has("speechmatics") { return .speechmatics }
             if KeychainStore.has("groq") { return .groq }
+            if KeychainStore.has("deepgram") { return .deepgram }
+            if KeychainStore.has("azure") { return .azure }
             if KeychainStore.has("siliconflow") { return .siliconflow }
             return .groq
         default:
@@ -281,10 +285,15 @@ final class TranslationManager: ObservableObject {
                 saveIndex()
 
                 let singleFile = job.sttProvider == .assemblyai || job.sttProvider == .sttai || job.sttProvider == .speechmatics
+                // Azure Speech's short-audio REST endpoint accepts clips below one
+                // minute, so create 50-second chunks with a little margin. Deepgram
+                // keeps the normal long chunks and therefore preserves its throughput.
+                let chunkDuration = job.sttProvider == .azure ? 50.0 : AudioPipeline.chunkSeconds
                 let (chunks, dur) = try await AudioPipeline.extractChunks(
                     from: video.localURL,
                     into: dir,
                     singleFile: singleFile,
+                    chunkDuration: chunkDuration,
                     isHLS: video.kind == .hls || video.localURL.pathExtension.lowercased() == "m3u8") { [weak self] p in
                         Task { @MainActor in
                             self?.setJob(jobID) { j in
@@ -384,6 +393,104 @@ final class TranslationManager: ObservableObject {
                         j.totalChunks = 1
                         j.cueCount = allCues.count
                         j.errorMessage = nil
+                        j.progress = 0.60
+                    }
+                } else if job.sttProvider == .deepgram {
+                    let chunksDir = dir.appendingPathComponent("chunks", isDirectory: true)
+                    var pending: [AudioChunk] = []
+                    var doneCount = 0
+                    for c in audioChunks {
+                        let f = dir.appendingPathComponent("stt-\(String(format: "%03d", c.index)).json")
+                        if let data = try? Data(contentsOf: f),
+                           let cached = try? JSONDecoder().decode([SubCue].self, from: data) {
+                            allCues.append(contentsOf: cached)
+                            doneCount += 1
+                        } else {
+                            pending.append(c)
+                        }
+                    }
+                    setJob(jobID) { j in
+                        j.doneChunks = doneCount
+                        j.totalChunks = audioChunks.count
+                    }
+                    saveIndex()
+
+                    let key = Self.sttHasKey(.deepgram) ?? ""
+                    let result = try await STTService.deepgramTranscribe(
+                        chunks: pending,
+                        chunksDir: chunksDir,
+                        language: job.sourceLang,
+                        apiKey: key,
+                        concurrency: sttConcurrency) { [weak self] _ in
+                            Task { @MainActor in
+                                self?.setJob(jobID) { j in
+                                    j.doneChunks += 1
+                                    let total = max(1, j.totalChunks)
+                                    j.progress = 0.12 + 0.48 * Double(j.doneChunks) / Double(total)
+                                }
+                                self?.saveIndex()
+                            }
+                        } chunkResult: { idx, cues, lang in
+                            if let data = try? JSONEncoder().encode(cues) {
+                                try? data.write(to: dir.appendingPathComponent("stt-\(String(format: "%03d", idx)).json"), options: .atomic)
+                            }
+                            _ = lang
+                        }
+                    allCues.append(contentsOf: result.cues)
+                    if detected == nil { detected = result.detectedLang }
+                    allCues = SubtitleCodec.normalize(SubtitleCodec.sortedAndMerged(allCues))
+                    setJob(jobID) { j in
+                        j.detectedLang = detected
+                        j.cueCount = allCues.count
+                        j.progress = 0.60
+                    }
+                } else if job.sttProvider == .azure {
+                    let chunksDir = dir.appendingPathComponent("chunks", isDirectory: true)
+                    var pending: [AudioChunk] = []
+                    var doneCount = 0
+                    for c in audioChunks {
+                        let f = dir.appendingPathComponent("stt-\(String(format: "%03d", c.index)).json")
+                        if let data = try? Data(contentsOf: f),
+                           let cached = try? JSONDecoder().decode([SubCue].self, from: data) {
+                            allCues.append(contentsOf: cached)
+                            doneCount += 1
+                        } else {
+                            pending.append(c)
+                        }
+                    }
+                    setJob(jobID) { j in
+                        j.doneChunks = doneCount
+                        j.totalChunks = audioChunks.count
+                    }
+                    saveIndex()
+
+                    let key = Self.sttHasKey(.azure) ?? ""
+                    let result = try await STTService.azureTranscribe(
+                        chunks: pending,
+                        chunksDir: chunksDir,
+                        language: job.sourceLang,
+                        apiKey: key,
+                        concurrency: min(sttConcurrency, 2)) { [weak self] _ in
+                            Task { @MainActor in
+                                self?.setJob(jobID) { j in
+                                    j.doneChunks += 1
+                                    let total = max(1, j.totalChunks)
+                                    j.progress = 0.12 + 0.48 * Double(j.doneChunks) / Double(total)
+                                }
+                                self?.saveIndex()
+                            }
+                        } chunkResult: { idx, cues, lang in
+                            if let data = try? JSONEncoder().encode(cues) {
+                                try? data.write(to: dir.appendingPathComponent("stt-\(String(format: "%03d", idx)).json"), options: .atomic)
+                            }
+                            _ = lang
+                        }
+                    allCues.append(contentsOf: result.cues)
+                    if detected == nil { detected = result.detectedLang }
+                    allCues = SubtitleCodec.normalize(SubtitleCodec.sortedAndMerged(allCues))
+                    setJob(jobID) { j in
+                        j.detectedLang = detected
+                        j.cueCount = allCues.count
                         j.progress = 0.60
                     }
                 } else if job.sttProvider == .siliconflow {

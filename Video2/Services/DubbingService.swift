@@ -24,6 +24,7 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     case groqPlayAI  // Groq PlayAI TTS (نفس مفتاح Groq)
     case siliconflow // SiliconFlow CosyVoice (مفتوح، أفضل جودة)
     case elevenlabs  // ElevenLabs (احترافي، مدفوع)
+    case azure       // Azure Speech Neural TTS
     case auto        // يختار تلقائياً
 
     var id: String { rawValue }
@@ -34,6 +35,7 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .groqPlayAI: return "Groq PlayAI TTS"
         case .siliconflow: return "SiliconFlow CosyVoice"
         case .elevenlabs: return "ElevenLabs (احترافي)"
+        case .azure: return "Azure Speech Neural"
         case .auto: return "تلقائي (الأفضل)"
         }
     }
@@ -48,8 +50,10 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
             return "CosyVoice 2 من FunAudioLLM — جودة ممتازة للصينية، دعم العربية محدود لكن طبيعي."
         case .elevenlabs:
             return "أفضل جودة بشرية على الإنترنت — مدفوع. المفتاح: elevenlabs."
+        case .azure:
+            return "Azure Speech Neural — أصوات عربية وإنجليزية طبيعية، 500 ألف حرف شهرياً ضمن طبقة F0. يحتاج مفتاحاً ومنطقة Azure."
         case .auto:
-            return "يختار Edge للعربية الفصحى، SiliconFlow للهجات، ElevenLabs إن وُجد مفتاح."
+            return "يختار ElevenLabs أولاً إن وُجد، ثم Azure Speech، ثم المزودات الحالية، وإلا Edge."
         }
     }
 
@@ -60,6 +64,7 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .groqPlayAI: return KeychainStore.has("groq")
         case .siliconflow: return KeychainStore.has("siliconflow")
         case .elevenlabs: return KeychainStore.has("elevenlabs")
+        case .azure: return KeychainStore.has("azure")
         case .auto: return true
         }
     }
@@ -70,6 +75,7 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .groqPlayAI: return "groq"
         case .siliconflow: return "siliconflow"
         case .elevenlabs: return "elevenlabs"
+        case .azure: return "azure"
         case .edge, .auto: return nil
         }
     }
@@ -82,7 +88,7 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
             return 1
         case .groqPlayAI:
             return 2
-        case .siliconflow, .elevenlabs:
+        case .siliconflow, .elevenlabs, .azure:
             return 2
         case .auto:
             return 1
@@ -219,8 +225,9 @@ final class DubbingService: ObservableObject {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        // AVFoundation يتعامل بشكل أفضل مع m4a/aac، نستخدم m4a دائماً
-        let perCueExt = "m4a"
+        // Azure يعيد MP3 فعلياً؛ احتفظ بامتداده الصحيح حتى يتعرّف عليه
+        // AVFoundation، بينما لا نغيّر مخرجات المزودات الموجودة.
+        let perCueExt = provider == .azure ? "mp3" : "m4a"
         statusText = "توليد الصوت لكل جملة…"
         var generated: [(cue: SubCue, audioURL: URL, duration: Double)] = []
         let total = Double(translatable.count)
@@ -357,6 +364,8 @@ final class DubbingService: ObservableObject {
             return try await SiliconFlowTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
         case .elevenlabs:
             return try await ElevenLabsTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
+        case .azure:
+            return try await AzureSpeech.synthesize(text: text, voice: voice, outputURL: outputURL)
         case .auto:
             throw DubbingError.invalidProvider
         }
@@ -464,8 +473,10 @@ final class DubbingService: ObservableObject {
     private func resolveProvider(_ requested: DubbingProvider, lang: SubLang) -> DubbingProvider {
         switch requested {
         case .auto:
-            // أفضل قيمة: ElevenLabs إن وُجد، وإلا SiliconFlow، وإلا Groq، وإلا Edge
+            // لا نغيّر الأولوية القديمة؛ Azure يضاف بعد ElevenLabs وقبل
+            // البدائل الحالية عندما يكون مفتاحه محفوظاً.
             if DubbingProvider.elevenlabs.isAvailable { return .elevenlabs }
+            if DubbingProvider.azure.isAvailable { return .azure }
             if DubbingProvider.siliconflow.isAvailable { return .siliconflow }
             if DubbingProvider.groqPlayAI.isAvailable { return .groqPlayAI }
             return .edge
@@ -518,6 +529,8 @@ extension DubbingVoice {
             return siliconFlowVoices(for: lang)
         case .elevenlabs:
             return ElevenLabsTTS.defaultVoices
+        case .azure:
+            return azureVoices(for: lang)
         case .auto:
             return edgeVoices(for: lang)
         }
@@ -552,6 +565,40 @@ extension DubbingVoice {
         case .hi: return [DubbingVoice(id: "hi-IN-SwaraNeural", name: "Swara", language: "hi-IN", gender: .female, naturalness: 4, provider: .edge)]
         case .ur: return [DubbingVoice(id: "ur-PK-UzmaNeural", name: "Uzma", language: "ur-PK", gender: .female, naturalness: 4, provider: .edge)]
         case .auto: return edgeVoices(for: .ar)
+        }
+    }
+
+    private static func azureVoices(for lang: SubLang) -> [DubbingVoice] {
+        // أصوات Azure Neural الرسمية — كلها مناسبة للـ SSML وتعمل مع نفس
+        // Speech resource. نعرض العربية السعودية أولاً لأنها الأنسب لمستخدم
+        // التطبيق، مع تغطية اللغات التي يدعمها نموذج SubLang الحالي.
+        switch lang {
+        case .ar:
+            return [
+                DubbingVoice(id: "ar-SA-ZariyahNeural", name: "Zariyah — Azure Neural", language: "ar-SA", gender: .female, naturalness: 5, provider: .azure),
+                DubbingVoice(id: "ar-SA-HamedNeural", name: "Hamed — Azure Neural", language: "ar-SA", gender: .male, naturalness: 5, provider: .azure),
+                DubbingVoice(id: "ar-EG-SalmaNeural", name: "Salma — مصرية", language: "ar-EG", gender: .female, naturalness: 5, provider: .azure),
+                DubbingVoice(id: "ar-EG-ShakirNeural", name: "Shakir — مصري", language: "ar-EG", gender: .male, naturalness: 5, provider: .azure),
+                DubbingVoice(id: "ar-AE-FatimaNeural", name: "Fatima — إماراتية", language: "ar-AE", gender: .female, naturalness: 5, provider: .azure),
+                DubbingVoice(id: "ar-AE-HamdanNeural", name: "Hamdan — إماراتي", language: "ar-AE", gender: .male, naturalness: 5, provider: .azure)
+            ]
+        case .en:
+            return [
+                DubbingVoice(id: "en-US-JennyNeural", name: "Jenny — Azure Neural", language: "en-US", gender: .female, naturalness: 5, provider: .azure),
+                DubbingVoice(id: "en-US-GuyNeural", name: "Guy — Azure Neural", language: "en-US", gender: .male, naturalness: 5, provider: .azure),
+                DubbingVoice(id: "en-US-AriaNeural", name: "Aria — Azure Neural", language: "en-US", gender: .female, naturalness: 5, provider: .azure),
+                DubbingVoice(id: "en-GB-SoniaNeural", name: "Sonia — بريطانية", language: "en-GB", gender: .female, naturalness: 5, provider: .azure)
+            ]
+        case .hi: return [DubbingVoice(id: "hi-IN-SwaraNeural", name: "Swara — Azure Neural", language: "hi-IN", gender: .female, naturalness: 5, provider: .azure)]
+        case .ur: return [DubbingVoice(id: "ur-PK-UzmaNeural", name: "Uzma — Azure Neural", language: "ur-PK", gender: .female, naturalness: 5, provider: .azure)]
+        case .fr: return [DubbingVoice(id: "fr-FR-DeniseNeural", name: "Denise — Azure Neural", language: "fr-FR", gender: .female, naturalness: 5, provider: .azure)]
+        case .tr: return [DubbingVoice(id: "tr-TR-EmelNeural", name: "Emel — Azure Neural", language: "tr-TR", gender: .female, naturalness: 5, provider: .azure)]
+        case .de: return [DubbingVoice(id: "de-DE-KatjaNeural", name: "Katja — Azure Neural", language: "de-DE", gender: .female, naturalness: 5, provider: .azure)]
+        case .es: return [DubbingVoice(id: "es-ES-ElviraNeural", name: "Elvira — Azure Neural", language: "es-ES", gender: .female, naturalness: 5, provider: .azure)]
+        case .ru: return [DubbingVoice(id: "ru-RU-SvetlanaNeural", name: "Svetlana — Azure Neural", language: "ru-RU", gender: .female, naturalness: 5, provider: .azure)]
+        case .fa: return [DubbingVoice(id: "fa-IR-DilaraNeural", name: "Dilara — Azure Neural", language: "fa-IR", gender: .female, naturalness: 5, provider: .azure)]
+        case .id: return [DubbingVoice(id: "id-ID-GadisNeural", name: "Gadis — Azure Neural", language: "id-ID", gender: .female, naturalness: 5, provider: .azure)]
+        case .auto: return azureVoices(for: .ar)
         }
     }
 

@@ -485,6 +485,8 @@ struct NewTranslationView: View {
         case .assemblyai: return "universal"
         case .sttai: return "large-v3-turbo"
         case .speechmatics: return "default"
+        case .deepgram: return "nova-3-general"
+        case .azure: return "Speech short-audio REST"
         case .auto: return "—"
         }
     }

@@ -43,6 +43,7 @@ struct DubbingView: View {
         case .elevenlabs: return "eleven_multilingual_v2"
         case .siliconflow: return "FunAudioLLM/CosyVoice2-0.5B"
         case .groqPlayAI: return "playai-tts"
+        case .azure: return "Azure Speech Neural TTS"
         case .edge: return "Microsoft Edge Neural TTS"
         case .auto: return "—"
         }
@@ -442,6 +443,7 @@ struct DubbingView: View {
         switch p {
         case .auto:
             if DubbingProvider.elevenlabs.isAvailable { return .elevenlabs }
+            if DubbingProvider.azure.isAvailable { return .azure }
             if DubbingProvider.siliconflow.isAvailable { return .siliconflow }
             if DubbingProvider.groqPlayAI.isAvailable { return .groqPlayAI }
             return .edge
@@ -465,6 +467,8 @@ extension DubbingService {
             return try await SiliconFlowTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
         case .elevenlabs:
             return try await ElevenLabsTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
+        case .azure:
+            return try await AzureSpeech.synthesize(text: text, voice: voice, outputURL: outputURL)
         case .auto:
             return try await EdgeTTSClient.synthesizeAndSave(text: text, voice: voice.id, outputURL: outputURL)
         }
