@@ -57,6 +57,8 @@
 		A1000000000000010000004F /* ConvertAPIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000010000004F /* ConvertAPIService.swift */; };
 		A10000000000000100000050 /* SmartMediaRadar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000050 /* SmartMediaRadar.swift */; };
 		A10000000000000100000051 /* SmartMediaRadarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000051 /* SmartMediaRadarView.swift */; };
+		A10000000000000100000052 /* MagicSearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000052 /* MagicSearchService.swift */; };
+		A10000000000000100000053 /* MagicSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000053 /* MagicSearchView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -113,6 +115,8 @@
 		B1000000000000010000004F /* ConvertAPIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvertAPIService.swift; sourceTree = "<group>"; };
 		B10000000000000100000050 /* SmartMediaRadar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartMediaRadar.swift; sourceTree = "<group>"; };
 		B10000000000000100000051 /* SmartMediaRadarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartMediaRadarView.swift; sourceTree = "<group>"; };
+		B10000000000000100000052 /* MagicSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MagicSearchService.swift; sourceTree = "<group>"; };
+		B10000000000000100000053 /* MagicSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MagicSearchView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -199,6 +203,7 @@
 				B1000000000000010000004E /* MPEGTSDemuxer.swift */,
 				B1000000000000010000004F /* ConvertAPIService.swift */,
 				B10000000000000100000050 /* SmartMediaRadar.swift */,
+				B10000000000000100000052 /* MagicSearchService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -221,6 +226,7 @@
 				B10000000000000100000048 /* DubbingView.swift */,
 				B1000000000000010000004C /* SubtitleReviewView.swift */,
 				B10000000000000100000051 /* SmartMediaRadarView.swift */,
+				B10000000000000100000053 /* MagicSearchView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -352,6 +358,8 @@
 				A1000000000000010000004F /* ConvertAPIService.swift in Sources */,
 				A10000000000000100000050 /* SmartMediaRadar.swift in Sources */,
 				A10000000000000100000051 /* SmartMediaRadarView.swift in Sources */,
+				A10000000000000100000052 /* MagicSearchService.swift in Sources */,
+				A10000000000000100000053 /* MagicSearchView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
