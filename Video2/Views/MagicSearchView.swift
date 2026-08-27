@@ -371,13 +371,19 @@ struct MagicResultCard: View {
         }
     }
 
-    @ViewBuilder private var captionLine: some View {
+    private var captionParts: [String] {
         var parts: [String] = []
         if let uploader = result.uploader, !uploader.isEmpty { parts.append(uploader) }
         if let host = URL(string: result.pageURL)?.host { parts.append(host) }
         if let views = result.views, views > 0 { parts.append(viewsText(views)) }
-        if parts.isEmpty && result.snippet == nil { EmptyView() }
-        else {
+        return parts
+    }
+
+    @ViewBuilder private var captionLine: some View {
+        let parts = captionParts
+        if parts.isEmpty && (result.snippet ?? "").isEmpty {
+            EmptyView()
+        } else {
             VStack(alignment: .leading, spacing: 2) {
                 if !parts.isEmpty {
                     Text(parts.joined(separator: " · "))
