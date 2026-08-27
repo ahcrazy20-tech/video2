@@ -508,7 +508,7 @@ enum MagicResolver {
     static func scrape(html: String, base: String, title: String) async -> [MagicStreamVariant] {
         var collected: [String] = []
 
-        func collect(_ pattern: String, group: Int) {
+        func collect(_ pattern: String, _ group: Int = 1) {
             guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) else { return }
             let ns = html as NSString
             re.enumerateMatches(in: html, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
@@ -534,6 +534,7 @@ enum MagicResolver {
             guard let abs = URL(string: raw, relativeTo: baseURL)?.absoluteURL else { continue }
             let s = abs.absoluteString
             guard s.hasPrefix("http"), !seen.contains(Self.canonical(s)) else { continue }
+            if AdBlock.filterVideoAds && AdBlock.isAdURL(s) { continue }
             let kind = MediaKind.infer(url: s, mime: nil)
             if kind == .other || kind == .dash || kind == .ts { continue }
             seen.insert(Self.canonical(s))

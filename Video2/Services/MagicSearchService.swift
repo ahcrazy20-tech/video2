@@ -274,7 +274,7 @@ enum MagicNet {
         let entities: [String: String] = [
             "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&#34;": "\"",
             "&#x27;": "'", "&#39;": "'", "&nbsp;": " ", "&hellip;": "…", "&#38;": "&",
-            "\u002F": "/", "\u002f": "/",
+            "&#x2F;": "/", "&#47;": "/", "\\u002F": "/", "\\u002f": "/",
         ]
         for (k, v) in entities { s = s.replacingOccurrences(of: k, with: v) }
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -732,7 +732,9 @@ enum WebSearchProvider {
             guard let urlEnd = window.firstIndex(of: "\"") else { continue }
             let media = MagicResolver.unescape(String(window[window.startIndex..<urlEnd]))
             guard media.hasPrefix("http") else { continue }
-            let title = firstGroup("\"title\":\"([^\"]{6,200})\"", in: String(html[html.index(tailStart, offsetBy: -2000, limitedBy: html.startIndex) ?? html.startIndex..<windowEnd]))
+            let sliceStart = html.index(tailStart, offsetBy: -2000, limitedBy: html.startIndex) ?? html.startIndex
+            let slice = String(html[sliceStart..<windowEnd])
+            let title = firstGroup("\"title\":\"([^\"]{6,200})\"", in: slice)
                 ?? firstGroup("\"title\":\"([^\"]{6,200})\"", in: window)
                 ?? firstGroup("alt=\"([^\"]{6,120})\"", in: window)
             let durText = firstGroup("\"videoDurationSeconds\":\"?([0-9:]{1,10})\"?", in: window)
@@ -1003,6 +1005,7 @@ enum WebSearchProvider {
 
     private static func isSearchChrome(_ host: String) -> Bool {
         let h = host.lowercased()
+        if AdBlock.hostIsAd(h) { return true }
         if h.hasPrefix("ad.") || h.hasPrefix("ads.") || h.hasPrefix("doubleclick.") { return true }
         let blocked: [String] = [
             "duckduckgo.com", "google.com", "google.ae", "google.co.uk", "google.fr",
@@ -1045,6 +1048,7 @@ enum WebSearchProvider {
         guard url.hasPrefix("http"),
               let host = URL(string: url)?.host?.lowercased(),
               !isSearchChrome(host) else { return nil }
+        if AdBlock.filterVideoAds && (AdBlock.isAdURL(url) || AdBlock.hostIsAd(host)) { return nil }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let snippetClean: String? = {
             guard let snippet else { return nil }
@@ -1522,7 +1526,7 @@ final class MagicSearchStore: ObservableObject {
 
     static func runProviders(query q: MagicQuery, only: [MagicSource]?) async -> ([[MagicSearchResult]], [Bool]) {
         let sources = MagicSource.allCases
-        await withTaskGroup(of: (Int, [MagicSearchResult], Bool).self) { group in
+        return await withTaskGroup(of: (Int, [MagicSearchResult], Bool).self) { group in
             for (idx, src) in sources.enumerated() {
                 group.addTask {
                     if let only, !only.contains(src) { return (idx, [], false) }

@@ -86,6 +86,7 @@ final class MagicPageHunter: NSObject, WKNavigationDelegate, WKScriptMessageHand
     private func ingest(_ item: [String: Any], page: String) {
         let raw = (item["url"] as? String) ?? ""
         guard raw.hasPrefix("http"), let abs = URL(string: raw, relativeTo: URL(string: page))?.absoluteURL else { return }
+        if AdBlock.filterVideoAds && AdBlock.isAdURL(abs.absoluteString) { return }
         let key = MagicResolver.canonical(abs.absoluteString)
         guard !seen.contains(key) else { return }
         let drmRaw = (item["drm"] as? String) ?? "none"
@@ -97,6 +98,7 @@ final class MagicPageHunter: NSObject, WKNavigationDelegate, WKScriptMessageHand
         if kind == .ts || kind == .dash || kind == .other || kind == .aac || kind == .mp3 || kind == .wav { return }
         let height = (item["height"] as? NSNumber)?.intValue
         let dur = (item["duration"] as? NSNumber)?.doubleValue
+        if let dur, dur > 0 && dur <= 5.0 && AdBlock.isAdURL(abs.absoluteString) { return }
         let qualityLabel = (item["qualityLabel"] as? String) ?? ""
         let needsProxy = kind == .hls
         let variant = MagicStreamVariant(
