@@ -429,6 +429,14 @@ enum L10n {
         "magic.syntax.title": "صيغ البحث",
         "magic.syntax.body": "اسم الفيلم مدة:2:28 — هدف المدة: يفضّل الأقرب ويرتّب النتائج\nاسم الفيلم min:1:00:00 max:2:30:00 — حصر المدة بين حدّين\nاسم الفيلم سنة:1995 — يشترط ذكر السنة في العنوان\nاسم الفيلم موقع:archive.org|dailymotion.com — نتائج نطاق بعينه\nاسم الفيلم جودة:720 — يفضّل هذه الجودة عند التشغيل والتحميل\nاسم الفيلم استبعد:react|ترجمة — يستبعد نتائج تحتوي كلمات معينة\nاسم الفيلم مصدر:yt|ar|dm|peertube|vimeo|web — يقيّد المصادر\nاسم الفيلم ترتيب:مشاهدات — ترتيب بالمشاهدات (أو: مدة)\nلصق رابط صفحة أو ملف (mp4/m3u8) — يصطاد الفيديو منه ويعرض جوداته\nاسم الفيلم 148 — رقم في آخر البحث = مدة بالدقائق\n«عبارة بين علامتين» — مطابقة حرفية في العنوان",
         "magic.syntax.notes": "التحميلات تمرّ بخط التحميل الأصلي (الطابور → المكتبة). مصادر يوتيوب تعتمد على نسخ Piped/Invidious العامة فتتقلب؛ لو فشل التشغيل يجرّب التطبيق وسيطًا محليًا ثم مصدرًا آخر ثم يقترح المتصفح. لا يُكسر أي DRM: المحتوى المحمي يظهر بتحذير فقط.",
+        "resolve.failed": "تعذّر إيجاد مصادر تشغيل لهذه النتيجة.",
+        "resolve.fetchFailed": "تعذّرت قراءة الصفحة مباشرة — يُجرَّب الصيد من متصفح خفي.",
+        "resolve.huntNone": "لم يُلتقط ملف وسائط من الصفحة. افتحها في المتصفح واضغط تشغيل ثم جرّب مجددًا.",
+        "resolve.huntNoPlayable": "التُقطت ملفات لكنها بصيغ لا يشغّلها المشغّل مباشرة — يمكن تجربة تحميلها.",
+        "resolve.badLink": "رابط غير مدعوم.",
+        "resolve.protected": "المحتوى محمي بنظام ترخيص (DRM) — لا يُشغَّل ولا يُحمَّل.",
+        "web.noDirectFile": "لا يوجد ملف وسائط مباشر في الصفحة — يُجرَّب الصيد العميق.",
+        "yt.blocked": "يوتيوب يحظر الاستخراج من النسخ العامة — جرّب «صيد أعمق» أو المتصفح.",
     ]
 
     static let en: [String: String] = [
@@ -821,5 +829,13 @@ enum L10n {
         "magic.syntax.title": "Search syntax",
         "magic.syntax.body": "movie name dur:2:28 — target duration: closest first\nmovie name min:1:00:00 max:2:30:00 — duration window\nmovie name year:1995 — require the year in the title\nmovie name site:archive.org|dailymotion.com — limit to hosts\nmovie name quality:720 — prefer this height when playing/downloading\nmovie name not:react|fansub — drop results containing these words\nmovie name source:yt|ar|dm|peertube|vimeo|web — restrict providers\nmovie name sort:views — order by views (or: duration)\npaste a page or file URL (mp4/m3u8) — the app hunts its video and lists qualities\nmovie name 148 — trailing number = minutes\n'exact phrase' — literal title match",
         "magic.syntax.notes": "Downloads still go through the original download pipeline (queue → library). YouTube sources rely on public Piped/Invidious instances, so they fluctuate; if playback fails the app retries via a local proxy, then another source, then suggests the browser. No DRM is bypassed: protected content only shows a warning.",
+        "resolve.failed": "Couldn't find playable sources for this result.",
+        "resolve.fetchFailed": "Couldn't read the page directly — hunting it with a hidden browser.",
+        "resolve.huntNone": "No media file was caught from the page. Open it in the browser, tap play, then retry.",
+        "resolve.huntNoPlayable": "Files were caught, but in formats the player can't stream — try downloading them.",
+        "resolve.badLink": "Unsupported link.",
+        "resolve.protected": "Content is DRM-protected — it can't be played or downloaded.",
+        "web.noDirectFile": "No direct media file in the page — trying the deep hunt.",
+        "yt.blocked": "YouTube blocks extraction from public instances — try “Deeper hunt” or the browser.",
     ]
 }
