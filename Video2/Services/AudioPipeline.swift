@@ -946,6 +946,7 @@ enum AudioPipeline {
     static func extractChunks(from videoURL: URL,
                               into dir: URL,
                               singleFile: Bool,
+                              chunkDuration: Double = AudioPipeline.chunkSeconds,
                               isHLS: Bool = false,
                               progress: @escaping (Double) -> Void) async throws -> (chunks: [AudioChunk], duration: Double) {
 
@@ -968,9 +969,14 @@ enum AudioPipeline {
         if let data = try? Data(contentsOf: manifestURL),
            let cached = try? JSONDecoder().decode([AudioChunk].self, from: data), !cached.isEmpty {
             let allExist = cached.allSatisfy { FileManager.default.fileExists(atPath: chunksDir.appendingPathComponent($0.fileName).path) }
+            // لا تعِد استخدام manifest طويل لمهمة Azure التي تحتاج مقاطع أقل
+            // من دقيقة؛ المهام القديمة تُعاد تجزئتها تلقائياً مرة واحدة.
+            let cacheFitsRequestedDuration = singleFile || !cached.contains {
+                $0.duration > max(1, chunkDuration) + 2
+            }
             let durData = try? Data(contentsOf: dir.appendingPathComponent("duration.txt"))
             let dur = durData.flatMap { Double(String(data: $0, encoding: .utf8) ?? "") } ?? 0
-            if allExist { progress(1); return (cached, dur) }
+            if allExist && cacheFitsRequestedDuration { progress(1); return (cached, dur) }
         }
 
         let asset = AVURLAsset(url: sourceURL)
@@ -990,7 +996,7 @@ enum AudioPipeline {
         reader.add(output)
         guard reader.startReading() else { throw AudioPipelineError.readerFailed(reader.error?.localizedDescription ?? "غير معروف") }
 
-        let effectiveChunkSeconds = singleFile ? 1_000_000_000.0 : chunkSeconds
+        let effectiveChunkSeconds = singleFile ? 1_000_000_000.0 : max(1.0, chunkDuration)
         var chunks: [AudioChunk] = []
         var chunkIndex = 0
         var chunkStartPTS: Double = 0
@@ -1075,6 +1081,86 @@ enum AudioPipeline {
         try data.write(to: manifestURL, options: .atomic)
         progress(1)
         return (chunks, duration)
+    }
+
+    /// يحوّل مقطع AAC المحلي إلى WAV PCM mono 16 kHz، وهو التنسيق الذي
+    /// يتطلبه Azure Speech short-audio REST API. المقطع محدود زمنياً (تستخدم
+    /// TranslationManager 50 ثانية) لذلك تبقى الذاكرة المستخدمة صغيرة.
+    static func convertToAzureWAV(inputURL: URL, outputURL: URL) async throws {
+        let asset = AVURLAsset(url: inputURL)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        guard let track = tracks.first else { throw AudioPipelineError.noAudioTrack }
+
+        let reader = try AVAssetReader(asset: asset)
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false
+        ]
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
+        output.alwaysCopiesSampleData = false
+        guard reader.canAdd(output) else {
+            throw AudioPipelineError.readerFailed("تعذر تجهيز محول WAV")
+        }
+        reader.add(output)
+        guard reader.startReading() else {
+            throw AudioPipelineError.readerFailed(reader.error?.localizedDescription ?? "تعذر بدء قراءة الصوت")
+        }
+
+        var pcm = Data()
+        while let sample = output.copyNextSampleBuffer() {
+            guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
+            let length = CMBlockBufferGetDataLength(block)
+            guard length > 0 else { continue }
+            var bytes = Data(count: length)
+            let status = bytes.withUnsafeMutableBytes { rawBuffer -> OSStatus in
+                guard let address = rawBuffer.baseAddress else { return -1 }
+                return CMBlockBufferCopyDataBytes(block,
+                                                  atOffset: 0,
+                                                  dataLength: length,
+                                                  destination: address)
+            }
+            guard status == 0 else {
+                throw AudioPipelineError.readerFailed("تعذر قراءة عينة PCM (\(status))")
+            }
+            pcm.append(bytes)
+        }
+        guard reader.status != .failed, !pcm.isEmpty else {
+            throw AudioPipelineError.readerFailed(reader.error?.localizedDescription ?? "ملف الصوت فارغ")
+        }
+
+        var wav = Data()
+        func appendASCII(_ value: String) { wav.append(contentsOf: value.utf8) }
+        func appendUInt16LE(_ value: UInt16) {
+            wav.append(UInt8(value & 0xff))
+            wav.append(UInt8((value >> 8) & 0xff))
+        }
+        func appendUInt32LE(_ value: UInt32) {
+            wav.append(UInt8(value & 0xff))
+            wav.append(UInt8((value >> 8) & 0xff))
+            wav.append(UInt8((value >> 16) & 0xff))
+            wav.append(UInt8((value >> 24) & 0xff))
+        }
+        appendASCII("RIFF")
+        appendUInt32LE(UInt32(36 + pcm.count))
+        appendASCII("WAVEfmt ")
+        appendUInt32LE(16) // PCM fmt chunk size
+        appendUInt16LE(1)  // PCM
+        appendUInt16LE(1)  // mono
+        appendUInt32LE(UInt32(sampleRate))
+        appendUInt32LE(UInt32(sampleRate * 2)) // byte rate
+        appendUInt16LE(2)  // block alignment
+        appendUInt16LE(16) // bits per sample
+        appendASCII("data")
+        appendUInt32LE(UInt32(pcm.count))
+        wav.append(pcm)
+
+        try? FileManager.default.removeItem(at: outputURL)
+        try wav.write(to: outputURL, options: .atomic)
     }
 
     private static func isReadableAudio(_ url: URL) async -> Bool {

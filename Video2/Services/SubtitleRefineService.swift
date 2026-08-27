@@ -290,11 +290,14 @@ enum SubtitleRefineService {
             ] as [String: Any]
         ]
         let payload = try JSONSerialization.data(withJSONObject: body)
+        // استخدم نفس تكييف Gemini العائلي المستخدم في الترجمة: Gemini 3.x
+        // لا يقبل temperature/topP/topK، بينما Gemini 2.5 يبقى متوافقاً معها.
+        let optimizedPayload = TranslateService.optimizedGeminiPayload(payload, model: model)
         let endpoint = "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent"
         let (data, _) = try await HTTP.withRetry(attempts: 3, baseDelay: 3) {
             try await HTTP.request("POST", endpoint,
                                    headers: ["Content-Type": "application/json", "x-goog-api-key": key],
-                                   body: payload,
+                                   body: optimizedPayload,
                                    timeout: 75)
         }
 

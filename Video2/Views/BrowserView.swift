@@ -6,6 +6,7 @@ struct BrowserView: View {
     @EnvironmentObject var lang: LanguageStore
     @State private var address: String = ""
     @State private var showTabs = false
+    @State private var showRadar = false
     @State private var showManual = false
     @State private var manualURL = ""
 
@@ -28,6 +29,7 @@ struct BrowserView: View {
             .background(V2Theme.bg)
             .navigationBarHidden(true)
             .sheet(isPresented: $browser.showDetector) { DetectorSheet() }
+            .sheet(isPresented: $showRadar) { SmartMediaRadarView(tab: browser.current) }
             .sheet(isPresented: $showTabs) { TabsSheet() }
             .alert(lang.t("paste.title"), isPresented: $showManual) {
                 TextField("https://...", text: $manualURL)
@@ -107,6 +109,23 @@ struct BrowserView: View {
                     }
                 }
             }
+
+            // Additive entry point: the original detector button and sheet above
+            // remain unchanged for existing workflows.
+            Button { showRadar = true } label: {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "sparkles")
+                    if !browser.current.detected.isEmpty {
+                        Text("\(SmartMediaRadar.groups(from: browser.current.detected).count)")
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(3)
+                            .background(V2Theme.gold, in: Circle())
+                            .offset(x: 6, y: -6)
+                    }
+                }
+            }
+            .accessibilityLabel(lang.t("radar.title"))
+
             Button { showManual = true } label: { Image(systemName: "link.badge.plus") }
             Button { showTabs = true } label: { Image(systemName: "square.on.square") }
         }

@@ -527,7 +527,7 @@ final class ModelCatalog: ObservableObject {
 /// لا نخمّن المتبقي: نعرضه فقط عندما يعيده المزود عبر API. بعض المزودين (Gemini
 /// والـOpenAI-compat الجدد) لا يوفّرون هذا الرقم بمفتاح API عادي، لذلك نعرض مسار اللوحة.
 enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
-    case gemini, groq, siliconflow, deepL, openRouter, cerebras, sambaNova
+    case gemini, groq, siliconflow, deepL, openRouter, cerebras, sambaNova, deepgram, azureSpeech
 
     var id: String { rawValue }
 
@@ -540,6 +540,8 @@ enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
         case .openRouter: return "OpenRouter"
         case .cerebras: return "Cerebras"
         case .sambaNova: return "SambaNova"
+        case .deepgram: return "Deepgram"
+        case .azureSpeech: return "Azure Speech"
         }
     }
 
@@ -552,6 +554,8 @@ enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
         case .openRouter: return "rectangle.connected.to.line.below"
         case .cerebras: return "square.stack.3d.up.fill"
         case .sambaNova: return "shippingbox.fill"
+        case .deepgram: return "waveform.and.mic"
+        case .azureSpeech: return "cloud.fill"
         }
     }
 
@@ -564,6 +568,8 @@ enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
         case .openRouter: return "openrouter"
         case .cerebras: return "cerebras"
         case .sambaNova: return "sambanova"
+        case .deepgram: return "deepgram"
+        case .azureSpeech: return "azure"
         }
     }
 
@@ -576,6 +582,8 @@ enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
         case .openRouter: return URL(string: "https://openrouter.ai/credits")
         case .cerebras: return URL(string: "https://cloud.cerebras.ai/")
         case .sambaNova: return URL(string: "https://cloud.sambanova.ai/")
+        case .deepgram: return URL(string: "https://console.deepgram.com/")
+        case .azureSpeech: return URL(string: "https://portal.azure.com/#view/Microsoft_Azure_ProjectOxford/CognitiveServicesHub/~/SpeechServices")
         }
     }
 }
@@ -679,6 +687,20 @@ final class ProviderUsageStore: ObservableObject {
                     status: .manual,
                     headlineAR: "SambaNova: راجع الرصيد في اللوحة",
                     detailAR: "رصيد 5$ مجاني/30 يوماً بدون فيزا. المتبقي الدقيق لا توفره واجهة API بسهولة؛ راجع لوحة SambaNova قبل المهام الطويلة.",
+                    updatedAt: Date())
+            case .deepgram:
+                snapshot = ProviderUsageSnapshot(
+                    provider: .deepgram,
+                    status: .manual,
+                    headlineAR: "Deepgram Nova-3: راجع الرصيد في Console",
+                    detailAR: "تظهر قيمة الرصيد والاستهلاك الفعليان في Deepgram Console. رصيد التسجيل المعلن يصل إلى 200$ للحسابات المؤهلة، وبعده تصبح المحاسبة حسب الاستخدام؛ لا نخمن المتبقي من مفتاح API.",
+                    updatedAt: Date())
+            case .azureSpeech:
+                snapshot = ProviderUsageSnapshot(
+                    provider: .azureSpeech,
+                    status: .manual,
+                    headlineAR: "Azure Speech F0: 5 ساعات STT + 500 ألف حرف TTS شهرياً",
+                    detailAR: "هذه حصة الطبقة المجانية الموثقة وليست رصيداً نقدياً. الاستخدام والفوترة الفعليان يظهران في Azure Portal، وقد تختلف الأهلية حسب الاشتراك والمنطقة.",
                     updatedAt: Date())
             }
             snapshots[provider] = snapshot

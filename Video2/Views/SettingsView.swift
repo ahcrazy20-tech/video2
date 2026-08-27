@@ -14,6 +14,7 @@ struct SettingsView: View {
     @AppStorage("stt.concurrency") private var sttConcurrency: Int = 3
     @AppStorage("dl.maxHeight") private var downloadMaxHeight: Int = 0
     @AppStorage("tts.edge") private var preferEdgeTTS: Bool = true
+    @AppStorage(AzureSpeech.regionKey) private var azureSpeechRegion: String = AzureSpeech.defaultRegion
     @State private var storage = StorageManager.report()
     @State private var storageMessage: String?
     @State private var modelPickerConfig: ModelPickerConfig? = nil
@@ -86,6 +87,34 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                Section("إعداد مزودي الكلام الجدد") {
+                    TextField("منطقة Speech (مثال: eastus)", text: $azureSpeechRegion)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .environment(\.layoutDirection, .leftToRight)
+                    Text("في Azure Portal أنشئ Speech resource، ثم افتح Keys and Endpoint وانسخ Key 1 أو Key 2. اكتب اسم Region الظاهر في المورد، مثل eastus أو westeurope. المفتاح الواحد يعمل للتفريغ والدبلجة، وتُرسل الطلبات مباشرة من جهازك إلى Azure.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Link(destination: URL(string: "https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeechServices")!) {
+                        Label("إنشاء مورد Speech ومفتاح Azure", systemImage: "arrow.up.right.square")
+                    }
+                    Link(destination: URL(string: "https://portal.azure.com/#view/Microsoft_Azure_ProjectOxford/CognitiveServicesHub/~/SpeechServices")!) {
+                        Label("فتح موارد Speech والاستخدام والفوترة", systemImage: "chart.bar.xaxis")
+                    }
+                    Link(destination: URL(string: "https://azure.microsoft.com/en-us/pricing/details/speech/")!) {
+                        Label("أسعار وحدود Azure Speech الرسمية", systemImage: "creditcard")
+                    }
+                    Link(destination: URL(string: "https://console.deepgram.com/signup")!) {
+                        Label("إنشاء حساب ومفتاح Deepgram", systemImage: "arrow.up.right.square")
+                    }
+                    Link(destination: URL(string: "https://deepgram.com/pricing")!) {
+                        Label("حدود وأسعار Deepgram الرسمية", systemImage: "creditcard")
+                    }
+                    Text("الطبقة المجانية F0 الموثقة: 5 ساعات Speech-to-Text و500,000 حرف Neural Text-to-Speech شهرياً. Deepgram يعلن رصيد تسجيل يصل إلى 200$ للحسابات المؤهلة. قد تتطلب بعض الحسابات اشتراكاً/بطاقة؛ تحقق من اللوحة قبل الاستخدام الطويل.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section {
                     APIKeyRow(title: "مفتاح Groq",
                               placeholder: "gsk_...",
@@ -119,6 +148,14 @@ struct SettingsView: View {
                               placeholder: "من لوحة التحكم",
                               keyID: "assemblyai",
                               hint: "الخيار الأقوى للفيديوهات الطويلة (حتى 10 ساعات بملف واحد) — رصيد تجريبي عند التسجيل.")
+                    APIKeyRow(title: "مفتاح Deepgram",
+                              placeholder: "من Deepgram Console",
+                              keyID: "deepgram",
+                              hint: "تفريغ Nova-3 دقيق مع توقيتات المقاطع، ويدعم العربية. من Deepgram Console أنشئ Project ثم API Key وانسخه هنا؛ يظهر الرصيد والاستهلاك في اللوحة.")
+                    APIKeyRow(title: "مفتاح Azure Speech",
+                              placeholder: "مفتاح Speech من Azure",
+                              keyID: "azure",
+                              hint: "لـ Neural TTS والدبلجة وSTT. أنشئ Speech resource من Azure Portal، ثم أدخل Region أعلاه والمفتاح هنا. حد F0 الموثق: 5 ساعات STT + 500 ألف حرف TTS شهرياً.")
                     APIKeyRow(title: "مفتاح DeepL",
                               placeholder: "DeepL-...",
                               keyID: "deepl",
@@ -144,9 +181,9 @@ struct SettingsView: View {
                               keyID: "convertapi",
                               hint: "مزوّد سحابي ثالث (شريحة تجريبية بدون فيزا غالباً). بديل قوي إذا رُفض CloudConvert بـ 403.")
                 } header: {
-                    Text("مفاتيح ترجمة ومراجعة الفيديو")
+                    Text("مفاتيح مزودي الصوت والترجمة والفيديو")
                 } footer: {
-                    Text("تُخزَّن المفاتيح في Keychain على جهازك فقط. كل مزودات المراجعة والترجمة هنا بدون فيزا ولها شريحة مجانية: Groq، Gemini، OpenRouter، Cerebras، SambaNova، DeepL.")
+                    Text("تُخزَّن المفاتيح في Keychain على جهازك فقط. مزودات المراجعة والترجمة الحالية لها شرائح مجانية مختلفة؛ Azure وDeepgram قد يطلبان إعداداً/فوترة حسب الحساب، فراجع قسم الرصيد والحدود واللوحات الرسمية قبل المهام الطويلة.")
                         .font(.caption2)
                 }
 
@@ -249,7 +286,7 @@ struct SettingsView: View {
 
                 Section("كيف تعمل منظومة التفريغ والترجمة؟") {
                     howBullet("1", "استخراج الصوت من الفيديو. HLS يُستخرج محلياً أولاً (MPEG-TS → AAC)، وإن فشل تُجرَّب AVFoundation ثم CloudConvert / ffmpeg-api / ConvertAPI.")
-                    howBullet("2", "تفريغ الكلام بتوقيتات دقيقة عبر Groq بالتوازي، أو AssemblyAI بملف واحد حتى 10 ساعات.")
+                    howBullet("2", "تفريغ الكلام بتوقيتات دقيقة عبر Groq بالتوازي، Deepgram Nova-3 مع utterances، أو Azure Speech على مقاطع WAV قصيرة؛ وAssemblyAI بملف واحد حتى 10 ساعات.")
                     howBullet("3", "مراجعة وتدقيق النصوص بالذكاء الاصطناعي (Free API) لتصحيح الأخطاء الصوتية وحذف الهلاوس والتكرار وإكمال الكلمات لضمان اكتمال المعنى والسياق.")
                     howBullet("4", "ترجمة سياقية بالدفعات عبر Gemini أو Llama — تفهم سياق الجمل السابقة والمصطلحات.")
                     howBullet("5", "ثلاثة ملفات SRT: أصلي مراجع، مترجم، وثنائي اللغة — تظهر فوق المشغّل مع إمكانية التعديل والمراجعة اليدوية.")
@@ -439,6 +476,8 @@ struct SettingsView: View {
         case .assemblyai: return "universal"
         case .speechmatics: return "default"
         case .sttai: return "large-v3-turbo"
+        case .deepgram: return "nova-3-general"
+        case .azure: return "Speech short-audio REST"
         case .auto: return "—"
         }
     }
@@ -701,6 +740,24 @@ enum KeyTester {
         let key = KeychainStore.normalized(key)
         if provider == "gemini" {
             return await TranslateService.verifyGeminiKey(key)
+        }
+
+        if provider == "deepgram" {
+            do {
+                _ = try await HTTP.request("GET", "https://api.deepgram.com/v1/projects",
+                                           headers: ["Authorization": "Token \(key)"], timeout: 30)
+                return "✅ مفتاح Deepgram يعمل — افتح Console لمعرفة رصيد التسجيل والاستهلاك"
+            } catch let e as APIError {
+                if e.status == 401 || e.status == 403 { return "❌ مفتاح Deepgram غير صحيح أو غير مفعّل (HTTP \(e.status))" }
+                if e.status == 429 { return "⚠️ المفتاح يعمل لكن وصلت لحد Deepgram مؤقتاً (429)" }
+                return "⚠️ استجابة Deepgram غير متوقعة (رمز \(e.status))"
+            } catch {
+                return "⚠️ تعذر الاتصال بـ Deepgram — تحقق من الإنترنت"
+            }
+        }
+
+        if provider == "azure" {
+            return await AzureSpeech.verifyKey(key)
         }
 
         if provider == "openrouter" {
