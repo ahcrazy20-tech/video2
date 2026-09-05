@@ -52,10 +52,13 @@ enum SubtitleRefineService {
         case .groqLLM:
             return try await groqBatch(batch, config: config, contextTail: contextTail,
                                        source: source, videoTitle: videoTitle)
-        case .openRouter, .cerebras, .sambaNova:
+        case .openRouter, .cerebras, .sambaNova, .nvidia, .zai:
             return try await openAIChatBatch(provider: resolved(provider: config.provider),
                                              batch: batch, config: config, contextTail: contextTail,
                                              source: source, videoTitle: videoTitle)
+        case .cohere:
+            return try await cohereBatch(batch, config: config, contextTail: contextTail,
+                                         source: source, videoTitle: videoTitle)
         case .auto:
             throw APIError(status: 0, body: "لا يوجد مزود مراجعة مفعّل")
         case .off:
@@ -69,8 +72,11 @@ enum SubtitleRefineService {
         case .auto:
             if KeychainStore.has("gemini") { return .gemini }
             if KeychainStore.has("groq") { return .groqLLM }
+            if KeychainStore.has("nvidia") { return .nvidia }
             if KeychainStore.has("cerebras") { return .cerebras }
             if KeychainStore.has("sambanova") { return .sambaNova }
+            if KeychainStore.has("cohere") { return .cohere }
+            if KeychainStore.has("zai") { return .zai }
             if KeychainStore.has("openrouter") { return .openRouter }
             return .off
         default:
@@ -92,7 +98,7 @@ enum SubtitleRefineService {
     }
 
     private static let failoverOrder: [SubtitleRefinerKind] =
-        [.gemini, .groqLLM, .cerebras, .sambaNova, .openRouter]
+        [.gemini, .groqLLM, .nvidia, .cerebras, .sambaNova, .cohere, .zai, .openRouter]
 
     static func failoverChain(from preferred: SubtitleRefinerKind) -> [SubtitleRefinerKind] {
         let start = resolved(provider: preferred)
@@ -116,6 +122,9 @@ enum SubtitleRefineService {
         case .openRouter: return "OpenRouter"
         case .cerebras: return "Cerebras"
         case .sambaNova: return "SambaNova"
+        case .nvidia: return "NVIDIA NIM"
+        case .cohere: return "Cohere"
+        case .zai: return "Z.ai"
         case .auto: return "تلقائي"
         case .off: return "معطل"
         }
@@ -140,6 +149,15 @@ enum SubtitleRefineService {
         case .sambaNova:
             return ModelSelection.selected(purpose: "refiner", provider: .sambaNova,
                                            fallback: ModelSelection.selected(purpose: "translator", provider: .sambaNova, fallback: TranslateService.defaultSambaNovaModel))
+        case .nvidia:
+            return ModelSelection.selected(purpose: "refiner", provider: .nvidia,
+                                           fallback: ModelSelection.selected(purpose: "translator", provider: .nvidia, fallback: TranslateService.defaultNVIDIAModel))
+        case .cohere:
+            return ModelSelection.selected(purpose: "refiner", provider: .cohere,
+                                           fallback: ModelSelection.selected(purpose: "translator", provider: .cohere, fallback: TranslateService.defaultCohereModel))
+        case .zai:
+            return ModelSelection.selected(purpose: "refiner", provider: .zai,
+                                           fallback: ModelSelection.selected(purpose: "translator", provider: .zai, fallback: TranslateService.defaultZaiModel))
         case .auto, .off:
             return ""
         }
@@ -392,8 +410,23 @@ enum SubtitleRefineService {
             ]
         ]
         let payload = try JSONSerialization.data(withJSONObject: body)
-        let (data, _) = try await HTTP.withRetry(attempts: 4, baseDelay: 4) {
-            try await HTTP.request("POST", url, headers: headers, body: payload, timeout: 120)
+        let data: Data
+        if provider == .zai {
+            // Z.ai: نفس جسم OpenAI لكن عبر ZaiAPI التي تجرب النطاقين تلقائياً.
+            let (zaiData, _) = try await HTTP.withRetry(attempts: 4, baseDelay: 4) {
+                try await ZaiAPI.request("POST",
+                                         path: "/chat/completions",
+                                         key: key,
+                                         headers: headers,
+                                         body: payload,
+                                         timeout: 120)
+            }
+            data = zaiData
+        } else {
+            let (respData, _) = try await HTTP.withRetry(attempts: 4, baseDelay: 4) {
+                try await HTTP.request("POST", url, headers: headers, body: payload, timeout: 120)
+            }
+            data = respData
         }
 
         let json = HTTP.json(from: data)
@@ -421,9 +454,32 @@ enum SubtitleRefineService {
             return ("Cerebras", "cerebras", "https://api.cerebras.ai/v1/chat/completions", TranslateService.defaultCerebrasModel)
         case .sambaNova:
             return ("SambaNova", "sambanova", "https://api.sambanova.ai/v1/chat/completions", TranslateService.defaultSambaNovaModel)
+        case .nvidia:
+            return ("NVIDIA NIM", "nvidia", "https://integrate.api.nvidia.com/v1/chat/completions", TranslateService.defaultNVIDIAModel)
+        case .zai:
+            return ("Z.ai", "zai", "https://api.z.ai/api/paas/v4/chat/completions", TranslateService.defaultZaiModel)
         default:
             return ("API", "", "", "")
         }
+    }
+
+    // MARK: Cohere (Command A / Aya — v2 Chat)
+    private static func cohereBatch(_ batch: Batch,
+                                    config: Config,
+                                    contextTail: [String],
+                                    source: SubLang,
+                                    videoTitle: String) async throws -> [String] {
+        guard let key = KeychainStore.get("cohere") else {
+            throw APIError(status: 401, body: "أدخل مفتاح Cohere من الإعدادات")
+        }
+        let model = config.model.isEmpty ? TranslateService.defaultCohereModel : config.model
+        let text = try await CohereChat.complete(
+            key: key,
+            model: model,
+            system: systemPrompt(source: source, videoTitle: videoTitle),
+            user: userPrompt(batch: batch, contextTail: contextTail, source: source),
+            temperature: config.temperature)
+        return parseLines(rawJSON: text, batch: batch)
     }
 
     // MARK: - تحليل الاستجابة

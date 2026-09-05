@@ -69,8 +69,9 @@ final class TranslationManager: ObservableObject {
     static func resolvedSTT(_ kind: STTProviderKind) -> STTProviderKind {
         switch kind {
         case .auto:
-            // نحافظ على ترتيب المزودات القديمة؛ المزودان الجديدان يأتيان بعد
-            // الخيارات الموجودة حتى لا يتغير سلوك Auto للمستخدم الحالي.
+            // نحافظ على ترتيب المزودات القديمة؛ المزودان الجديدان (Gemini Transcribe
+            // وElevenLabs Scribe) يأتيان بعد الخيارات الموجودة حتى لا يتغير سلوك
+            // Auto للمستخدم الحالي — اخترهما يدوياً لتفعيلهما.
             if KeychainStore.has("assemblyai") { return .assemblyai }
             if KeychainStore.has("sttai") { return .sttai }
             if KeychainStore.has("speechmatics") { return .speechmatics }
@@ -78,6 +79,8 @@ final class TranslationManager: ObservableObject {
             if KeychainStore.has("deepgram") { return .deepgram }
             if KeychainStore.has("azure") { return .azure }
             if KeychainStore.has("siliconflow") { return .siliconflow }
+            if KeychainStore.has("gemini") { return .geminiTranscribe }
+            if KeychainStore.has("elevenlabs") { return .elevenlabsScribe }
             return .groq
         default:
             return kind
@@ -284,10 +287,14 @@ final class TranslationManager: ObservableObject {
                 setJob(jobID) { $0.state = .extracting; $0.progress = 0.02 }
                 saveIndex()
 
-                let singleFile = job.sttProvider == .assemblyai || job.sttProvider == .sttai || job.sttProvider == .speechmatics
+                // ElevenLabs Scribe يقبل ملفاً واحداً كبيراً (حتى 5GB) مثل AssemblyAI،
+                // لذا يشاركه مسار الملف الواحد بدل التقطيع.
+                let singleFile = job.sttProvider == .assemblyai || job.sttProvider == .sttai
+                    || job.sttProvider == .speechmatics || job.sttProvider == .elevenlabsScribe
                 // Azure Speech's short-audio REST endpoint accepts clips below one
                 // minute, so create 50-second chunks with a little margin. Deepgram
-                // keeps the normal long chunks and therefore preserves its throughput.
+                // and Gemini Transcribe keep the normal 15-minute chunks (Gemini's
+                // documented limit is 30 minutes with word timestamps enabled).
                 let chunkDuration = job.sttProvider == .azure ? 50.0 : AudioPipeline.chunkSeconds
                 let (chunks, dur) = try await AudioPipeline.extractChunks(
                     from: video.localURL,
@@ -348,6 +355,31 @@ final class TranslationManager: ObservableObject {
                     detected = result.detectedLang
                     setJob(jobID) { j in
                         j.assemblyTranscriptID = tid
+                        j.detectedLang = detected
+                        j.doneChunks = 1
+                        j.totalChunks = 1
+                        j.cueCount = allCues.count
+                        j.errorMessage = nil
+                        j.progress = 0.60
+                    }
+                } else if job.sttProvider == .elevenlabsScribe {
+                    // ElevenLabs Scribe: ملف واحد كامل (مثل AssemblyAI) بنفس مفتاح
+                    // ElevenLabs المستخدم للدبلجة — لا تقطيع ولا استئناف جزئي.
+                    let audioFile = dir.appendingPathComponent("chunks/audio-full.m4a")
+                    guard FileManager.default.fileExists(atPath: audioFile.path) else {
+                        throw AudioPipelineError.writerFailed("ملف الصوت المجمّع مفقود — أعد المهمة")
+                    }
+                    setJob(jobID) { j in
+                        j.errorMessage = "ElevenLabs Scribe: جارٍ تفريغ الملف الكامل…"
+                    }
+                    let key = Self.sttHasKey(.elevenlabsScribe) ?? ""
+                    let result = try await STTService.elevenLabsScribeTranscribe(
+                        audioURL: audioFile,
+                        language: job.sourceLang,
+                        apiKey: key)
+                    allCues = SubtitleCodec.normalize(SubtitleCodec.sortedAndMerged(result.cues))
+                    detected = result.detectedLang
+                    setJob(jobID) { j in
                         j.detectedLang = detected
                         j.doneChunks = 1
                         j.totalChunks = 1
@@ -521,6 +553,56 @@ final class TranslationManager: ObservableObject {
                         language: job.sourceLang,
                         apiKey: key,
                         model: model,
+                        concurrency: sttConcurrency) { [weak self] _ in
+                            Task { @MainActor in
+                                self?.setJob(jobID) { j in
+                                    j.doneChunks += 1
+                                    let total = max(1, j.totalChunks)
+                                    j.progress = 0.12 + 0.48 * Double(j.doneChunks) / Double(total)
+                                }
+                                self?.saveIndex()
+                            }
+                        } chunkResult: { idx, cues, lang in
+                            if let data = try? JSONEncoder().encode(cues) {
+                                try? data.write(to: dir.appendingPathComponent("stt-\(String(format: "%03d", idx)).json"), options: .atomic)
+                            }
+                            _ = lang
+                        }
+                    allCues.append(contentsOf: result.cues)
+                    if detected == nil { detected = result.detectedLang }
+                    allCues = SubtitleCodec.normalize(SubtitleCodec.sortedAndMerged(allCues))
+                    setJob(jobID) { j in
+                        j.detectedLang = detected
+                        j.cueCount = allCues.count
+                        j.progress = 0.60
+                    }
+                } else if job.sttProvider == .geminiTranscribe {
+                    // Gemini 3.5 Transcribe: نفس أجزاء Groq (15 دقيقة) مع كاش لكل جزء.
+                    let chunksDir = dir.appendingPathComponent("chunks", isDirectory: true)
+                    var pending: [AudioChunk] = []
+                    var doneCount = 0
+                    for c in audioChunks {
+                        let f = dir.appendingPathComponent("stt-\(String(format: "%03d", c.index)).json")
+                        if let data = try? Data(contentsOf: f),
+                           let cached = try? JSONDecoder().decode([SubCue].self, from: data) {
+                            allCues.append(contentsOf: cached)
+                            doneCount += 1
+                        } else {
+                            pending.append(c)
+                        }
+                    }
+                    setJob(jobID) { j in
+                        j.doneChunks = doneCount
+                        j.totalChunks = audioChunks.count
+                    }
+                    saveIndex()
+
+                    let key = Self.sttHasKey(.geminiTranscribe) ?? ""
+                    let result = try await STTService.geminiTranscribe(
+                        chunks: pending,
+                        chunksDir: chunksDir,
+                        language: job.sourceLang,
+                        apiKey: key,
                         concurrency: sttConcurrency) { [weak self] _ in
                             Task { @MainActor in
                                 self?.setJob(jobID) { j in
@@ -820,7 +902,7 @@ final class TranslationManager: ObservableObject {
                 maxOutputTokens: 4096)
             let chainCount = chain.count
             var currentProviderName = TranslateService.providerName(chain[0])
-            var maxConcurrentBatches = chain[0] == .gemini ? 1 : 2
+            var maxConcurrentBatches = (chain[0] == .gemini || chain[0] == .lara || chain[0] == .myMemory) ? 1 : 2
 
             func runWindow(_ window: [TranslateService.Batch],
                            tail: [(String, String)],
@@ -882,7 +964,7 @@ final class TranslationManager: ObservableObject {
                             temperature: 0.15,
                             maxOutputTokens: 4096)
                         currentProviderName = TranslateService.providerName(next)
-                        maxConcurrentBatches = next == .gemini ? 1 : 2
+                        maxConcurrentBatches = (next == .gemini || next == .lara || next == .myMemory) ? 1 : 2
                         let note = "\(failed) وصل حدّه المجاني — تحوّل تلقائي إلى \(currentProviderName) (\(chainIndex + 1)/\(chainCount)) والمتابعة من نفس النقطة…"
                         setJob(jobID) { j in j.errorMessage = note }
                         saveIndex()

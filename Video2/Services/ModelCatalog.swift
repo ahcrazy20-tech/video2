@@ -108,11 +108,31 @@ enum ModelBillingCatalog {
 
         case .cerebras:
             return ModelBillingInfo(kind: .free,
-                                    detailAR: "Cerebras: مليون token/يوم مجاناً بدون فيزا. حد السياق في الشريحة المجانية قد يصل إلى 8K token — كافٍ لدفعات الترجمة.")
+                                    detailAR: "Cerebras: حوالي 200 ألف token/يوم مجاناً لكل موديل (20 طلب/دقيقة). انتبه: التسجيل الجديد يتطلب الآن وسيلة دفع — الحسابات القديمة تعمل كما هي. حد السياق في الشريحة المجانية قد يصل إلى 8K token.")
 
         case .sambaNova:
-            return ModelBillingInfo(kind: .trialQuota,
-                                    detailAR: "SambaNova: رصيد 5$ مجاني لـ30 يوماً بدون فيزا. سريع جداً؛ راجع اللوحة للمتبقي الفعلي.")
+            return ModelBillingInfo(kind: .free,
+                                    detailAR: "SambaNova: حوالي 200 ألف token/يوم مجاناً لكل موديل (20 طلب/دقيقة) بدون فيزا. راجع اللوحة للمتبقي الفعلي.")
+
+        case .nvidia:
+            return ModelBillingInfo(kind: .free,
+                                    detailAR: "NVIDIA NIM: 40 طلب/دقيقة و10,000 طلب/يوم مجاناً بدون فيزا من build.nvidia.com. الوصول للاستخدام التجريبي فقط — قد تُسجَّل الطلبات وتُستخدم لتقييم الخدمة.")
+
+        case .cohere:
+            if id.contains("aya") {
+                return ModelBillingInfo(kind: .free,
+                                        detailAR: "Cohere Aya: 1,000 استدعاء شهرياً مجاناً (20/دقيقة) بدون فيزا. موديل متعدد اللغات متميز في العربية.")
+            }
+            return ModelBillingInfo(kind: .free,
+                                    detailAR: "Cohere: 1,000 استدعاء شهرياً مجاناً (20 طلب/دقيقة) بدون فيزا على خطة التقييم. راجع لوحة Cohere للحدود الدقيقة.")
+
+        case .zai:
+            if id.contains("glm-4.7-flash") || id.contains("glm-4.6v-flash") || id.contains("glm-4.5-flash") {
+                return ModelBillingInfo(kind: .free,
+                                        detailAR: "Z.ai: موديلات GLM Flash مجانية بالكامل (سياق 200K). طلب متزامن واحد فقط — التطبيق يرسل الدفعات تباعاً.")
+            }
+            return ModelBillingInfo(kind: .accountDependent,
+                                    detailAR: "موديل Z.ai قد يكون مدفوعاً حسب الخطة؛ موديلات GLM Flash هي المجانية.")
 
         case .siliconflow:
             if id.contains("hunyuan-mt-7b") {
@@ -139,18 +159,30 @@ enum ModelBillingCatalog {
                                     detailAR: "ليس مجانياً بالضرورة؛ تحقّق من الرصيد والسعر في SiliconFlow.")
 
         case .groq:
+            if id.contains("llama-3.3") || id.contains("llama-3.1") || id.contains("llama3.1") {
+                return ModelBillingInfo(kind: .deprecated,
+                                        detailAR: "أوقفت Groq موديلات Llama 3.3/3.1 في 16 أغسطس 2026 — استخدم GPT-OSS أو Qwen بدلاً منها.")
+            }
             if id.contains("gpt-oss-120b") || id.contains("gpt-oss-20b") {
                 return ModelBillingInfo(kind: .accountDependent,
-                                        detailAR: "قد يكون ضمن شريحة محدودة أو مدفوعاً حسب مشروع Groq؛ راجع Limits والتسعير الحاليين.")
+                                        detailAR: "معظم موديلات Groq 1,000 طلب/يوم (compound وcompound-mini بحد 250/يوم). راجع Limits والتسعير الحاليين في لوحة Groq.")
             }
             if id.contains("qwen3.6-27b") {
                 return ModelBillingInfo(kind: .accountDependent,
                                         detailAR: "Preview محدود أو مدفوع حسب الحساب، وقد لا يظهر في كل المشاريع.")
             }
+            if id.contains("orpheus") {
+                return ModelBillingInfo(kind: .accountDependent,
+                                        detailAR: "موديل TTS (Orpheus) للدبلجة الصوتية — استخدامه يحسب من حدود مشروع Groq.")
+            }
             return ModelBillingInfo(kind: .accountDependent,
                                     detailAR: "الحدود والسعر يعتمدان على مشروع وخطة Groq.")
 
         case .gemini:
+            if id.contains("3.1-flash-lite") {
+                return ModelBillingInfo(kind: .deprecated,
+                                        detailAR: "Gemini 3.1 Flash-Lite يُعتزل في 7 مايو 2027 ويُستبدل بـ 3.5 Flash-Lite — خطط للانتقال قبلها. راجع AI Studio للحصة/الفوترة.")
+            }
             return ModelBillingInfo(kind: .accountDependent,
                                     detailAR: "لا توجد قيمة متبقية عبر API key؛ راجع AI Studio لمعرفة الحصة/الفوترة الفعلية.")
         case .openaiCompat, .elevenlabs:
@@ -167,10 +199,13 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
     case groq         // Groq (OpenAI-compatible)
     case siliconflow  // SiliconFlow (يُستخدم للتفريغ والدبلجة فقط)
     case openRouter   // OpenRouter (موديلات مجانية بدون فيزا)
-    case cerebras     // Cerebras (مليون token/يوم مجاناً)
-    case sambaNova    // SambaNova (DeepSeek/Llama — رصيد مجاني)
+    case cerebras     // Cerebras (~200K token/يوم مجاناً)
+    case sambaNova    // SambaNova (DeepSeek/Llama — حصة يومية مجانية)
     case openaiCompat // OpenAI-compatible (نحتفظ به للتوسعة)
     case elevenlabs   // ElevenLabs TTS (للدبلجة)
+    case nvidia       // NVIDIA NIM (build.nvidia.com — 10K طلب/يوم)
+    case cohere       // Cohere (Command A / Aya)
+    case zai          // Z.ai GLM (glm-4.7-flash مجاني)
 
     var id: String { rawValue }
 
@@ -184,6 +219,9 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
         case .sambaNova: return "SambaNova"
         case .openaiCompat: return "OpenAI Compatible"
         case .elevenlabs: return "ElevenLabs"
+        case .nvidia: return "NVIDIA NIM"
+        case .cohere: return "Cohere"
+        case .zai: return "Z.ai"
         }
     }
 
@@ -197,6 +235,9 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
         case .sambaNova: return "shippingbox.fill"
         case .openaiCompat: return "link"
         case .elevenlabs: return "waveform.path.ecg"
+        case .nvidia: return "memorychip.fill"
+        case .cohere: return "text.book.closed.fill"
+        case .zai: return "brain.filled.head.profile"
         }
     }
 
@@ -211,6 +252,9 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
         case .sambaNova: return "sambanova"
         case .openaiCompat: return nil
         case .elevenlabs: return "elevenlabs"
+        case .nvidia: return "nvidia"
+        case .cohere: return "cohere"
+        case .zai: return "zai"
         }
     }
 
@@ -224,7 +268,7 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
     /// بدلاً من جلب /models (الذي يتغيّر ويختلف تحليله بين المزوّدات).
     var hasStaticCatalog: Bool {
         switch self {
-        case .openRouter, .cerebras, .sambaNova: return true
+        case .openRouter, .cerebras, .sambaNova, .zai: return true
         default: return false
         }
     }
@@ -245,7 +289,11 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
             return "https://api.groq.com/openai/v1/models"
         case .siliconflow:
             return "https://api.siliconflow.cn/v1/models"
-        case .openRouter, .cerebras, .sambaNova, .openaiCompat, .elevenlabs:
+        case .nvidia:
+            return "https://integrate.api.nvidia.com/v1/models"
+        case .cohere:
+            return "https://api.cohere.com/v1/models"
+        case .openRouter, .cerebras, .sambaNova, .openaiCompat, .elevenlabs, .zai:
             return nil
         }
     }
@@ -279,6 +327,13 @@ enum ModelSelection {
                 // أو أي إصدار أحدث بدون لاحقة) — استخدامه يُمضي من رصيد الحساب.
                 // نرحّله إلى الافتراضي المجاني حتى لا ينفق التطبيق بلا قصد.
                 let replacement = TranslateService.defaultOpenRouterModel
+                save(replacement, purpose: purpose, provider: provider)
+                return replacement
+            }
+            if provider == .cerebras, TranslateService.isRetiredCerebrasModel(clean) {
+                // موديلات Cerebras المسحوبة (llama-4-scout / llama3.1-8b / zai-glm-4.7)
+                // قد تبقى محفوظة من إصدار أقدم — نرحّلها للافتراضي الحالي Llama 3.3 70B.
+                let replacement = TranslateService.defaultCerebrasModel
                 save(replacement, purpose: purpose, provider: provider)
                 return replacement
             }
@@ -405,7 +460,24 @@ final class ModelCatalog: ObservableObject {
                     try await SiliconFlowAPI.request("GET", path: "/models", key: key, timeout: 30)
                 }
                 entries = ModelCatalogParser.siliconflow(data: data)
-            case .openRouter, .cerebras, .sambaNova, .openaiCompat, .elevenlabs:
+            case .nvidia:
+                // NVIDIA NIM: صيغة OpenAI (data[].id) — نفس مفتاح build.nvidia.com.
+                let key = KeychainStore.get("nvidia") ?? ""
+                let (data, _) = try await HTTP.withRetry(attempts: 2) {
+                    try await HTTP.request("GET", url,
+                                           headers: ["Authorization": "Bearer \(key)",
+                                                     "Accept": "application/json"], timeout: 30)
+                }
+                entries = ModelCatalogParser.nvidia(data: data)
+            case .cohere:
+                // Cohere: { "models": [ { "name": ..., "endpoints": [...] } ] }
+                let key = KeychainStore.get("cohere") ?? ""
+                let (data, _) = try await HTTP.withRetry(attempts: 2) {
+                    try await HTTP.request("GET", url,
+                                           headers: ["Authorization": "Bearer \(key)"], timeout: 30)
+                }
+                entries = ModelCatalogParser.cohere(data: data)
+            case .openRouter, .cerebras, .sambaNova, .openaiCompat, .elevenlabs, .zai:
                 // مزوّدات القائمة الثابتة تُخدم أعلاه؛ هذا فرع أمان فقط.
                 lastError[provider] = "هذا المزود لا يدعم جلب الموديلات تلقائياً."
                 return
@@ -528,6 +600,7 @@ final class ModelCatalog: ObservableObject {
 /// والـOpenAI-compat الجدد) لا يوفّرون هذا الرقم بمفتاح API عادي، لذلك نعرض مسار اللوحة.
 enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
     case gemini, groq, siliconflow, deepL, openRouter, cerebras, sambaNova, deepgram, azureSpeech
+    case nvidia, cohere, zai, lara
 
     var id: String { rawValue }
 
@@ -542,6 +615,10 @@ enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
         case .sambaNova: return "SambaNova"
         case .deepgram: return "Deepgram"
         case .azureSpeech: return "Azure Speech"
+        case .nvidia: return "NVIDIA NIM"
+        case .cohere: return "Cohere"
+        case .zai: return "Z.ai"
+        case .lara: return "Lara Translate"
         }
     }
 
@@ -556,6 +633,10 @@ enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
         case .sambaNova: return "shippingbox.fill"
         case .deepgram: return "waveform.and.mic"
         case .azureSpeech: return "cloud.fill"
+        case .nvidia: return "memorychip.fill"
+        case .cohere: return "text.book.closed.fill"
+        case .zai: return "brain.filled.head.profile"
+        case .lara: return "translate.fill"
         }
     }
 
@@ -570,6 +651,10 @@ enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
         case .sambaNova: return "sambanova"
         case .deepgram: return "deepgram"
         case .azureSpeech: return "azure"
+        case .nvidia: return "nvidia"
+        case .cohere: return "cohere"
+        case .zai: return "zai"
+        case .lara: return "lara"
         }
     }
 
@@ -584,6 +669,10 @@ enum UsageProvider: String, CaseIterable, Identifiable, Hashable {
         case .sambaNova: return URL(string: "https://cloud.sambanova.ai/")
         case .deepgram: return URL(string: "https://console.deepgram.com/")
         case .azureSpeech: return URL(string: "https://portal.azure.com/#view/Microsoft_Azure_ProjectOxford/CognitiveServicesHub/~/SpeechServices")
+        case .nvidia: return URL(string: "https://build.nvidia.com/")
+        case .cohere: return URL(string: "https://dashboard.cohere.com/usage")
+        case .zai: return URL(string: "https://open.bigmodel.cn/usercenter/apikeys")
+        case .lara: return URL(string: "https://laratranslate.com/")
         }
     }
 }
@@ -678,15 +767,15 @@ final class ProviderUsageStore: ObservableObject {
                 snapshot = ProviderUsageSnapshot(
                     provider: .cerebras,
                     status: .manual,
-                    headlineAR: "Cerebras: مليون token/يوم مجاناً",
-                    detailAR: "تتجدد يومياً بدون فيزا. راجع لوحة Cerebras للحدود الدقيقة (RPM/TPM)؛ حد السياق قد يصل 8K في الشريحة المجانية.",
+                    headlineAR: "Cerebras: حوالي 200 ألف token/يوم مجاناً",
+                    detailAR: "تتجدد يومياً لكل موديل. انتبه: التسجيل الجديد يتطلب الآن وسيلة دفع — الحسابات القديمة تعمل كما هي. راجع لوحة Cerebras للحدود الدقيقة (RPM/TPM)؛ حد السياق قد يصل 8K في الشريحة المجانية.",
                     updatedAt: Date())
             case .sambaNova:
                 snapshot = ProviderUsageSnapshot(
                     provider: .sambaNova,
                     status: .manual,
-                    headlineAR: "SambaNova: راجع الرصيد في اللوحة",
-                    detailAR: "رصيد 5$ مجاني/30 يوماً بدون فيزا. المتبقي الدقيق لا توفره واجهة API بسهولة؛ راجع لوحة SambaNova قبل المهام الطويلة.",
+                    headlineAR: "SambaNova: راجع الحصة في اللوحة",
+                    detailAR: "حوالي 200 ألف token/يوم مجاناً لكل موديل (20 طلب/دقيقة) بدون فيزا. المتبقي الدقيق لا توفره واجهة API بسهولة؛ راجع لوحة SambaNova قبل المهام الطويلة.",
                     updatedAt: Date())
             case .deepgram:
                 snapshot = ProviderUsageSnapshot(
@@ -702,14 +791,42 @@ final class ProviderUsageStore: ObservableObject {
                     headlineAR: "Azure Speech F0: 5 ساعات STT + 500 ألف حرف TTS شهرياً",
                     detailAR: "هذه حصة الطبقة المجانية الموثقة وليست رصيداً نقدياً. الاستخدام والفوترة الفعليان يظهران في Azure Portal، وقد تختلف الأهلية حسب الاشتراك والمنطقة.",
                     updatedAt: Date())
+            case .nvidia:
+                snapshot = ProviderUsageSnapshot(
+                    provider: .nvidia,
+                    status: .manual,
+                    headlineAR: "NVIDIA NIM: 40 طلب/دقيقة و10,000 طلب/يوم مجاناً",
+                    detailAR: "الشريحة المجانية من build.nvidia.com بدون فيزا؛ للاستخدام التجريبي فقط وقد تُسجَّل الطلبات. NVIDIA لا توفر المتبقي عبر API — راجع لوحة build.nvidia.com.",
+                    updatedAt: Date())
+            case .cohere:
+                snapshot = ProviderUsageSnapshot(
+                    provider: .cohere,
+                    status: .manual,
+                    headlineAR: "Cohere: 1,000 استدعاء شهرياً مجاناً",
+                    detailAR: "خطة التقييم المجانية بدون فيزا (20 طلب/دقيقة). المتبقي الدقيق يظهر في لوحة Cohere → Usage؛ لا يُعاد عبر API.",
+                    updatedAt: Date())
+            case .zai:
+                snapshot = ProviderUsageSnapshot(
+                    provider: .zai,
+                    status: .manual,
+                    headlineAR: "Z.ai: موديلات GLM Flash مجانية بالكامل",
+                    detailAR: "GLM-4.7-Flash بسياق 200K مجاني بدون حد معلن، مع طلب متزامن واحد فقط. النطاق العالمي api.z.ai والصيني open.bigmodel.cn بنفس المفتاح؛ راجع لوحة المفاتيح للحالة.",
+                    updatedAt: Date())
+            case .lara:
+                snapshot = ProviderUsageSnapshot(
+                    provider: .lara,
+                    status: .manual,
+                    headlineAR: "Lara Translate: 10 آلاف حرف شهرياً مجاناً",
+                    detailAR: "الشريحة المجانية تتجدد شهرياً بدون فيزا. Lara لا توفر المتبقي عبر API بسهولة — راجع لوحة laratranslate.com للاستهلاك الفعلي.",
+                    updatedAt: Date())
             }
             snapshots[provider] = snapshot
         } catch let error as APIError where provider == .deepL && error.status == 456 {
             snapshots[provider] = ProviderUsageSnapshot(
                 provider: provider,
                 status: .ready,
-                headlineAR: "DeepL: انتهت حصة 500,000 حرف للشهر الحالي",
-                detailAR: "يعيد DeepL الرمز 456 عند نفاد الحصة المجانية الشهرية؛ تتجدد حسب دورة الحساب.",
+                headlineAR: "DeepL: انتهت حصة الأحرف للدورة الحالية",
+                detailAR: "يعيد DeepL الرمز 456 عند نفاد الحصة. مفاتيح :fx القديمة: 500 ألف حرف/شهر متجددة؛ خطة Developer الجديدة: مليون حرف لمرة واحدة ثم حسب الخطة.",
                 updatedAt: Date())
         } catch let error as APIError {
             snapshots[provider] = ProviderUsageSnapshot(
@@ -744,8 +861,11 @@ final class ProviderUsageStore: ObservableObject {
     }
 
     private func fetchDeepLUsage(key: String) async throws -> ProviderUsageSnapshot {
+        // مفاتيح :fx تعمل على api-free فقط، وغيرها (خطة Developer الجديدة أو Pro)
+        // على api.deepl.com — النطاق الخاطئ يرجع 403.
+        let host = TranslateService.deepLHost(key: key)
         let (data, _) = try await HTTP.request(
-            "GET", "https://api-free.deepl.com/v2/usage",
+            "GET", host + "/v2/usage",
             headers: ["Authorization": "DeepL-Auth-Key \(key)"], timeout: 30)
         let json = HTTP.json(from: data)
         guard let used = HTTP.num(json["character_count"]),
@@ -842,6 +962,7 @@ enum ModelCatalogParser {
         case .openRouter: return openRouter()
         case .cerebras: return cerebras()
         case .sambaNova: return sambaNova()
+        case .zai: return zai()
         default: return []
         }
     }
@@ -972,20 +1093,32 @@ enum ModelCatalogParser {
         return (false, nil)
     }
 
-    // MARK: Cerebras (مليون token/يوم مجاناً — بدون فيزا، سريع جداً)
+    // MARK: Cerebras (~200K token/يوم لكل موديل — التسجيل الجديد يتطلب وسيلة دفع)
     // https://api.cerebras.ai/v1/chat/completions
+    // تحديث 2026-09: أُوقف llama-4-scout وllama3.1-8b وأصبح llama-3.3-70b هو
+    // الخيار الموثوق، مع gpt-oss-120b وqwen-3-32b وgemma-4-31b كبديل قوية.
     static func cerebras() -> [ModelEntry] {
         [
-            ModelEntry(rawID: "llama3.1-70b",
-                       displayName: "Llama 3.1 70B",
+            ModelEntry(rawID: "llama-3.3-70b",
+                       displayName: "Llama 3.3 70B",
                        provider: .cerebras,
                        capabilities: [.translation, .chat],
                        contextWindow: 131072,
                        isMultimodal: false,
                        supportsArabic: true,
-                       descriptionAR: "موديل Meta 70B على رقائق Cerebras — سريع جداً وبدون فيزا.",
+                       descriptionAR: "موديل Meta 70B على رقائق Cerebras — سريع جداً ومستقر للترجمة السياقية.",
                        recommended: true,
                        recommendedReasonAR: "الخيار الافتراضي — جودة سياقية عالية وسرعة فائقة على الشريحة المجانية."),
+            ModelEntry(rawID: "gpt-oss-120b",
+                       displayName: "GPT-OSS 120B",
+                       provider: .cerebras,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 131072,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "موديل OpenAI المفتوح 120B — جودة عالية على Cerebras.",
+                       recommended: true,
+                       recommendedReasonAR: "بديل قوي وسريع جداً؛ قد يلفّ JSON في وسوم تفكير أحياناً."),
             ModelEntry(rawID: "qwen-3-32b",
                        displayName: "Qwen3 32B",
                        provider: .cerebras,
@@ -996,36 +1129,64 @@ enum ModelCatalogParser {
                        descriptionAR: "Qwen متعدد اللغات — ممتاز للترجمة متعددة اللغات.",
                        recommended: true,
                        recommendedReasonAR: "قوي للترجمة متعددة اللغات بما فيها العربية."),
-            ModelEntry(rawID: "llama3.1-8b",
-                       displayName: "Llama 3.1 8B",
+            ModelEntry(rawID: "gemma-4-31b",
+                       displayName: "Gemma 4 31B",
                        provider: .cerebras,
                        capabilities: [.translation, .chat],
                        contextWindow: 131072,
                        isMultimodal: false,
                        supportsArabic: true,
-                       descriptionAR: "أصغر وأسرع — كافٍ للترجمة البسيطة جداً.",
-                       recommended: false,
-                       recommendedReasonAR: nil),
-            ModelEntry(rawID: "gpt-oss-120b",
-                       displayName: "GPT-OSS 120B",
+                       descriptionAR: "موديل Google المفتوح Gemma 4 — متعدد اللغات ومتاح على Cerebras.",
+                       recommended: true,
+                       recommendedReasonAR: "خيار متوازن من Google للترجمة متعددة اللغات."),
+            ModelEntry(rawID: "llama3.1-70b",
+                       displayName: "Llama 3.1 70B",
                        provider: .cerebras,
                        capabilities: [.translation, .chat],
                        contextWindow: 131072,
                        isMultimodal: false,
                        supportsArabic: true,
-                       descriptionAR: "موديل تفكير من OpenAI — جودة عالية لكن قد يلفّ JSON.",
+                       descriptionAR: "إصدار أقدم من Llama — قد يكون قيد الإيقاف لدى Cerebras.",
                        recommended: false,
-                       recommendedReasonAR: "جرّبه بحذر: قد يلفّ JSON في وسوم تفكير؛ Llama أكثر استقراراً."),
-            ModelEntry(rawID: "llama-4-scout-17b-16e-instruct",
-                       displayName: "Llama 4 Scout 17B",
-                       provider: .cerebras,
+                       recommendedReasonAR: "قد يُسحب قريباً — فضّل Llama 3.3 70B الأحدث.")
+        ]
+    }
+
+    // MARK: Z.ai GLM (مجاني بالكامل — بدون فيزا)
+    // https://open.bigmodel.cn/dev/api  ·  النطاق العالمي https://api.z.ai/api/paas/v4
+    // GLM-4.7-Flash مجاني بسياق 200K؛ طلب متزامن واحد فقط. تحقق 2026-08.
+    static func zai() -> [ModelEntry] {
+        [
+            ModelEntry(rawID: "glm-4.7-flash",
+                       displayName: "GLM-4.7-Flash",
+                       provider: .zai,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 200000,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "موديل Z.ai السريع المجاني بالكامل — سياق 200K مناسب للدفعات الطويلة. يعمل عبر النطاق العالمي api.z.ai أو الصيني open.bigmodel.cn بمفتاح واحد.",
+                       recommended: true,
+                       recommendedReasonAR: "الخيار الافتراضي — مجاني بالكامل بسياق 200K، فقط طلب متزامن واحد."),
+            ModelEntry(rawID: "glm-4.6v-flash",
+                       displayName: "GLM-4.6V-Flash",
+                       provider: .zai,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 200000,
+                       isMultimodal: true,
+                       supportsArabic: true,
+                       descriptionAR: "نسخة GLM Flash متعددة الوسائط (رؤية) — مجانية أيضاً.",
+                       recommended: false,
+                       recommendedReasonAR: "نسخة الرؤية؛ للنص الخالص يكفي glm-4.7-flash."),
+            ModelEntry(rawID: "glm-4.5-flash",
+                       displayName: "GLM-4.5-Flash",
+                       provider: .zai,
                        capabilities: [.translation, .chat],
                        contextWindow: 131072,
                        isMultimodal: false,
                        supportsArabic: true,
-                       descriptionAR: "جيل Llama 4 الأحدث — سياق طويل وسريع.",
+                       descriptionAR: "الإصدار السابق من GLM Flash — ما زال يعمل ومجاني حتى الآن.",
                        recommended: false,
-                       recommendedReasonAR: nil)
+                       recommendedReasonAR: "قد يُعتزل لاحقاً — glm-4.7-flash أحدث وأوفر سياقاً.")
         ]
     }
 
@@ -1076,6 +1237,99 @@ enum ModelCatalogParser {
         ]
     }
 
+    // MARK: NVIDIA NIM (build.nvidia.com — 10,000 طلب/يوم مجاناً)
+    // https://integrate.api.nvidia.com/v1/models  ·  صيغة OpenAI: { "data": [ { "id": ... } ] }
+    static func nvidia(data: Data) -> [ModelEntry] {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = json["data"] as? [[String: Any]] else { return [] }
+        var out: [ModelEntry] = []
+        for m in raw {
+            guard let id = m["id"] as? String else { continue }
+            let lc = id.lowercased()
+            // نعرض موديلات الدردشة/الترجمة فقط — نستبعد التضمين والرؤية-فقط وغيرها.
+            let excluded = ["embed", "rerank", "nemoretriever", "clip", "sdxl", "stable", "flux",
+                            "deplot", "paddle", "nemo-mllon", "viz", "chart", "codecept", "guardrails",
+                            "neva", "vlm", "ocr", "caption"]
+            guard !excluded.contains(where: { lc.contains($0) }) else { continue }
+            let context = (m["context_length"] as? Int) ?? ((m["max_model_len"] as? Int) ?? 0)
+            let caps = capabilitiesNVIDIA(id: id)
+            guard !caps.isEmpty else { continue }
+            let (rec, reason) = recommendNVIDIA(id: id)
+            out.append(ModelEntry(rawID: id,
+                                  displayName: id,
+                                  provider: .nvidia,
+                                  capabilities: caps,
+                                  contextWindow: context > 0 ? context : nil,
+                                  isMultimodal: false,
+                                  supportsArabic: true,
+                                  descriptionAR: nil,
+                                  recommended: rec,
+                                  recommendedReasonAR: reason))
+        }
+        return out.sorted { ($0.recommended ? 0 : 1, $0.rawID) < ($1.recommended ? 0 : 1, $1.rawID) }
+    }
+
+    private static func capabilitiesNVIDIA(id: String) -> [ModelCapability] {
+        let lc = id.lowercased()
+        var caps: [ModelCapability] = [.chat, .translation]
+        if lc.contains("vision") || lc.contains("vl") { caps.append(.realtime) }
+        return caps
+    }
+
+    private static func recommendNVIDIA(id: String) -> (Bool, String?) {
+        let lc = id.lowercased()
+        if lc.contains("nemotron-3-super-120b") { return (true, "الخيار الافتراضي — 120B MoE بسياق مليون token، ممتاز للدفعات الطويلة") }
+        if lc.contains("nemotron-3-ultra") { return (true, "أقوى موديلات Nemotron (550B MoE) — جودة قصوى بسياق مليون") }
+        if lc.contains("nemotron-3-nano") { return (true, "أصغر وأسرع Nemotron — كافٍ للترجمة البسيطة") }
+        if lc.contains("gpt-oss-120b") || lc.contains("gpt-oss-20b") { return (true, "موديل OpenAI المفتوح على NIM — سريع ومجاني ضمن 10K طلب/يوم") }
+        if lc.contains("minimax-m3") { return (true, "Minimax M3 بسياق مليون token — بديل قوي متعدد اللغات") }
+        if lc.contains("llama-3.3-70b") { return (true, "Llama 3.3 70B — ترجمة متعددة اللغات موثوقة") }
+        if lc.contains("qwen") { return (true, "Qwen — متعدد اللغات وقوي بالعربية") }
+        if lc.contains("mistral-large") { return (true, "Mistral Large — جودة عالية للترجمة") }
+        if lc.contains("gemma") { return (true, "Gemma من Google — متعدد اللغات ومتوازن") }
+        return (false, nil)
+    }
+
+    // MARK: Cohere (Command A / Aya — 1,000 استدعاء/شهر مجاناً)
+    // https://api.cohere.com/v1/models  ·  { "models": [ { "name": ..., "endpoints": [...] } ] }
+    static func cohere(data: Data) -> [ModelEntry] {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = json["models"] as? [[String: Any]] else { return [] }
+        var out: [ModelEntry] = []
+        for m in raw {
+            guard let name = m["name"] as? String else { continue }
+            let endpoints = (m["endpoints"] as? [String]) ?? []
+            // نريد موديلات chat فقط (لا embed/rerank).
+            guard endpoints.contains(where: { $0.lowercased().contains("chat") }) || endpoints.isEmpty else { continue }
+            let lc = name.lowercased()
+            if lc.contains("embed") || lc.contains("rerank") { continue }
+            let (rec, reason) = recommendCohere(id: name)
+            let context = (m["context_length"] as? Int) ?? 0
+            out.append(ModelEntry(rawID: name,
+                                  displayName: name,
+                                  provider: .cohere,
+                                  capabilities: [.translation, .chat],
+                                  contextWindow: context > 0 ? context : nil,
+                                  isMultimodal: false,
+                                  supportsArabic: true,
+                                  descriptionAR: nil,
+                                  recommended: rec,
+                                  recommendedReasonAR: reason))
+        }
+        return out.sorted { ($0.recommended ? 0 : 1, $0.rawID) < ($1.recommended ? 0 : 1, $1.rawID) }
+    }
+
+    private static func recommendCohere(id: String) -> (Bool, String?) {
+        let lc = id.lowercased()
+        if lc.contains("command-a-translate") { return (true, "نسخة Command A المخصصة للترجمة — الأفضل هنا للسياق متعدد اللغات") }
+        if lc.contains("command-a-03") { return (true, "الخيار الافتراضي — Command A (أغسطس 2025) الأقوى من Cohere") }
+        if lc.contains("command-r7b-arabic") { return (true, "نسخة عربية مضغوطة سريعة — ممتازة للعربية وضمن حصة أصغر استهلاكاً") }
+        if lc.contains("aya-expanse-32b") { return (true, "Aya Expanse 32B — متعدد اللغات (23 لغة) ومتميز في العربية") }
+        if lc.contains("command-r-plus") || lc.contains("command-r-08") { return (true, "إصدار R سابق — جيد لكن Command A أحدث") }
+        if lc.contains("command-light") || lc.contains("command-r7b") { return (false, "أصغر وأسرع — كافٍ للترجمة البسيطة") }
+        return (false, nil)
+    }
+
     // MARK: Gemini
     // https://ai.google.dev/api/models#method:-models.list
     static func gemini(data: Data) -> [ModelEntry] {
@@ -1114,8 +1368,16 @@ enum ModelCatalogParser {
     private static func capabilitiesGemini(methods: [String], id: String) -> [ModelCapability] {
         var caps: [ModelCapability] = []
         let set = Set(methods.map { $0.lowercased() })
-        if set.contains("generatecontent") { caps.append(.translation); caps.append(.chat) }
-        if set.contains("audiomodality") || id.lowercased().contains("audio") { caps.append(.tts) }
+        let lc = id.lowercased()
+        // موديلات التفريغ وتحويل النص لكلام ليست مترجماً نصياً — نعرضها بقدرتها
+        // المخصصة فقط حتى لا يختارها المستخدم للترجمة فيفشل الطلب.
+        let isSpeechModel = lc.contains("tts") || lc.contains("transcribe")
+        if set.contains("generatecontent") && !isSpeechModel {
+            caps.append(.translation)
+            caps.append(.chat)
+        }
+        if lc.contains("transcribe") { caps.append(.transcription) }
+        if set.contains("audiomodality") || lc.contains("audio") || lc.contains("tts") { caps.append(.tts) }
         // Gemini يفهم العربية بشكل ممتاز في كل موديلاتها النصية
         return caps
     }
@@ -1127,12 +1389,23 @@ enum ModelCatalogParser {
 
     private static func recommendGemini(id: String, capabilities: [ModelCapability]) -> (Bool, String?) {
         let lc = id.lowercased()
+        // موديلات الدبلجة (TTS) لها ترشيح خاص بها — تُعرض عند اختيار غرض الدبلجة.
+        if capabilities.contains(.tts) {
+            if lc.contains("3.1-flash-tts") { return (true, "أحدث موديل دبلجة من Gemini — الصوت الأكثر طبيعية ويدعم العربية") }
+            if lc.contains("2.5-flash-preview-tts") || lc.contains("2.5-flash-tts") { return (true, "نسخة دبلجة موثوقة ومستقرة من Gemini") }
+            return (false, nil)
+        }
+        if capabilities.contains(.transcription) && !capabilities.contains(.translation) {
+            if lc.contains("3.5-transcribe") && !lc.contains("live") { return (true, "موديل التفريغ المخصص من Gemini — 85+ لغة بتوقيتات كلمة بكلمة") }
+            return (false, nil)
+        }
         guard capabilities.contains(.translation) else { return (false, nil) }
-        if lc.contains("3.7-flash") { return (true, "Gemini 3.7 Flash — أحدث خيار ثابت للترجمة السياقية") }
+        if lc.contains("3.8-flash") { return (true, "Gemini 3.8 Flash — أحدث إصدار ثابت والخيار الافتراضي") }
+        if lc.contains("3.7-flash") { return (true, "Gemini 3.7 Flash — خيار ثابت ومجرّب للترجمة السياقية") }
         if lc.contains("3.6-flash") { return (true, "Gemini 3.6 Flash — سريع وقوي للدفعات الطويلة") }
         if lc.contains("3.5-flash-lite") { return (true, "Gemini 3.5 Flash-Lite — أسرع وأوفر للترجمة بالدفعات") }
         if lc.contains("3.5-flash") { return (true, "Gemini 3.5 Flash — خيار ثابت ومتوازن للترجمة") }
-        if lc.contains("3.1-flash-lite") { return (true, "Gemini 3.1 Flash-Lite — سريع واقتصادي للترجمة") }
+        if lc.contains("3.1-flash-lite") { return (true, "Gemini 3.1 Flash-Lite — يُعتزل في 7 مايو 2027 ويُستبدل بـ 3.5 Flash-Lite") }
         if lc.contains("2.5-flash") { return (true, "Gemini 2.5 Flash — متاح لبعض المشاريع القديمة فقط") }
         if lc.contains("2.5-pro") { return (true, "Gemini 2.5 Pro — جودة أعلى وأبطأ للترجمات الطويلة") }
         if lc.contains("exp") || lc.contains("preview") { return (false, "تجريبي — قد يكون غير مستقر") }
@@ -1169,7 +1442,7 @@ enum ModelCatalogParser {
         var caps: [ModelCapability] = [.chat]
         if lc.contains("whisper") { caps.append(.transcription) }
         if lc.contains("vision") || lc.contains("image") { caps.append(.realtime) }
-        if lc.contains("tts") || lc.contains("playai") { caps.append(.tts) }
+        if lc.contains("tts") || lc.contains("playai") || lc.contains("orpheus") { caps.append(.tts) }
         if lc.contains("guard") || lc.contains("compound") { caps.append(.realtime) }
         if !lc.contains("whisper") && !lc.contains("tts") {
             caps.append(.translation) // أي LLM يصلح للترجمة
@@ -1182,14 +1455,15 @@ enum ModelCatalogParser {
         if lc.contains("whisper-large-v3-turbo") { return (true, "الأفضل للتفريغ الصوتي على Groq — سرعة فائقة بنفس مفتاحك") }
         if lc.contains("whisper-large-v3") { return (true, "Whisper الكامل — أعلى دقة وأبطأ") }
         if lc.contains("distil-whisper") { return (true, "Whisper مضغوط — أسرع مع دقة جيدة") }
-        if lc.contains("qwen3.6-27b") { return (true, "Qwen 3.6 27B — خيار ترجمة سريع جداً (500 token/ثانية حسب Groq). تحقق من توفره وحدود حسابك لأنه Preview.") }
-        if lc.contains("gpt-oss-120b") { return (true, "GPT-OSS 120B — جودة قوية وسرعة عالية؛ السعر/الشريحة المجانية بحسب حساب Groq.") }
+        if lc.contains("orpheus-arabic-saudi") { return (true, "دبلجة عربية سعودية بشرية على Groq (أصوات عبدالله وفهد وغيرها) — مفيد للدبلجة العربية") }
+        if lc.contains("orpheus") { return (true, "دبلجة صوتية إنجليزية طبيعية (أصوات Canopy Labs) على Groq") }
+        if lc.contains("qwen3.6-27b") { return (true, "Qwen 3.6 27B — خيار ترجمة سريع جداً. تحقق من توفره وحدود حسابك لأنه Preview.") }
+        if lc.contains("gpt-oss-120b") { return (true, "GPT-OSS 120B — جودة قوية وسرعة عالية؛ معظم موديلات Groq 1,000 طلب/يوم.") }
         if lc.contains("gpt-oss-20b") { return (true, "GPT-OSS 20B — أصغر وأسرع من 120B، ممتاز للترجمة السريعة.") }
-        if lc.contains("llama-3.3") { return (true, "Llama 3.3 70B — ترجمة قوية") }
-        if lc.contains("llama-3.1") { return (false, "لا يزال يعمل — Llama 3.3 أحدث وأفضل") }
-        if lc.contains("compound") { return (false, "موديل مركّب — مخصص لاستدعاء الأدوات") }
+        if lc.contains("llama-3.3") || lc.contains("llama-3.1") || lc.contains("llama3.1") { return (false, "أوقفت Groq موديلات Llama 3.3/3.1 في 16 أغسطس 2026 — استخدم GPT-OSS أو Qwen") }
+        if lc.contains("compound") { return (false, "موديل مركّب — مخصص لاستدعاء الأدوات وحدّه 250 طلب/يوم") }
         if lc.contains("guard") { return (false, "موديل أمان — لا يصلح للترجمة") }
-        if lc.contains("playai-tts") { return (true, "تحويل نص إلى كلام عربي على Groq — مفيد للدبلجة") }
+        if lc.contains("playai-tts") { return (false, "موديل PlayAI القديم — استخدم Orpheus بدلاً منه") }
         return (false, nil)
     }
 

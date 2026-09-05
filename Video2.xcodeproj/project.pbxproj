@@ -64,6 +64,7 @@
 		A10000000000000100000056 /* MagicResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000056 /* MagicResolver.swift */; };
 		A10000000000000100000057 /* MagicPageHunter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000057 /* MagicPageHunter.swift */; };
 		A10000000000000100000058 /* MagicPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000058 /* MagicPlayerView.swift */; };
+		A10000000000000100000059 /* ExtraProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000100000059 /* ExtraProviders.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -127,6 +128,7 @@
 		B10000000000000100000056 /* MagicResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MagicResolver.swift; sourceTree = "<group>"; };
 		B10000000000000100000057 /* MagicPageHunter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MagicPageHunter.swift; sourceTree = "<group>"; };
 		B10000000000000100000058 /* MagicPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MagicPlayerView.swift; sourceTree = "<group>"; };
+		B10000000000000100000059 /* ExtraProviders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtraProviders.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -206,6 +208,7 @@
 				B10000000000000100000044 /* ModelCatalog.swift */,
 				B10000000000000100000046 /* DubbingService.swift */,
 				B10000000000000100000047 /* TTSProviders.swift */,
+				B10000000000000100000059 /* ExtraProviders.swift */,
 				B10000000000000100000049 /* LocalTTS.swift */,
 				B1000000000000010000004A /* OrientationLock.swift */,
 				B1000000000000010000004B /* SubtitleRefineService.swift */,
@@ -363,6 +366,7 @@
 				A10000000000000100000045 /* ModelPickerView.swift in Sources */,
 				A10000000000000100000046 /* DubbingService.swift in Sources */,
 				A10000000000000100000047 /* TTSProviders.swift in Sources */,
+				A10000000000000100000059 /* ExtraProviders.swift in Sources */,
 				A10000000000000100000048 /* DubbingView.swift in Sources */,
 				A10000000000000100000049 /* LocalTTS.swift in Sources */,
 				A1000000000000010000004A /* OrientationLock.swift in Sources */,

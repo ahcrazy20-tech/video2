@@ -983,6 +983,252 @@ enum STTService {
         return cues
     }
 
+    // MARK: Gemini 3.5 Transcribe (نفس مفتاح Gemini — توقيتات كلمة بكلمة)
+    // https://ai.google.dev/gemini-api/docs/transcribe
+    // POST /v1beta/models/gemini-3.5-transcribe:generateContent
+    // الرد: candidates[0].content.parts[].audioTranscription.words[] { word, startOffset: "0.100s", endOffset }
+    // الحد الرسمي: حتى ساعة صوت (30 دقيقة عند تفعيل التوقيتات) — أجزاء 15 دقيقة آمنة.
+
+    static func geminiTranscribe(chunks: [AudioChunk],
+                                 chunksDir: URL,
+                                 language: SubLang,
+                                 apiKey: String,
+                                 concurrency: Int,
+                                 chunkDone: @escaping (Int) -> Void,
+                                 chunkResult: @escaping (Int, [SubCue], String?) -> Void) async throws -> STTResult {
+        var detected: String? = nil
+        var allCues: [SubCue] = []
+
+        var i = 0
+        while i < chunks.count {
+            if Task.isCancelled { throw CancellationError() }
+            // Gemini أشد تحفظاً في التوازي من Groq — سقف 2 كحد آمن.
+            let window = Array(chunks[i..<min(i + min(max(1, concurrency), 2), chunks.count)])
+            i += window.count
+
+            try await withThrowingTaskGroup(of: (Int, [SubCue], String?).self) { group in
+                for chunk in window {
+                    group.addTask {
+                        let r = try await transcribeOneChunkGeminiTranscribe(chunk: chunk,
+                                                                             chunksDir: chunksDir,
+                                                                             language: language,
+                                                                             apiKey: apiKey)
+                        return (chunk.index, r.cues, r.detectedLang)
+                    }
+                }
+                for try await (idx, cues, lang) in group {
+                    allCues.append(contentsOf: cues)
+                    if detected == nil { detected = lang }
+                    chunkDone(idx)
+                    chunkResult(idx, cues, lang)
+                }
+            }
+        }
+        return STTResult(cues: allCues, detectedLang: detected)
+    }
+
+    private static func transcribeOneChunkGeminiTranscribe(chunk: AudioChunk,
+                                                           chunksDir: URL,
+                                                           language: SubLang,
+                                                           apiKey: String) async throws -> STTResult {
+        let fileURL = chunksDir.appendingPathComponent(chunk.fileName)
+        let fileData: Data
+        do { fileData = try Data(contentsOf: fileURL) }
+        catch { throw AudioPipelineError.readerFailed("تعذر قراءة ملف الجزء \(chunk.index)") }
+
+        // inline base64 — أجزاء 15 دقيقة بصيغة AAC 16kHz أحادية ≈ 3-4MB، ضمن الحد.
+        var transcriptionConfig: [String: Any] = ["wordTimestamp": true]
+        if let lang = language.bcp47 {
+            // تحسين الدقة عند معرفة اللغة مسبقاً (اختياري حسب الوثائق).
+            transcriptionConfig["languageCodes"] = [lang]
+        }
+        let body: [String: Any] = [
+            "contents": [
+                ["parts": [["inline_data": ["mime_type": "audio/mp4",
+                                            "data": fileData.base64EncodedString()]]]]
+            ],
+            "generationConfig": ["audioTranscriptionConfig": transcriptionConfig]
+        ]
+        let payload = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await HTTP.withRetry(attempts: 3, baseDelay: 5) {
+            try await HTTP.request("POST",
+                                   "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-transcribe:generateContent",
+                                   headers: ["x-goog-api-key": apiKey,
+                                             "Content-Type": "application/json"],
+                                   body: payload,
+                                   timeout: 900)
+        }
+
+        let json = HTTP.json(from: data)
+        if let err = json["error"] as? [String: Any] {
+            let msg = (err["message"] as? String) ?? "خطأ غير معروف"
+            let code = (err["code"] as? Int) ?? 0
+            throw APIError(status: code, body: "Gemini Transcribe: \(msg)")
+        }
+        // نجمع الكلمات مع توقيتاتها من كل الأجزاء.
+        var words: [(text: String, start: Double, end: Double)] = []
+        if let candidates = json["candidates"] as? [[String: Any]],
+           let content = candidates.first?["content"] as? [String: Any],
+           let parts = content["parts"] as? [[String: Any]] {
+            for part in parts {
+                guard let transcription = part["audioTranscription"] as? [String: Any] else { continue }
+                guard let wordList = transcription["words"] as? [[String: Any]] else { continue }
+                for w in wordList {
+                    guard let word = w["word"] as? String, !word.isEmpty else { continue }
+                    let start = parseSecondsWithSuffix(w["startOffset"])
+                    let end = parseSecondsWithSuffix(w["endOffset"])
+                    guard let s = start, let e = end, e > s else { continue }
+                    words.append((word, s, e))
+                }
+            }
+        }
+        let cues = groupWordsToCues(words: words, chunkOffset: chunk.start)
+        return STTResult(cues: cues, detectedLang: nil)
+    }
+
+    /// "0.100s" أو 0.1 → ثوانٍ Double.
+    private static func parseSecondsWithSuffix(_ any: Any?) -> Double? {
+        if let s = any as? String {
+            let clean = s.replacingOccurrences(of: "s", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return Double(clean)
+        }
+        return HTTP.num(any)
+    }
+
+    /// يحوّل قائمة كلمات بتوقيتات إلى مقاطع ترجمة (7-14 كلمة أو عند علامة
+    /// ترقيم أو صمت ≥ 0.8 ثانية) — نفس أسلوب تجميع Deepgram/AssemblyAI.
+    static func groupWordsToCues(words: [(text: String, start: Double, end: Double)],
+                                 chunkOffset: Double) -> [SubCue] {
+        var cues: [SubCue] = []
+        var currentWords: [String] = []
+        var cueStart: Double = 0
+        var cueEnd: Double = 0
+
+        func flush() {
+            guard !currentWords.isEmpty else { return }
+            let text = currentWords.joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.count >= 2, cueEnd > cueStart {
+                cues.append(SubCue(id: cues.count,
+                                   start: chunkOffset + cueStart,
+                                   end: chunkOffset + cueEnd,
+                                   text: text,
+                                   translated: nil))
+            }
+            currentWords = []
+        }
+
+        var lastEnd: Double? = nil
+        for w in words {
+            if let prev = lastEnd, w.start - prev > 0.8 {
+                flush()
+            }
+            if currentWords.isEmpty { cueStart = w.start }
+            currentWords.append(w.text)
+            cueEnd = w.end
+            lastEnd = w.end
+            let endsSentence = w.text.hasSuffix(".") || w.text.hasSuffix("؟") || w.text.hasSuffix("?")
+                || w.text.hasSuffix("!") || w.text.hasSuffix("۔")
+            if endsSentence || currentWords.count >= 14 {
+                flush()
+                lastEnd = w.end
+            }
+        }
+        flush()
+        return cues
+    }
+
+    // MARK: ElevenLabs Scribe (نفس مفتاح ElevenLabs — ملف واحد كامل)
+    // https://elevenlabs.io/docs/api-reference/speech-to-text/convert
+    // POST /v1/speech-to-text (multipart): model_id=scribe_v1, timestamps_granularity=word
+    // الرد: { text, words: [ { text, start, end, type: "word"|"spacing" } ], language_code }
+
+    static func elevenLabsScribeTranscribe(audioURL: URL,
+                                           language: SubLang,
+                                           apiKey: String) async throws -> STTResult {
+        let fileData: Data
+        do { fileData = try Data(contentsOf: audioURL) }
+        catch { throw AudioPipelineError.readerFailed("تعذر قراءة ملف الصوت المجمّع") }
+
+        let boundary = "scribe\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        var fields: [String: String] = [
+            "timestamps_granularity": "word",
+            "tag_audio_events": "false"
+        ]
+        if let lang = language.bcp47 { fields["language_code"] = lang }
+
+        let mime = audioURL.pathExtension.lowercased() == "m4a" ? "audio/mp4" : mimeType(forAudioURL: audioURL)
+
+        func perform(modelID: String) async throws -> Data {
+            var b = Data()
+            b.append(Data(("--\(boundary)\r\n").utf8))
+            b.append(Data("Content-Disposition: form-data; name=\"model_id\"\r\n\r\n".utf8))
+            b.append(Data("\(modelID)\r\n".utf8))
+            for (k, v) in fields {
+                b.append(Data("--\(boundary)\r\n".utf8))
+                b.append(Data("Content-Disposition: form-data; name=\"\(k)\"\r\n\r\n".utf8))
+                b.append(Data("\(v)\r\n".utf8))
+            }
+            b.append(Data("--\(boundary)\r\n".utf8))
+            b.append(Data("Content-Disposition: form-data; name=\"file\"; filename=\"\(audioURL.lastPathComponent)\"\r\n".utf8))
+            b.append(Data("Content-Type: \(mime)\r\n\r\n".utf8))
+            b.append(fileData)
+            b.append(Data("\r\n--\(boundary)--\r\n".utf8))
+            let (respData, _) = try await HTTP.withRetry(attempts: 3, baseDelay: 8) {
+                try await HTTP.request("POST",
+                                       "https://api.elevenlabs.io/v1/speech-to-text",
+                                       headers: ["xi-api-key": apiKey,
+                                                 "Content-Type": "multipart/form-data; boundary=\(boundary)"],
+                                       body: b,
+                                       timeout: 1800)
+            }
+            return respData
+        }
+
+        var data: Data
+        do {
+            data = try await perform(modelID: "scribe_v1")
+        } catch let e as APIError where e.status == 400 || e.status == 404 {
+            // لو أُوقف scribe_v1 عند ElevenLabs نجرب scribe_v2 مرة واحدة.
+            let bodyText = e.body.lowercased()
+            guard bodyText.contains("model") else { throw e }
+            data = try await perform(modelID: "scribe_v2")
+        }
+
+        let json = HTTP.json(from: data)
+        if let detail = json["detail"] as? [Any],
+           let first = detail.first as? [String: Any],
+           let msg = first["msg"] as? String {
+            throw APIError(status: 0, body: "ElevenLabs Scribe: \(msg)")
+        }
+        if let detail = json["detail"] as? String {
+            throw APIError(status: 0, body: "ElevenLabs Scribe: \(detail)")
+        }
+        var words: [(text: String, start: Double, end: Double)] = []
+        if let wordList = json["words"] as? [[String: Any]] {
+            for w in wordList {
+                let type = (w["type"] as? String) ?? "word"
+                guard type == "word" || type == "word_spacing" || type == "spacing" else { continue }
+                guard let text = w["text"] as? String else { continue }
+                // spacing بلا نص مفيد — نتجاهله.
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                guard let s = HTTP.num(w["start"]), let e = HTTP.num(w["end"]), e > s else { continue }
+                words.append((text, s, e))
+            }
+        }
+        var cues = groupWordsToCues(words: words, chunkOffset: 0)
+        // احتياط: لو لم تصل كلمات لكن وصل نص كامل، نضع نصاً واحداً بدون توقيتات دقيقة.
+        if cues.isEmpty, let fullText = json["text"] as? String,
+           !fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            cues = [SubCue(id: 0, start: 0, end: 2.0,
+                           text: fullText.trimmingCharacters(in: .whitespacesAndNewlines),
+                           translated: nil)]
+        }
+        let detected = json["language_code"] as? String
+        return STTResult(cues: cues, detectedLang: detected)
+    }
+
     private static func mimeType(forAudioURL url: URL) -> String {
         switch url.pathExtension.lowercased() {
         case "m4a": return "audio/m4a"

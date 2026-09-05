@@ -106,6 +106,8 @@ enum SubLang: String, CaseIterable, Codable, Identifiable, Hashable {
 
 enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
     case auto, groq, assemblyai, sttai, speechmatics, deepgram, azure, siliconflow
+    case geminiTranscribe   // Gemini 3.5 Transcribe (نفس مفتاح Gemini)
+    case elevenlabsScribe   // ElevenLabs Scribe (نفس مفتاح ElevenLabs)
     var id: String { rawValue }
 
     var titleAR: String {
@@ -118,13 +120,15 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
         case .deepgram: return "Deepgram Nova-3 (دقيق ومتعدد اللغات)"
         case .azure: return "Azure Speech (Neural STT)"
         case .siliconflow: return "SiliconFlow SenseVoice (متعدد اللغات)"
+        case .geminiTranscribe: return "Gemini 3.5 Transcribe (تفريغ فائق الدقة)"
+        case .elevenlabsScribe: return "ElevenLabs Scribe (99 لغة)"
         }
     }
 
     var detailAR: String {
         switch self {
         case .auto:
-            return "يختار التطبيق أفضل مزود حسب المفاتيح المتاحة: AssemblyAI للفيديوهات الطويلة، ثم المزودات الأخرى."
+            return "يختار التطبيق أفضل مزود حسب المفاتيح المتاحة: AssemblyAI للفيديوهات الطويلة، ثم المزودات الأخرى. Gemini Transcribe وElevenLabs Scribe تأتيان في آخر السلسلة حتى لا يتغير سلوك «تلقائي» الحالي."
         case .groq:
             return "whisper-large-v3-turbo — أسرع وأرخص خيار، مع تقطيع الفيديو لأجزاء متوازية. مناسب للفيديوهات حتى 5 ساعات وأكثر."
         case .assemblyai:
@@ -139,6 +143,10 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
             return "Azure Speech STT — يرسل أجزاء WAV قصيرة إلى منطقة Speech التي تحددها في الإعدادات. الطبقة المجانية F0 تشمل 5 ساعات صوت شهرياً؛ مع مصدر (تلقائي) يستخدم ar-SA لأن REST القصير لا يكشف عدة لغات."
         case .siliconflow:
             return "SenseVoice Small من FunAudioLLM — موديل صيني مفتوح متفوق في الهندية والصينية ومتعدد اللغات، يدعم 50+ لغة منها العربية. مجاني تقريباً."
+        case .geminiTranscribe:
+            return "Gemini 3.5 Transcribe — تفريغ فائق الدقة من Google بنفس مفتاح Gemini بدون تسجيل جديد: كشف تلقائي للغة (85+ لغة مع التبديل بين اللغات داخل الجملة)، توقيتات على مستوى الكلمة، ومفردات مخصصة. أجزاء 15 دقيقة متوازية (الحد الرسمي 30 دقيقة عند تفعيل التوقيتات)."
+        case .elevenlabsScribe:
+            return "ElevenLabs Scribe (scribe_v1) — أعلى دقة في 99 لغة مع توقيتات كلمة بكلمة، بنفس مفتاح ElevenLabs (مفتاح واحد للدبلجة والتفريغ). ملف واحد كامل بلا تقطيع؛ الشريحة المجانية 10 ساعات صوت شهرياً."
         }
     }
 
@@ -152,14 +160,25 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
         case .deepgram: return "deepgram"
         case .azure: return "azure"
         case .siliconflow: return "siliconflow"
+        case .geminiTranscribe: return "gemini"
+        case .elevenlabsScribe: return "elevenlabs"
         }
+    }
+
+    init(from decoder: Decoder) throws {
+        let raw = (try? decoder.singleValueContainer().decode(String.self)) ?? ""
+        self = STTProviderKind(rawValue: raw) ?? .auto
     }
 }
 
 // MARK: - مزودو مراجعة وتدقيق نصوص التفريغ (Speech-to-Text Refinement & Proofreading)
 
 enum SubtitleRefinerKind: String, Codable, CaseIterable, Identifiable {
-    case auto, gemini, groqLLM, cerebras, sambaNova, openRouter, off
+    case auto, gemini, groqLLM, cerebras, sambaNova, openRouter
+    case nvidia   // NVIDIA NIM (build.nvidia.com)
+    case cohere   // Cohere (command-a / aya)
+    case zai      // Z.ai GLM (open.bigmodel.cn)
+    case off
     var id: String { rawValue }
 
     var titleAR: String {
@@ -167,9 +186,12 @@ enum SubtitleRefinerKind: String, Codable, CaseIterable, Identifiable {
         case .auto: return "تلقائي (الأفضل المتاح)"
         case .gemini: return "Gemini (مراجعة سياقية دقيقة)"
         case .groqLLM: return "Groq LLM (GPT-OSS 120B — فائق السرعة)"
-        case .cerebras: return "Cerebras (سريع — مليون token/يوم)"
+        case .cerebras: return "Cerebras (سريع — 200K token/يوم)"
         case .sambaNova: return "SambaNova (DeepSeek V3.2 — رصيد مجاني)"
         case .openRouter: return "OpenRouter (موديلات مجانية :free)"
+        case .nvidia: return "NVIDIA NIM (Nemotron 3 — 10K طلب/يوم)"
+        case .cohere: return "Cohere (Command A / Aya — عربي قوي)"
+        case .zai: return "Z.ai GLM-4.7-Flash (مجاني بالكامل)"
         case .off: return "إيقاف المراجعة (ترجمة مباشرة)"
         }
     }
@@ -177,17 +199,23 @@ enum SubtitleRefinerKind: String, Codable, CaseIterable, Identifiable {
     var detailAR: String {
         switch self {
         case .auto:
-            return "يبدأ بأفضل مزود متاح (Gemini ثم Groq ثم Cerebras ثم SambaNova ثم OpenRouter) لمراجعة نصوص التفريغ، إكمال الكلمات الناقصة، تصحيح الأخطاء الصوتية، وإزالة الهلاوس والتكرار قبل الترجمة."
+            return "يبدأ بأفضل مزود متاح (Gemini ثم Groq ثم Cerebras ثم SambaNova ثم NVIDIA/Cohere/Z.ai ثم OpenRouter) لمراجعة نصوص التفريغ، إكمال الكلمات الناقصة، تصحيح الأخطاء الصوتية، وإزالة الهلاوس والتكرار قبل الترجمة."
         case .gemini:
             return "مراجعة سياقية ذكية تفهم المصطلحات وتكمل الجمل غير المكتملة عبر Google AI Studio مجاناً بدون فيزا."
         case .groqLLM:
             return "تدقيق فائق السرعة عبر GPT-OSS 120B أو Qwen على Groq بنفس مفتاح التفريغ."
         case .cerebras:
-            return "مليون token/يوم مجاناً وسريع جداً عبر Llama 3.1 70B أو Qwen3 بدون فيزا."
+            return "حوالي 200 ألف token/يوم مجاناً لكل موديل وسريع جداً عبر Llama 3.3 70B أو Qwen3. انتبه: Cerebras صار يطلب وسيلة دفع عند التسجيل الجديد."
         case .sambaNova:
-            return "تدقيق عالي الجودة للسياق عبر DeepSeek V3.2 أو Llama 3.3 ضمن الرصيد المجاني."
+            return "تدقيق عالي الجودة للسياق عبر DeepSeek V3.2 أو Llama 3.3 — حوالي 200 ألف token/يوم مجاناً لكل موديل (20 طلب/دقيقة) بدون فيزا."
         case .openRouter:
             return "قائمة حية من الموديلات المجانية (:free) لمراجعة وتدقيق النصوص بدون فيزا."
+        case .nvidia:
+            return "Nemotron 3 Super 120B وغيره عبر NVIDIA NIM — 40 طلب/دقيقة و10,000 طلب/يوم مجاناً بدون فيزا من build.nvidia.com. للاستخدام التجريبي فقط وقد تُسجَّل الطلبات عند NVIDIA."
+        case .cohere:
+            return "Command A وAya Expanse عبر Cohere — 1,000 استدعاء شهرياً مجاناً (20/دقيقة) بدون فيزا. Aya متميز في العربية ومتعدد اللغات."
+        case .zai:
+            return "GLM-4.7-Flash من Z.ai — مجاني بالكامل بسياق 200K، بنطاق عالمي (api.z.ai) أو صيني (open.bigmodel.cn) بمفتاح واحد. طلب متزامن واحد فقط."
         case .off:
             return "تخطي مرحلة مراجعة التفريغ والانتقال مباشرة إلى الترجمة بدون تدقيق."
         }
@@ -201,6 +229,9 @@ enum SubtitleRefinerKind: String, Codable, CaseIterable, Identifiable {
         case .cerebras: return "cerebras"
         case .sambaNova: return "sambanova"
         case .openRouter: return "openrouter"
+        case .nvidia: return "nvidia"
+        case .cohere: return "cohere"
+        case .zai: return "zai"
         }
     }
 
@@ -215,6 +246,11 @@ enum SubtitleRefinerKind: String, Codable, CaseIterable, Identifiable {
 enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
     // مزودات بدون فيزا: كلها فيها شريحة مجانية ويمكن التسجيل فيها بالبريد/GitHub/Google.
     case auto, gemini, groqLLM, deepL, openRouter, cerebras, sambaNova
+    case nvidia      // NVIDIA NIM (build.nvidia.com)
+    case cohere      // Cohere (dashboard.cohere.com)
+    case zai         // Z.ai GLM (open.bigmodel.cn / z.ai)
+    case lara        // Lara Translate (مزود ترجمة متخصص)
+    case myMemory    // MyMemory (بدون مفتاح إطلاقاً)
     var id: String { rawValue }
 
     var titleAR: String {
@@ -222,29 +258,44 @@ enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
         case .auto: return "تلقائي (الأفضل المتاح)"
         case .gemini: return "Gemini (ترجمة سياقية)"
         case .groqLLM: return "Groq LLM (GPT-OSS 120B — سريع جداً)"
-        case .deepL: return "DeepL (500K حرف/شهر مجاناً)"
+        case .deepL: return "DeepL (خطة Developer — مليون حرف)"
         case .openRouter: return "OpenRouter (موديلات مجانية كثيرة)"
-        case .cerebras: return "Cerebras (سريع جداً — مليون token/يوم)"
+        case .cerebras: return "Cerebras (سريع جداً — 200K token/يوم)"
         case .sambaNova: return "SambaNova (DeepSeek/Llama — رصيد مجاني)"
+        case .nvidia: return "NVIDIA NIM (Nemotron 3 — 10K طلب/يوم)"
+        case .cohere: return "Cohere (Command A / Aya — عربي قوي)"
+        case .zai: return "Z.ai GLM-4.7-Flash (مجاني بالكامل)"
+        case .lara: return "Lara Translate (ترجمة احترافية متخصصة)"
+        case .myMemory: return "MyMemory (بدون مفتاح — 5K كلمة/يوم)"
         }
     }
 
     var detailAR: String {
         switch self {
         case .auto:
-            return "يبدأ بأفضل مزود عندك ثم ينتقل تلقائياً للتالي لو نفدت حصته المجانية — لا تتوقف المهمة في منتصف الفيديو. الترتيب: Gemini ← Groq ← Cerebras ← SambaNova ← DeepL ← OpenRouter."
+            return "يبدأ بأفضل مزود عندك ثم ينتقل تلقائياً للتالي لو نفدت حصته المجانية — لا تتوقف المهمة في منتصف الفيديو. الترتيب: Gemini ← Groq ← NVIDIA ← Cerebras ← SambaNova ← Cohere ← Z.ai ← DeepL ← OpenRouter ← Lara ← MyMemory (يعمل دائماً بدون مفتاح)."
         case .gemini:
             return "ترجمة طبيعية تفهم السياق والمصطلحات. للدفعات السريعة يضبط التطبيق التفكير المنخفض تلقائياً. مفتاح Google AI Studio مجاني بدون فيزا."
         case .groqLLM:
-            return "GPT-OSS 120B أو Qwen عبر Groq — سريعان جداً بنفس مفتاح التفريغ. شريحة مجانية بدون فيزا."
+            return "GPT-OSS 120B أو Qwen عبر Groq — سريعان جداً بنفس مفتاح التفريغ. شريحة مجانية بدون فيزا (معظم الموديلات 1,000 طلب/يوم)."
         case .deepL:
-            return "DeepL — 500 ألف حرف/شهر مجاناً، جودة عالية للترجمة السياقية. يحتاج مفتاح DeepL (deepl)."
+            return "DeepL — جودة عالية للترجمة السياقية. المفاتيح المنتهية بـ :fx تعمل على النطاق المجاني (api-free)، وغيرها على api.deepl.com. التسجيلات الجديدة تأتي على خطة Developer بمليون حرف لمرة واحدة (بدل 500 ألف شهرياً سابقاً)."
         case .openRouter:
             return "قائمة حيّة من الموديلات المجانية (‎:free) تُحدَّث كل 30 دقيقة — التطبيق يقرأ ما هو مجاني فعلاً الآن بدون فيزا. حدود الشريحة المجانية الرسمية: 20 طلب/دقيقة و50 طلب/يوم (تصبح 1000/يوم بعد شحن 10$ لمرة واحدة). لهذا هو أبطأ المزودين — لو عندك مفتاح Groq أو Cerebras فالتطبيق يقدّمهما عليه تلقائياً."
         case .cerebras:
-            return "مليون token يومياً مجاناً وسريع جداً. Llama 3.3 70B / Qwen3 / GLM. بدون فيزا."
+            return "حوالي 200 ألف token/يوم مجاناً لكل موديل وسريع جداً (Llama 3.3 70B / Qwen3 / Gemma 4). انتبه: التسجيل الجديد في Cerebras صار يتطلب وسيلة دفع."
         case .sambaNova:
-            return "DeepSeek V3.2 / Llama 3.3 عبر SambaNova — رصيد 5$ مجاني بدون فيزا. سريع جداً."
+            return "DeepSeek V3.2 / Llama 3.3 عبر SambaNova — حوالي 200 ألف token/يوم مجاناً لكل موديل (20 طلب/دقيقة) بدون فيزا. سريع جداً."
+        case .nvidia:
+            return "Nemotron 3 Super 120B (سياق مليون token) وغيره عبر NVIDIA build — 40 طلب/دقيقة و10,000 طلب/يوم مجاناً بدون فيزا. المتوافق مع OpenAI، للاستخدام التجريبي فقط وقد تُسجَّل الطلبات عند NVIDIA."
+        case .cohere:
+            return "Command A وAya Expanse 32B عبر Cohere — 1,000 استدعاء شهرياً مجاناً (20/دقيقة) بدون فيزا. Command A مخصص للترجمة متعددة اللغات وAya ممتاز للعربية."
+        case .zai:
+            return "GLM-4.7-Flash من Z.ai — مجاني بالكامل بسياق 200K. يعمل عبر النطاق العالمي api.z.ai أو الصيني open.bigmodel.cn بمفتاح واحد (يجرّب الاثنين تلقائياً). طلب متزامن واحد فقط."
+        case .lara:
+            return "Lara Translate من Translated — محرك ترجمة احترافي مع سياق وأوامر مخصصة. 10 آلاف حرف شهرياً مجاناً بدون فيزا. يحتاج مفتاح Lara من لوحة laratranslate.com."
+        case .myMemory:
+            return "MyMemory — ترجمة فورية بدون أي مفتاح (5,000 كلمة/يوم لكل IP). أبطأ وأبسط من مزودات الذكاء الاصطناعي؛ مفيد كشبكة أمان أخيرة أو لتجربة سريعة."
         }
     }
 
@@ -257,6 +308,11 @@ enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
         case .openRouter: return "openrouter"
         case .cerebras: return "cerebras"
         case .sambaNova: return "sambanova"
+        case .nvidia: return "nvidia"
+        case .cohere: return "cohere"
+        case .zai: return "zai"
+        case .lara: return "lara"
+        case .myMemory: return nil
         }
     }
 
