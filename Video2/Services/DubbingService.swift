@@ -21,10 +21,11 @@ struct DubbingRequest: Sendable {
 
 enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     case edge        // Microsoft Edge (مجاني بدون مفتاح)
-    case groqPlayAI  // Groq PlayAI TTS (نفس مفتاح Groq)
+    case groqPlayAI  // Groq Orpheus TTS (نفس مفتاح Groq)
     case siliconflow // SiliconFlow CosyVoice (مفتوح، أفضل جودة)
     case elevenlabs  // ElevenLabs (احترافي، مدفوع)
     case azure       // Azure Speech Neural TTS
+    case gemini      // Gemini TTS (نفس مفتاح Gemini — مجاني)
     case auto        // يختار تلقائياً
 
     var id: String { rawValue }
@@ -32,10 +33,11 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     var titleAR: String {
         switch self {
         case .edge: return "Microsoft Edge (مجاني)"
-        case .groqPlayAI: return "Groq PlayAI TTS"
+        case .groqPlayAI: return "Groq Orpheus TTS"
         case .siliconflow: return "SiliconFlow CosyVoice"
         case .elevenlabs: return "ElevenLabs (احترافي)"
         case .azure: return "Azure Speech Neural"
+        case .gemini: return "Gemini TTS (مجاني)"
         case .auto: return "تلقائي (الأفضل)"
         }
     }
@@ -45,15 +47,17 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .edge:
             return "بدون مفتاح — صوت Zariyah/Ryan. جودة جيدة جداً للعربية الفصحى."
         case .groqPlayAI:
-            return "نفس مفتاح Groq — أصوات متعددة، سرعة فائقة، لكن دعم العربية محدود."
+            return "نفس مفتاح Groq — موديل Orpheus: 6 أصوات عربية سعودية (عبدالله، فهد، سلطان، لولوة، نورة، عائشة) وأصوات إنجليزية طبيعية. سرعة فائقة."
         case .siliconflow:
             return "CosyVoice 2 من FunAudioLLM — جودة ممتازة للصينية، دعم العربية محدود لكن طبيعي."
         case .elevenlabs:
-            return "أفضل جودة بشرية على الإنترنت — مدفوع. المفتاح: elevenlabs."
+            return "أفضل جودة بشرية على الإنترنت — مدفوع. المفتاح: elevenlabs (نفسه يعمل للتفريغ عبر Scribe)."
         case .azure:
             return "Azure Speech Neural — أصوات عربية وإنجليزية طبيعية، 500 ألف حرف شهرياً ضمن طبقة F0. يحتاج مفتاحاً ومنطقة Azure."
+        case .gemini:
+            return "Gemini TTS بنفس مفتاح Gemini المجاني — 30 صوتاً جاهزاً بـ24 لغة منها العربية، مع تحكم بالنبرة والأسلوب عبر النص. مخرجات WAV بجودة 24kHz."
         case .auto:
-            return "يختار ElevenLabs أولاً إن وُجد، ثم Azure Speech، ثم المزودات الحالية، وإلا Edge."
+            return "يختار ElevenLabs أولاً إن وُجد، ثم Azure Speech، ثم Gemini TTS، ثم Orpheus/CosyVoice، وإلا Edge."
         }
     }
 
@@ -65,6 +69,7 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .siliconflow: return KeychainStore.has("siliconflow")
         case .elevenlabs: return KeychainStore.has("elevenlabs")
         case .azure: return KeychainStore.has("azure")
+        case .gemini: return KeychainStore.has("gemini")
         case .auto: return true
         }
     }
@@ -76,6 +81,7 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .siliconflow: return "siliconflow"
         case .elevenlabs: return "elevenlabs"
         case .azure: return "azure"
+        case .gemini: return "gemini"
         case .edge, .auto: return nil
         }
     }
@@ -90,6 +96,8 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
             return 2
         case .siliconflow, .elevenlabs, .azure:
             return 2
+        case .gemini:
+            return 3
         case .auto:
             return 1
         }
@@ -225,9 +233,14 @@ final class DubbingService: ObservableObject {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        // Azure يعيد MP3 فعلياً؛ احتفظ بامتداده الصحيح حتى يتعرّف عليه
-        // AVFoundation، بينما لا نغيّر مخرجات المزودات الموجودة.
-        let perCueExt = provider == .azure ? "mp3" : "m4a"
+        // Azure يعيد MP3 فعلياً وOrpheus/Gemini TTS يعيدان WAV؛ نحتفظ بامتداد
+        // كل صيغة صحيح حتى يتعرّف عليها AVFoundation مباشرة.
+        let perCueExt: String
+        switch provider {
+        case .azure: perCueExt = "mp3"
+        case .groqPlayAI, .gemini: perCueExt = "wav"
+        default: perCueExt = "m4a"
+        }
         statusText = "توليد الصوت لكل جملة…"
         var generated: [(cue: SubCue, audioURL: URL, duration: Double)] = []
         let total = Double(translatable.count)
@@ -366,6 +379,8 @@ final class DubbingService: ObservableObject {
             return try await ElevenLabsTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
         case .azure:
             return try await AzureSpeech.synthesize(text: text, voice: voice, outputURL: outputURL)
+        case .gemini:
+            return try await GeminiTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
         case .auto:
             throw DubbingError.invalidProvider
         }
@@ -473,10 +488,11 @@ final class DubbingService: ObservableObject {
     private func resolveProvider(_ requested: DubbingProvider, lang: SubLang) -> DubbingProvider {
         switch requested {
         case .auto:
-            // لا نغيّر الأولوية القديمة؛ Azure يضاف بعد ElevenLabs وقبل
-            // البدائل الحالية عندما يكون مفتاحه محفوظاً.
+            // لا نغيّر الأولوية القديمة؛ Gemini TTS يضاف بعد Azure وقبل
+            // البدائل الحالية عندما يكون مفتاح Gemini محفوظاً (مجاني بنفس المفتاح).
             if DubbingProvider.elevenlabs.isAvailable { return .elevenlabs }
             if DubbingProvider.azure.isAvailable { return .azure }
+            if DubbingProvider.gemini.isAvailable { return .gemini }
             if DubbingProvider.siliconflow.isAvailable { return .siliconflow }
             if DubbingProvider.groqPlayAI.isAvailable { return .groqPlayAI }
             return .edge
@@ -531,6 +547,8 @@ extension DubbingVoice {
             return ElevenLabsTTS.defaultVoices
         case .azure:
             return azureVoices(for: lang)
+        case .gemini:
+            return geminiVoices(for: lang)
         case .auto:
             return edgeVoices(for: lang)
         }
@@ -603,21 +621,55 @@ extension DubbingVoice {
     }
 
     private static func groqVoices(for lang: SubLang) -> [DubbingVoice] {
-        // Groq PlayAI — أوائل 2026: دعم إنجليزي قوي، دعم عربي محدود
-        // نُحافظ على هذه القائمة مع تنبيه المستخدم
+        // Groq Orpheus (2026-08): canopylabs/orpheus-arabic-saudi بأصوات عربية
+        // سعودية حقيقية، وcanopylabs/orpheus-v1-english للأصوات الإنجليزية.
         switch lang {
         case .ar:
             return [
-                DubbingVoice(id: "ar-SA-HamedNeural", name: "Hamed (عبر Edge المُحسَّن)", language: "ar-SA", gender: .male, naturalness: 3, provider: .groqPlayAI)
+                DubbingVoice(id: "orpheus-ar-abdullah", name: "عبدالله — Orpheus سعودي", language: "ar-SA", gender: .male, naturalness: 5, provider: .groqPlayAI),
+                DubbingVoice(id: "orpheus-ar-fahad", name: "فهد — Orpheus سعودي", language: "ar-SA", gender: .male, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "orpheus-ar-sultan", name: "سلطان — Orpheus سعودي", language: "ar-SA", gender: .male, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "orpheus-ar-lulwa", name: "لولوة — Orpheus سعودية", language: "ar-SA", gender: .female, naturalness: 5, provider: .groqPlayAI),
+                DubbingVoice(id: "orpheus-ar-noura", name: "نورة — Orpheus سعودية", language: "ar-SA", gender: .female, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "orpheus-ar-aisha", name: "عائشة — Orpheus سعودية", language: "ar-SA", gender: .female, naturalness: 4, provider: .groqPlayAI)
             ]
         case .en:
             return [
-                DubbingVoice(id: "playai-tts-arabic", name: "PlayAI Arabic", language: "ar", gender: .female, naturalness: 3, provider: .groqPlayAI),
-                DubbingVoice(id: "playai-tts-english", name: "PlayAI English", language: "en", gender: .female, naturalness: 4, provider: .groqPlayAI)
+                DubbingVoice(id: "orpheus-en-troy", name: "Troy — Orpheus", language: "en-US", gender: .male, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "orpheus-en-austin", name: "Austin — Orpheus", language: "en-US", gender: .male, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "orpheus-en-daniel", name: "Daniel — Orpheus", language: "en-US", gender: .male, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "orpheus-en-hannah", name: "Hannah — Orpheus", language: "en-US", gender: .female, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "orpheus-en-diana", name: "Diana — Orpheus", language: "en-US", gender: .female, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "orpheus-en-autumn", name: "Autumn — Orpheus", language: "en-US", gender: .female, naturalness: 4, provider: .groqPlayAI)
             ]
         default:
-            return [DubbingVoice(id: "playai-tts-english", name: "PlayAI English", language: "en", gender: .female, naturalness: 4, provider: .groqPlayAI)]
+            // اللغات الأخرى غير مدعومة في Orpheus — نقدم الأصوات الإنجليزية
+            // (والتطبيق يسقط تلقائياً لصوت الجهاز إذا لم تصلح).
+            return [
+                DubbingVoice(id: "orpheus-en-troy", name: "Troy — Orpheus", language: "en-US", gender: .male, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "orpheus-en-hannah", name: "Hannah — Orpheus", language: "en-US", gender: .female, naturalness: 4, provider: .groqPlayAI)
+            ]
         }
+    }
+
+    /// أصوات Gemini TTS الجاهزة (30 صوتاً تدعم 24 لغة منها العربية).
+    /// نعرض أفضل مجموعة متوازنة؛ جميعها تعمل مع العربية والإنجليزية.
+    private static func geminiVoices(for lang: SubLang) -> [DubbingVoice] {
+        _ = lang // كل الأصوات متعددة اللغات — نفس القائمة لأي لغة
+        return [
+            DubbingVoice(id: "Kore", name: "Kore — حازم ومتزن", language: "multi", gender: .female, naturalness: 5, provider: .gemini),
+            DubbingVoice(id: "Puck", name: "Puck — حيوي ومبهج", language: "multi", gender: .male, naturalness: 5, provider: .gemini),
+            DubbingVoice(id: "Charon", name: "Charon — إخباري", language: "multi", gender: .male, naturalness: 5, provider: .gemini),
+            DubbingVoice(id: "Zephyr", name: "Zephyr — مشرق", language: "multi", gender: .female, naturalness: 4, provider: .gemini),
+            DubbingVoice(id: "Fenrir", name: "Fenrir — متحمس", language: "multi", gender: .male, naturalness: 4, provider: .gemini),
+            DubbingVoice(id: "Leda", name: "Leda — شبابي", language: "multi", gender: .female, naturalness: 4, provider: .gemini),
+            DubbingVoice(id: "Aoede", name: "Aoede — خفيف ومريح", language: "multi", gender: .female, naturalness: 4, provider: .gemini),
+            DubbingVoice(id: "Iapetus", name: "Iapetus — واضح", language: "multi", gender: .male, naturalness: 4, provider: .gemini),
+            DubbingVoice(id: "Orus", name: "Orus — ثابت", language: "multi", gender: .male, naturalness: 4, provider: .gemini),
+            DubbingVoice(id: "Achird", name: "Achird — ودود", language: "multi", gender: .male, naturalness: 4, provider: .gemini),
+            DubbingVoice(id: "Gacrux", name: "Gacrux — ناضج", language: "multi", gender: .female, naturalness: 4, provider: .gemini),
+            DubbingVoice(id: "Algenib", name: "Algenib — خشن", language: "multi", gender: .male, naturalness: 3, provider: .gemini)
+        ]
     }
 
     private static func siliconFlowVoices(for lang: SubLang) -> [DubbingVoice] {

@@ -94,48 +94,187 @@ enum AzureSpeech {
     }
 }
 
-// MARK: - Groq PlayAI TTS
+// MARK: - Groq Orpheus TTS
 // https://console.groq.com/docs/api-reference#audio
+// موديلان: canopylabs/orpheus-v1-english وcanopylabs/orpheus-arabic-saudi
+// (حلّا محل playai-tts الموقوف). أصوات عربية سعودية: Abdullah, Fahad, Sultan,
+// Lulwa, Noura, Aisha — وأصوات إنجليزية: Autumn, Diana, Hannah, Austin, Daniel, Troy.
 
 enum GroqTTS {
-    /// يولّد صوتاً عبر Groq PlayAI ويحفظه في ملف.
+    /// يولّد صوتاً عبر Groq Orpheus ويحفظه في ملف WAV.
+    /// معرّف الصوت يأتي بصيغة "orpheus-ar-abdullah" أو "orpheus-en-autumn".
     static func synthesize(text: String, voice: String, outputURL: URL) async throws -> Double {
         guard let key = KeychainStore.get("groq") else {
             throw APIError(status: 401, body: "أدخل مفتاح Groq من الإعدادات")
         }
-        // Groq PlayAI: موديل "playai-tts" — يدعم English حالياً بشكل رئيسي.
-        // للعربية نستخدم Edge TTS كاحتياطي.
-        if voice.lowercased().contains("ar") {
-            return try await EdgeTTSClient.synthesizeAndSave(text: text, voice: voice, outputURL: outputURL)
+        let lower = voice.lowercased()
+        let model: String
+        let voiceName: String
+        if lower.hasPrefix("orpheus-ar-") {
+            model = "canopylabs/orpheus-arabic-saudi"
+            voiceName = String(voice.dropFirst("orpheus-ar-".count)).lowercased()
+        } else if lower.hasPrefix("orpheus-en-") {
+            model = "canopylabs/orpheus-v1-english"
+            voiceName = String(voice.dropFirst("orpheus-en-".count)).lowercased()
+        } else if ["abdullah", "fahad", "sultan", "lulwa", "noura", "aisha"].contains(lower) {
+            model = "canopylabs/orpheus-arabic-saudi"
+            voiceName = lower
+        } else {
+            // أصوات Orpheus الإنجليزية أو أي قيمة أخرى
+            model = "canopylabs/orpheus-v1-english"
+            voiceName = ["autumn", "diana", "hannah", "austin", "daniel", "troy"].contains(lower) ? lower : "troy"
         }
         let body: [String: Any] = [
-            "model": "playai-tts",
-            "voice": mapPlayAIVoice(voice),
+            "model": model,
+            "voice": voiceName,
             "input": text,
             "response_format": "wav"
         ]
         let payload = try JSONSerialization.data(withJSONObject: body)
-        let (data, _) = try await HTTP.withRetry(attempts: 2, baseDelay: 2) {
+        let (data, _) = try await HTTP.withRetry(attempts: 2, baseDelay: 3) {
             try await HTTP.request("POST",
                                    "https://api.groq.com/openai/v1/audio/speech",
                                    headers: ["Authorization": "Bearer \(key)",
                                              "Content-Type": "application/json"],
                                    body: payload,
-                                   timeout: 60)
+                                   timeout: 90)
         }
         try data.write(to: outputURL, options: .atomic)
-        return approximateWAVDuration(bytes: data.count)
+        let duration = CMTimeGetSeconds(AVURLAsset(url: outputURL).duration)
+        if duration.isFinite && duration > 0 {
+            return duration
+        }
+        // Orpheus WAV: 44.1kHz mono 16-bit = 88,200 bytes/sec تقريباً بعد رأس الملف.
+        return max(0.3, Double(max(0, data.count - 44)) / 88_200.0)
+    }
+}
+
+// MARK: - Gemini TTS (مجاني بنفس مفتاح Gemini)
+// https://ai.google.dev/gemini-api/docs/generate-content/speech-generation
+// POST /v1beta/models/{tts-model}:generateContent
+// generationConfig: responseModalities ["AUDIO"] + speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName
+// المخرجات: inlineData PCM خام (24kHz · 16-bit · mono) — نضيف رأس WAV يدوياً.
+// 30 صوتاً جاهزاً تدعم 24 لغة منها العربية، مع تحكم طبيعي بالنبرة عبر النص.
+
+enum GeminiTTS {
+    /// gemini-3.1-flash-tts-preview هو الأحدث؛ 2.5-flash-preview-tts احتياط موثوق.
+    static let defaultModel = "gemini-3.1-flash-tts-preview"
+    static let fallbackModel = "gemini-2.5-flash-preview-tts"
+
+    static func selectedModel() -> String {
+        let saved = ModelSelection.selected(purpose: "tts", provider: .gemini, fallback: defaultModel)
+        return TranslateService.normalizedGeminiModel(saved)
     }
 
-    private static func mapPlayAIVoice(_ voice: String) -> String {
-        // PlayAI voices: Fritz, Baily, Celeste, ...
-        if voice.contains("english") || voice.contains("en") { return "Celeste" }
-        return "Celeste"
-    }
+    /// يولّد صوتاً عبر Gemini TTS ويحفظه في ملف WAV.
+    /// `voice` هو اسم صوت Gemini الجاهز (مثل Kore أو Puck).
+    static func synthesize(text: String, voice: String, outputURL: URL) async throws -> Double {
+        guard let key = KeychainStore.get("gemini") else {
+            throw APIError(status: 401, body: "أدخل مفتاح Gemini من الإعدادات")
+        }
+        let voiceName = voice.isEmpty ? "Kore" : voice
+        let body: [String: Any] = [
+            "contents": [
+                ["parts": [["text": text]]]
+            ],
+            "generationConfig": [
+                "responseModalities": ["AUDIO"],
+                "speechConfig": [
+                    "voiceConfig": [
+                        "prebuiltVoiceConfig": ["voiceName": voiceName]
+                    ]
+                ]
+            ] as [String: Any]
+        ]
+        let payload = try JSONSerialization.data(withJSONObject: body)
 
-    private static func approximateWAVDuration(bytes: Int) -> Double {
-        // 24kHz mono 16-bit = 48000 bytes/sec
-        return max(0.3, Double(bytes) / 48_000.0)
+        func request(model: String) async throws -> Data {
+            let (data, _) = try await HTTP.withRetry(attempts: 2, baseDelay: 3) {
+                try await HTTP.request("POST",
+                                       "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent",
+                                       headers: ["x-goog-api-key": key,
+                                                 "Content-Type": "application/json"],
+                                       body: payload,
+                                       timeout: 120)
+            }
+            return data
+        }
+
+        var model = selectedModel()
+        var data: Data
+        do {
+            data = try await request(model: model)
+        } catch let e as APIError where e.status == 404 {
+            // الموديل المختار غير متاح لهذا المفتاح — نجرب نسخة TTS الاحتياطية.
+            model = fallbackModel
+            data = try await request(model: model)
+        }
+
+        let json = HTTP.json(from: data)
+        if let err = json["error"] as? [String: Any] {
+            let msg = (err["message"] as? String) ?? "خطأ غير معروف"
+            let code = (err["code"] as? Int) ?? 0
+            throw APIError(status: code, body: "Gemini TTS: \(msg)")
+        }
+        // المخرجات: candidates[0].content.parts[0].inlineAudio.data (base64 PCM)
+        var base64Audio = ""
+        if let candidates = json["candidates"] as? [[String: Any]],
+           let content = candidates.first?["content"] as? [String: Any],
+           let parts = content["parts"] as? [[String: Any]] {
+            for part in parts {
+                if let inline = part["inlineData"] as? [String: Any],
+                   let b64 = inline["data"] as? String {
+                    base64Audio = b64
+                    break
+                }
+                if let inline = part["inlineAudio"] as? [String: Any],
+                   let b64 = inline["data"] as? String {
+                    base64Audio = b64
+                    break
+                }
+            }
+        }
+        guard !base64Audio.isEmpty, let pcm = Data(base64Encoded: base64Audio), !pcm.isEmpty else {
+            throw APIError(status: 0, body: "Gemini TTS: لم يصل صوت في الاستجابة")
+        }
+        // PCM خام 24kHz 16-bit mono — نغلّفه برأس WAV ليقرأه AVFoundation.
+        let wav = PCMWAVWrapper.wavData(fromPCM: pcm, sampleRate: 24_000, channels: 1, bitsPerSample: 16)
+        try wav.write(to: outputURL, options: .atomic)
+        return max(0.3, Double(pcm.count) / 48_000.0)
+    }
+}
+
+// MARK: - تغليف PCM خام في حاوية WAV
+
+enum PCMWAVWrapper {
+    /// يبني ملف WAV كامل (رأس RIFF 44 بايت + البيانات) من PCM خام.
+    static func wavData(fromPCM pcm: Data, sampleRate: Int, channels: Int, bitsPerSample: Int) -> Data {
+        let byteRate = sampleRate * channels * bitsPerSample / 8
+        let blockAlign = channels * bitsPerSample / 8
+        let dataSize = pcm.count
+        var header = Data()
+        func append(_ value: UInt32) {
+            withUnsafeBytes(of: value.littleEndian) { header.append(contentsOf: $0) }
+        }
+        func append16(_ value: UInt16) {
+            withUnsafeBytes(of: value.littleEndian) { header.append(contentsOf: $0) }
+        }
+        header.append(Data("RIFF".utf8))
+        append(UInt32(36 + dataSize))
+        header.append(Data("WAVE".utf8))
+        header.append(Data("fmt ".utf8))
+        append(16)                              // chunk size
+        append16(1)                             // PCM format
+        append16(UInt16(channels))
+        append(UInt32(sampleRate))
+        append(UInt32(byteRate))
+        append16(UInt16(blockAlign))
+        append16(UInt16(bitsPerSample))
+        header.append(Data("data".utf8))
+        append(UInt32(dataSize))
+        var wav = header
+        wav.append(pcm)
+        return wav
     }
 }
 

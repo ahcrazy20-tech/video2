@@ -124,71 +124,107 @@ struct SettingsView: View {
                     APIKeyRow(title: "مفتاح Groq",
                               placeholder: "gsk_...",
                               keyID: "groq",
-                              hint: "للتفريغ الصوتي (Whisper Turbo)، تدقيق النصوص، وترجمة GPT-OSS 120B — فيه شريحة مجانية سريعة جداً.")
+                              hint: "للتفريغ الصوتي (Whisper Turbo)، تدقيق النصوص، ترجمة GPT-OSS 120B، ودبلجة Orpheus العربية — معظم الموديلات 1,000 طلب/يوم مجاناً.",
+                              getKeyURL: URL(string: "https://console.groq.com/keys"))
                     APIKeyRow(title: "مفتاح Gemini",
                               placeholder: "AIza...",
                               keyID: "gemini",
-                              hint: "لمراجعة وتدقيق نصوص التفريغ والترجمة النصية السياقية. مجاني بدون فيزا من Google AI Studio.")
+                              hint: "مفتاح واحد مجاني بدون فيزا يشغل 4 مهام: مراجعة النصوص، الترجمة، تفريغ Gemini 3.5 Transcribe، ودبلجة Gemini TTS.",
+                              getKeyURL: URL(string: "https://aistudio.google.com/apikey"))
                     APIKeyRow(title: "مفتاح OpenRouter",
                               placeholder: "sk-or-v1-...",
                               keyID: "openrouter",
-                              hint: "للمراجعة والترجمة: الموديلات المجانية (‎:free) — التطبيق يجلب قائمتهم الحيّة تلقائياً. التسجيل بالبريد/GitHub بدون فيزا.")
+                              hint: "للمراجعة والترجمة: الموديلات المجانية (‎:free) — التطبيق يجلب قائمتهم الحيّة تلقائياً. التسجيل بالبريد/GitHub بدون فيزا.",
+                              getKeyURL: URL(string: "https://openrouter.ai/settings/keys"))
                     APIKeyRow(title: "مفتاح Cerebras",
                               placeholder: "csk-...",
                               keyID: "cerebras",
-                              hint: "لتدقيق وترجمة النصوص بسرعة فائقة — مليون token/يوم مجاناً بدون فيزا (Llama 3.1 70B / Qwen3). سجّل من cloud.cerebras.ai.")
+                              hint: "لتدقيق وترجمة النصوص بسرعة فائقة — حوالي 200 ألف token/يوم لكل موديل (Llama 3.3 70B / Qwen3 / Gemma 4). انتبه: التسجيل الجديد يتطلب وسيلة دفع.",
+                              getKeyURL: URL(string: "https://cloud.cerebras.ai/"))
                     APIKeyRow(title: "مفتاح SambaNova",
                               placeholder: "مفتاح API من اللوحة",
                               keyID: "sambanova",
-                              hint: "للمراجعة والترجمة عبر DeepSeek V3.2 / Llama 3.3 — رصيد 5$ مجاني بدون فيزا. سريع جداً من cloud.sambanova.ai.")
+                              hint: "للمراجعة والترجمة عبر DeepSeek V3.2 / Llama 3.3 — حوالي 200 ألف token/يوم لكل موديل (20 طلب/دقيقة) بدون فيزا.",
+                              getKeyURL: URL(string: "https://cloud.sambanova.ai/apis"))
+                    APIKeyRow(title: "مفتاح NVIDIA NIM",
+                              placeholder: "nvapi-...",
+                              keyID: "nvidia",
+                              hint: "مزود جديد للمراجعة والترجمة — Nemotron 3 و100+ موديل بـ40 طلب/دقيقة و10,000 طلب/يوم مجاناً بدون فيزا. للاستخدام التجريبي فقط وقد تُسجَّل الطلبات. القائمة تُجلب حيّةً بعد حفظ المفتاح.",
+                              getKeyURL: URL(string: "https://build.nvidia.com/"))
+                    APIKeyRow(title: "مفتاح Cohere",
+                              placeholder: "مفتاح من لوحة Cohere",
+                              keyID: "cohere",
+                              hint: "مزود جديد للمراجعة والترجمة — Command A (ترجمة متعددة اللغات) وAya (متميز بالعربية). 1,000 استدعاء شهرياً مجاناً (20/دقيقة) بدون فيزا. القائمة تُجلب حيّةً بعد حفظ المفتاح.",
+                              getKeyURL: URL(string: "https://dashboard.cohere.com/api-keys"))
+                    APIKeyRow(title: "مفتاح Z.ai (GLM)",
+                              placeholder: "مفتاح من open.bigmodel.cn",
+                              keyID: "zai",
+                              hint: "مزود جديد للمراجعة والترجمة — GLM-4.7-Flash مجاني بالكامل بسياق 200K. يعمل عبر النطاق العالمي api.z.ai أو الصيني open.bigmodel.cn بمفتاح واحد (التطبيق يجرّب الاثنين)، وطلب متزامن واحد فقط.",
+                              getKeyURL: URL(string: "https://open.bigmodel.cn/usercenter/apikeys"))
+                    APIKeyRow(title: "مفتاح Lara Translate",
+                              placeholder: "مفتاح من لوحة Lara",
+                              keyID: "lara",
+                              hint: "مزود ترجمة متخصص جديد — محرك احترافي مع سياق الفيديو وأوامر مخصصة. 10 آلاف حرف شهرياً مجاناً بدون فيزا.",
+                              getKeyURL: URL(string: "https://laratranslate.com/"))
                     APIKeyRow(title: "مفتاح SiliconFlow",
                               placeholder: "sk-...",
                               keyID: "siliconflow",
-                              hint: "للتفريغ (SenseVoice) والدبلجة (CosyVoice) فقط. الرصيد يظهر في قسم الرصيد والحدود.")
+                              hint: "للتفريغ (SenseVoice) والدبلجة (CosyVoice) فقط. الرصيد يظهر في قسم الرصيد والحدود. انتبه: الموديلات المجانية تتطلب توثيقاً صينياً — المدفوعة تعمل للجميع.",
+                              getKeyURL: URL(string: "https://cloud.siliconflow.com/account/ak"))
                     APIKeyRow(title: "مفتاح ElevenLabs",
                               placeholder: "xi-api-key",
                               keyID: "elevenlabs",
-                              hint: "أفضل جودة بشرية للدبلجة — 10K حرف/شهر مجاناً. متعدد اللغات بـ Multilingual v2.")
+                              hint: "مفتاح واحد للدبلجة (أفضل جودة بشرية — 10K حرف/شهر مجاناً) وللتفريغ عبر Scribe الجديد (10 ساعات صوت/شهر، 99 لغة).",
+                              getKeyURL: URL(string: "https://elevenlabs.io/app/settings/api-keys"))
                     APIKeyRow(title: "مفتاح AssemblyAI",
                               placeholder: "من لوحة التحكم",
                               keyID: "assemblyai",
-                              hint: "الخيار الأقوى للفيديوهات الطويلة (حتى 10 ساعات بملف واحد) — رصيد تجريبي عند التسجيل.")
+                              hint: "الخيار الأقوى للفيديوهات الطويلة (حتى 10 ساعات بملف واحد) — رصيد تجريبي عند التسجيل.",
+                              getKeyURL: URL(string: "https://www.assemblyai.com/app/api-keys"))
                     APIKeyRow(title: "مفتاح Deepgram",
                               placeholder: "من Deepgram Console",
                               keyID: "deepgram",
-                              hint: "تفريغ Nova-3 دقيق مع توقيتات المقاطع، ويدعم العربية. من Deepgram Console أنشئ Project ثم API Key وانسخه هنا؛ يظهر الرصيد والاستهلاك في اللوحة.")
+                              hint: "تفريغ Nova-3 دقيق مع توقيتات المقاطع، ويدعم العربية. من Deepgram Console أنشئ Project ثم API Key وانسخه هنا؛ يظهر الرصيد والاستهلاك في اللوحة.",
+                              getKeyURL: URL(string: "https://console.deepgram.com/"))
                     APIKeyRow(title: "مفتاح Azure Speech",
                               placeholder: "مفتاح Speech من Azure",
                               keyID: "azure",
-                              hint: "لـ Neural TTS والدبلجة وSTT. أنشئ Speech resource من Azure Portal، ثم أدخل Region أعلاه والمفتاح هنا. حد F0 الموثق: 5 ساعات STT + 500 ألف حرف TTS شهرياً.")
+                              hint: "لـ Neural TTS والدبلجة وSTT. أنشئ Speech resource من Azure Portal، ثم أدخل Region أعلاه والمفتاح هنا. حد F0 الموثق: 5 ساعات STT + 500 ألف حرف TTS شهرياً.",
+                              getKeyURL: URL(string: "https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeechServices"))
                     APIKeyRow(title: "مفتاح DeepL",
-                              placeholder: "DeepL-...",
+                              placeholder: "DeepL-... أو DeepL-...:fx",
                               keyID: "deepl",
-                              hint: "لترجمة نصية عالية الجودة — 500 ألف حرف/شهر مجاناً.")
+                              hint: "لترجمة نصية عالية الجودة. التسجيلات الجديدة تأتي على خطة Developer: مليون حرف لمرة واحدة. مفاتيح :fx القديمة تعمل كالمعتاد على النطاق المجاني (500 ألف حرف/شهر) — التطبيق يوجهها للنطاق الصحيح تلقائياً.",
+                              getKeyURL: URL(string: "https://www.deepl.com/pro-api"))
                     APIKeyRow(title: "مفتاح STT.ai",
                               placeholder: "sttai_...",
                               keyID: "sttai",
-                              hint: "تفريغ صوتي — 600 دقيقة شهرية مجانية + 100 دقيقة API.")
+                              hint: "تفريغ صوتي — 600 دقيقة شهرية مجانية + 100 دقيقة API.",
+                              getKeyURL: URL(string: "https://stt.ai/"))
                     APIKeyRow(title: "مفتاح Speechmatics",
                               placeholder: "مفتاح Speechmatics API",
                               keyID: "speechmatics",
-                              hint: "تفريغ صوتي — 480 دقيقة مجانية شهرياً لدقة عالية بأكثر من 55 لغة.")
+                              hint: "تفريغ صوتي — 480 دقيقة مجانية شهرياً لدقة عالية بأكثر من 55 لغة.",
+                              getKeyURL: URL(string: "https://portal.speechmatics.com/"))
                     APIKeyRow(title: "مفتاح CloudConvert",
                               placeholder: "مفتاح API من اللوحة",
                               keyID: "cloudconvert",
-                              hint: "احتياطي فقط. أنشئ المفتاح من Dashboard → API Keys وفعّل task.read و task.write. التطبيق يحوّل معظم HLS محلياً بلا سحابة.")
+                              hint: "احتياطي فقط. أنشئ المفتاح من Dashboard → API Keys وفعّل task.read و task.write. التطبيق يحوّل معظم HLS محلياً بلا سحابة.",
+                              getKeyURL: URL(string: "https://cloudconvert.com/api/v2/user/profile/api-keys"))
                     APIKeyRow(title: "مفتاح ffmpeg-api.com",
                               placeholder: "من لوحة التحكم",
                               keyID: "ffmpegapi",
-                              hint: "مزوّد سحابي احتياطي ثانٍ لتحويل HLS. من https://ffmpeg-api.com")
+                              hint: "مزوّد سحابي احتياطي ثانٍ لتحويل HLS. من https://ffmpeg-api.com",
+                              getKeyURL: URL(string: "https://ffmpeg-api.com/"))
                     APIKeyRow(title: "مفتاح ConvertAPI",
                               placeholder: "Secret من convertapi.com",
                               keyID: "convertapi",
-                              hint: "مزوّد سحابي ثالث (شريحة تجريبية بدون فيزا غالباً). بديل قوي إذا رُفض CloudConvert بـ 403.")
+                              hint: "مزوّد سحابي ثالث (شريحة تجريبية بدون فيزا غالباً). بديل قوي إذا رُفض CloudConvert بـ 403.",
+                              getKeyURL: URL(string: "https://www.convertapi.com/a/auth"))
                 } header: {
                     Text("مفاتيح مزودي الصوت والترجمة والفيديو")
                 } footer: {
-                    Text("تُخزَّن المفاتيح في Keychain على جهازك فقط. مزودات المراجعة والترجمة الحالية لها شرائح مجانية مختلفة؛ Azure وDeepgram قد يطلبان إعداداً/فوترة حسب الحساب، فراجع قسم الرصيد والحدود واللوحات الرسمية قبل المهام الطويلة.")
+                    Text("تُخزَّن المفاتيح في Keychain على جهازك فقط. MyMemory للترجمة يعمل بدون أي مفتاح (5K كلمة/يوم). مزودات المراجعة والترجمة لها شرائح مجانية مختلفة؛ Azure وDeepgram وCerebras (الجديد) قد تطلب إعداداً/وسيلة دفع حسب الحساب، فراجع قسم الرصيد والحدود واللوحات الرسمية قبل المهام الطويلة.")
                         .font(.caption2)
                 }
 
@@ -283,6 +319,21 @@ struct SettingsView: View {
                     }
                     .padding(.vertical, 4)
 
+                    // === موديل دبلجة Gemini TTS ===
+                    if KeychainStore.has("gemini") {
+                        VStack(alignment: .leading, spacing: 9) {
+                            Text("الموديل المستخدم فعلياً لدبلجة Gemini TTS")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            modelNameLine(provider: "Google Gemini",
+                                          model: ModelSelection.selected(purpose: "tts", provider: .gemini, fallback: GeminiTTS.defaultModel))
+                            modelPickerButton(title: "اختيار موديل دبلجة Gemini TTS",
+                                              provider: .gemini,
+                                              purpose: .tts)
+                        }
+                        .padding(.vertical, 4)
+                    }
+
                     Stepper("توازي التفريغ: \(sttConcurrency)", value: $sttConcurrency, in: 1...4)
                     Text("عدد أجزاء الصوت التي تُفرَّغ معاً. قلّله عند ظهور أخطاء 429.")
                         .font(.caption2)
@@ -291,9 +342,9 @@ struct SettingsView: View {
 
                 Section("كيف تعمل منظومة التفريغ والترجمة؟") {
                     howBullet("1", "استخراج الصوت من الفيديو. HLS يُستخرج محلياً أولاً (MPEG-TS → AAC)، وإن فشل تُجرَّب AVFoundation ثم CloudConvert / ffmpeg-api / ConvertAPI.")
-                    howBullet("2", "تفريغ الكلام بتوقيتات دقيقة عبر Groq بالتوازي، Deepgram Nova-3 مع utterances، أو Azure Speech على مقاطع WAV قصيرة؛ وAssemblyAI بملف واحد حتى 10 ساعات.")
+                    howBullet("2", "تفريغ الكلام بتوقيتات دقيقة: Groq Whisper بالتوازي، Deepgram Nova-3 مع utterances، Azure Speech على مقاطع قصيرة، Gemini 3.5 Transcribe بتوقيتات كلمة بكلمة (85+ لغة)، أو ElevenLabs Scribe بملف واحد؛ وAssemblyAI حتى 10 ساعات.")
                     howBullet("3", "مراجعة وتدقيق النصوص بالذكاء الاصطناعي (Free API) لتصحيح الأخطاء الصوتية وحذف الهلاوس والتكرار وإكمال الكلمات لضمان اكتمال المعنى والسياق.")
-                    howBullet("4", "ترجمة سياقية بالدفعات عبر Gemini أو Llama — تفهم سياق الجمل السابقة والمصطلحات.")
+                    howBullet("4", "ترجمة سياقية بالدفعات عبر Gemini أو GPT-OSS/Nemotron/Command A — تفهم سياق الجمل السابقة والمصطلحات، مع MyMemory كملاذ أخير بدون مفتاح.")
                     howBullet("5", "ثلاثة ملفات SRT: أصلي مراجع، مترجم، وثنائي اللغة — تظهر فوق المشغّل مع إمكانية التعديل والمراجعة اليدوية.")
                     Text("المهمام قابلة للاستئناف لحظياً: كل جزء مفرَّغ وكل دفعة مراجعة وترجمة تُحفَظ لحظياً، فلو انقطع الاتصال تُكمل من نفس النقطة بدون تكرار.")
                         .font(.caption)
@@ -395,7 +446,10 @@ struct SettingsView: View {
         case .openRouter: return .openRouter
         case .cerebras: return .cerebras
         case .sambaNova: return .sambaNova
-        case .deepL, .auto: return nil
+        case .nvidia: return .nvidia
+        case .cohere: return .cohere
+        case .zai: return .zai
+        case .deepL, .lara, .myMemory, .auto: return nil
         }
     }
 
@@ -406,6 +460,9 @@ struct SettingsView: View {
         case .openRouter: return .openRouter
         case .cerebras: return .cerebras
         case .sambaNova: return .sambaNova
+        case .nvidia: return .nvidia
+        case .cohere: return .cohere
+        case .zai: return .zai
         case .auto, .off: return nil
         }
     }
@@ -438,7 +495,15 @@ struct SettingsView: View {
             return ModelSelection.selected(purpose: "translator", provider: .cerebras, fallback: TranslateService.defaultCerebrasModel)
         case .sambaNova:
             return ModelSelection.selected(purpose: "translator", provider: .sambaNova, fallback: TranslateService.defaultSambaNovaModel)
+        case .nvidia:
+            return ModelSelection.selected(purpose: "translator", provider: .nvidia, fallback: TranslateService.defaultNVIDIAModel)
+        case .cohere:
+            return ModelSelection.selected(purpose: "translator", provider: .cohere, fallback: TranslateService.defaultCohereModel)
+        case .zai:
+            return ModelSelection.selected(purpose: "translator", provider: .zai, fallback: TranslateService.defaultZaiModel)
         case .deepL: return "DeepL API"
+        case .lara: return "Lara Translate API"
+        case .myMemory: return "MyMemory API"
         case .auto: return "—"
         }
     }
@@ -459,9 +524,21 @@ struct SettingsView: View {
             return ModelBillingCatalog.info(provider: .cerebras, model: displayedTranslatorModel)
         case .sambaNova:
             return ModelBillingCatalog.info(provider: .sambaNova, model: displayedTranslatorModel)
+        case .nvidia:
+            return ModelBillingCatalog.info(provider: .nvidia, model: displayedTranslatorModel)
+        case .cohere:
+            return ModelBillingCatalog.info(provider: .cohere, model: displayedTranslatorModel)
+        case .zai:
+            return ModelBillingCatalog.info(provider: .zai, model: displayedTranslatorModel)
         case .deepL:
             return ModelBillingInfo(kind: .trialQuota,
-                                    detailAR: "DeepL API Free: حتى 500,000 حرف/شهر؛ المتبقي الحقيقي يظهر في قسم الرصيد والحدود.")
+                                    detailAR: "DeepL: مفاتيح :fx القديمة 500 ألف حرف/شهر متجددة؛ التسجيلات الجديدة خطة Developer بمليون حرف لمرة واحدة. المتبقي الحقيقي يظهر في قسم الرصيد والحدود.")
+        case .lara:
+            return ModelBillingInfo(kind: .trialQuota,
+                                    detailAR: "Lara Translate: 10 آلاف حرف شهرياً مجاناً تتجدد شهرياً؛ راجع لوحة Lara للاستهلاك الفعلي.")
+        case .myMemory:
+            return ModelBillingInfo(kind: .free,
+                                    detailAR: "MyMemory: بدون مفتاح — 5,000 كلمة/يوم لكل IP (ترجمة سطر بسطر أبطأ من مزودات الذكاء الاصطناعي).")
         case .auto:
             return nil
         }
@@ -483,6 +560,8 @@ struct SettingsView: View {
         case .sttai: return "large-v3-turbo"
         case .deepgram: return "nova-3-general"
         case .azure: return "Speech short-audio REST"
+        case .geminiTranscribe: return "gemini-3.5-transcribe"
+        case .elevenlabsScribe: return "scribe_v1"
         case .auto: return "—"
         }
     }
@@ -638,6 +717,8 @@ struct APIKeyRow: View {
     let placeholder: String
     let keyID: String
     let hint: String
+    /// رابط الحصول على المفتاح — يظهر كزر بجانب اسم المزود.
+    var getKeyURL: URL? = nil
 
     @State private var value: String = ""
     @State private var savedFlash = false
@@ -651,6 +732,13 @@ struct APIKeyRow: View {
             HStack {
                 Label(title, systemImage: stored ? "key.fill" : "key")
                     .font(.subheadline.weight(.semibold))
+                if let url = getKeyURL {
+                    Link(destination: url) {
+                        Label("احصل على المفتاح", systemImage: "arrow.up.right.square")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.borderless)
+                }
                 Spacer()
                 if stored {
                     Label("محفوظ", systemImage: "checkmark.circle.fill")
@@ -785,7 +873,7 @@ enum KeyTester {
             do {
                 _ = try await HTTP.request("GET", "https://api.cerebras.ai/v1/models",
                                            headers: ["Authorization": "Bearer \(key)"], timeout: 30)
-                return "✅ مفتاح Cerebras يعمل — مليون token/يوم مجاناً بدون فيزا"
+                return "✅ مفتاح Cerebras يعمل — حوالي 200 ألف token/يوم لكل موديل"
             } catch let e as APIError {
                 if e.status == 401 { return "❌ مفتاح Cerebras غير صحيح (401)" }
                 if e.status == 403 { return "❌ تم رفض المفتاح (403)" }
@@ -800,7 +888,7 @@ enum KeyTester {
             do {
                 _ = try await HTTP.request("GET", "https://api.sambanova.ai/v1/models",
                                            headers: ["Authorization": "Bearer \(key)"], timeout: 30)
-                return "✅ مفتاح SambaNova يعمل — رصيد 5$ مجاني/30 يوماً بدون فيزا"
+                return "✅ مفتاح SambaNova يعمل — حوالي 200 ألف token/يوم لكل موديل بدون فيزا"
             } catch let e as APIError {
                 if e.status == 401 { return "❌ مفتاح SambaNova غير صحيح (401)" }
                 if e.status == 403 { return "❌ تم رفض المفتاح (403)" }
@@ -808,6 +896,101 @@ enum KeyTester {
                 return "⚠️ استجابة SambaNova غير متوقعة (رمز \(e.status))"
             } catch {
                 return "⚠️ تعذر الاتصال بـ SambaNova — تحقق من الإنترنت"
+            }
+        }
+
+        if provider == "nvidia" {
+            do {
+                let (_, resp) = try await HTTP.request("GET", "https://integrate.api.nvidia.com/v1/models",
+                                                       headers: ["Authorization": "Bearer \(key)",
+                                                                 "Accept": "application/json"], timeout: 30)
+                _ = resp
+                return "✅ مفتاح NVIDIA NIM يعمل — 40 طلب/دقيقة و10,000 طلب/يوم مجاناً (استخدام تجريبي)"
+            } catch let e as APIError {
+                if e.status == 401 { return "❌ مفتاح NVIDIA غير صحيح (401)" }
+                if e.status == 403 { return "❌ تم رفض المفتاح (403) — تأكد أنه nvapi- من build.nvidia.com" }
+                if e.status == 429 { return "⚠️ المفتاح يعمل لكن وصلت للحد مؤقتاً (429)" }
+                return "⚠️ استجابة NVIDIA غير متوقعة (رمز \(e.status))"
+            } catch {
+                return "⚠️ تعذر الاتصال بـ NVIDIA — تحقق من الإنترنت"
+            }
+        }
+
+        if provider == "cohere" {
+            do {
+                let (_, resp) = try await HTTP.request("GET", "https://api.cohere.com/v1/models",
+                                                       headers: ["Authorization": "Bearer \(key)"], timeout: 30)
+                _ = resp
+                return "✅ مفتاح Cohere يعمل — 1,000 استدعاء شهرياً مجاناً (Command A / Aya)"
+            } catch let e as APIError {
+                if e.status == 401 { return "❌ مفتاح Cohere غير صحيح (401)" }
+                if e.status == 403 { return "❌ تم رفض المفتاح (403) — تأكد أنه من dashboard.cohere.com/api-keys" }
+                if e.status == 429 { return "⚠️ المفتاح يعمل لكن وصلت للحد مؤقتاً (429)" }
+                return "⚠️ استجابة Cohere غير متوقعة (رمز \(e.status))"
+            } catch {
+                return "⚠️ تعذر الاتصال بـ Cohere — تحقق من الإنترنت"
+            }
+        }
+
+        if provider == "zai" {
+            do {
+                // اختبار حقيقي خفيف: طلب ترجمة كلمة واحدة عبر GLM-4.7-Flash.
+                let body: [String: Any] = [
+                    "model": "glm-4.7-flash",
+                    "messages": [["role": "user", "content": "Reply only with OK"]],
+                    "max_tokens": 5
+                ]
+                let payload = try JSONSerialization.data(withJSONObject: body)
+                let (data, _) = try await ZaiAPI.request("POST",
+                                                        path: "/chat/completions",
+                                                        key: key,
+                                                        headers: ["Content-Type": "application/json"],
+                                                        body: payload,
+                                                        timeout: 45)
+                let json = HTTP.json(from: data)
+                if json["choices"] != nil {
+                    return "✅ مفتاح Z.ai يعمل — GLM-4.7-Flash مجاني بالكامل بسياق 200K"
+                }
+                if let err = json["error"] as? [String: Any], let msg = err["message"] as? String {
+                    return "❌ Z.ai: \(msg)"
+                }
+                return "⚠️ استجابة Z.ai غير متوقعة"
+            } catch let e as APIError {
+                if e.status == 401 { return "❌ مفتاح Z.ai غير صحيح (401) على النطاقين" }
+                if e.status == 403 { return "❌ تم رفض المفتاح (403)" }
+                if e.status == 429 { return "⚠️ المفتاح يعمل لكن Z.ai يسمح بطلب متزامن واحد فقط (429)" }
+                return "⚠️ استجابة Z.ai غير متوقعة (رمز \(e.status))"
+            } catch {
+                return "⚠️ تعذر الاتصال بـ Z.ai — تحقق من الإنترنت"
+            }
+        }
+
+        if provider == "lara" {
+            do {
+                // اختبار حقيقي خفيف: ترجمة كلمة واحدة (تستهلك أحرفاً قليلة من حصة الشهر).
+                let body: [String: Any] = ["text": "OK", "target": "ar"]
+                let payload = try JSONSerialization.data(withJSONObject: body)
+                let (data, _) = try await HTTP.request("POST",
+                                                       "https://api.laratranslate.com/translate",
+                                                       headers: ["Authorization": "Bearer \(key)",
+                                                                 "Content-Type": "application/json"],
+                                                       body: payload,
+                                                       timeout: 45)
+                let json = HTTP.json(from: data)
+                if json["translation"] != nil {
+                    return "✅ مفتاح Lara Translate يعمل — 10 آلاف حرف شهرياً مجاناً"
+                }
+                if let detail = json["detail"] as? String {
+                    return "❌ Lara: \(detail)"
+                }
+                return "⚠️ استجابة Lara غير متوقعة"
+            } catch let e as APIError {
+                if e.status == 401 { return "❌ مفتاح Lara غير صحيح (401)" }
+                if e.status == 403 { return "❌ تم رفض المفتاح (403) — تأكد أنه من لوحة laratranslate.com" }
+                if e.status == 429 { return "⚠️ المفتاح يعمل لكن وصلت للحد مؤقتاً (429)" }
+                return "⚠️ استجابة Lara غير متوقعة (رمز \(e.status))"
+            } catch {
+                return "⚠️ تعذر الاتصال بـ Lara — تحقق من الإنترنت"
             }
         }
 

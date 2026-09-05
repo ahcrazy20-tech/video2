@@ -487,6 +487,8 @@ struct NewTranslationView: View {
         case .speechmatics: return "default"
         case .deepgram: return "nova-3-general"
         case .azure: return "Speech short-audio REST"
+        case .geminiTranscribe: return "gemini-3.5-transcribe"
+        case .elevenlabsScribe: return "scribe_v1"
         case .auto: return "—"
         }
     }
@@ -511,7 +513,15 @@ struct NewTranslationView: View {
             return ModelSelection.selected(purpose: "translator", provider: .cerebras, fallback: TranslateService.defaultCerebrasModel)
         case .sambaNova:
             return ModelSelection.selected(purpose: "translator", provider: .sambaNova, fallback: TranslateService.defaultSambaNovaModel)
+        case .nvidia:
+            return ModelSelection.selected(purpose: "translator", provider: .nvidia, fallback: TranslateService.defaultNVIDIAModel)
+        case .cohere:
+            return ModelSelection.selected(purpose: "translator", provider: .cohere, fallback: TranslateService.defaultCohereModel)
+        case .zai:
+            return ModelSelection.selected(purpose: "translator", provider: .zai, fallback: TranslateService.defaultZaiModel)
         case .deepL: return "DeepL API"
+        case .lara: return "Lara Translate API"
+        case .myMemory: return "MyMemory API"
         case .auto: return "—"
         }
     }

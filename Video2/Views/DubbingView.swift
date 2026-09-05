@@ -42,7 +42,11 @@ struct DubbingView: View {
         switch resolvedProvider {
         case .elevenlabs: return "eleven_multilingual_v2"
         case .siliconflow: return "FunAudioLLM/CosyVoice2-0.5B"
-        case .groqPlayAI: return "playai-tts"
+        case .groqPlayAI:
+            // موديل Orpheus يُحدَّد حسب الصوت: سعودي للعربية وv1-english لغيرها.
+            let voiceID = currentVoice?.id.lowercased() ?? ""
+            return voiceID.hasPrefix("orpheus-ar-") ? "canopylabs/orpheus-arabic-saudi" : "canopylabs/orpheus-v1-english"
+        case .gemini: return GeminiTTS.selectedModel()
         case .azure: return "Azure Speech Neural TTS"
         case .edge: return "Microsoft Edge Neural TTS"
         case .auto: return "—"
@@ -444,6 +448,7 @@ struct DubbingView: View {
         case .auto:
             if DubbingProvider.elevenlabs.isAvailable { return .elevenlabs }
             if DubbingProvider.azure.isAvailable { return .azure }
+            if DubbingProvider.gemini.isAvailable { return .gemini }
             if DubbingProvider.siliconflow.isAvailable { return .siliconflow }
             if DubbingProvider.groqPlayAI.isAvailable { return .groqPlayAI }
             return .edge
@@ -469,6 +474,8 @@ extension DubbingService {
             return try await ElevenLabsTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
         case .azure:
             return try await AzureSpeech.synthesize(text: text, voice: voice, outputURL: outputURL)
+        case .gemini:
+            return try await GeminiTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
         case .auto:
             return try await EdgeTTSClient.synthesizeAndSave(text: text, voice: voice.id, outputURL: outputURL)
         }

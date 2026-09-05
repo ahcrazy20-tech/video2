@@ -77,10 +77,17 @@ enum TranslateService {
                                        source: source, target: target, videoTitle: videoTitle)
         case .deepL:
             return try await deepLBatch(batch, source: source, target: target)
-        case .openRouter, .cerebras, .sambaNova:
+        case .openRouter, .cerebras, .sambaNova, .nvidia, .zai:
             return try await openAIChatBatch(provider: resolved(provider: config.provider),
                                              batch: batch, config: config, contextTail: contextTail,
                                              source: source, target: target, videoTitle: videoTitle)
+        case .cohere:
+            return try await cohereBatch(batch, config: config, contextTail: contextTail,
+                                         source: source, target: target, videoTitle: videoTitle)
+        case .lara:
+            return try await laraBatch(batch, source: source, target: target, videoTitle: videoTitle)
+        case .myMemory:
+            return try await myMemoryBatch(batch, source: source, target: target)
         case .auto:
             throw APIError(status: 0, body: "لا يوجد مزود ترجمة مفعّل")
         }
@@ -90,21 +97,30 @@ enum TranslateService {
     static func resolved(provider: TranslatorKind) -> TranslatorKind {
         switch provider {
         case .auto:
-            // ترتيب الأفضلية: Gemini (جودة سياقية) ثم Groq ثم المزودات المجانية الجديدة.
+            // ترتيب الأفضلية: Gemini (جودة سياقية) ثم Groq ثم NVIDIA ثم بقية
+            // المزودات المجانية، وMyMemory كملاذ أخير لأنه يعمل بدون أي مفتاح.
             if KeychainStore.has("gemini") { return .gemini }
             if KeychainStore.has("groq") { return .groqLLM }
+            if KeychainStore.has("nvidia") { return .nvidia }
             if KeychainStore.has("openrouter") { return .openRouter }
             if KeychainStore.has("cerebras") { return .cerebras }
             if KeychainStore.has("sambanova") { return .sambaNova }
+            if KeychainStore.has("cohere") { return .cohere }
+            if KeychainStore.has("zai") { return .zai }
             if KeychainStore.has("deepl") { return .deepL }
-            return .auto
+            if KeychainStore.has("lara") { return .lara }
+            return .myMemory
         default:
             return provider
         }
     }
 
     static func hasKey(for provider: TranslatorKind) -> Bool {
-        guard let k = resolved(provider: provider).keyID else { return false }
+        // MyMemory يعمل بدون أي مفتاح — جاهز دائماً كملاذ أخير (حتى مع
+        // «تلقائي» عندما لا يوجد أي مفتاح محفوظ).
+        let resolvedProvider = resolved(provider: provider)
+        if resolvedProvider == .myMemory { return true }
+        guard let k = resolvedProvider.keyID else { return false }
         return KeychainStore.has(k)
     }
 
@@ -130,10 +146,11 @@ enum TranslateService {
     /// بهذا لا تسقط مهمة فيديو 5 ساعات لأن Gemini وصل حدّه المجاني اليومي —
     /// تنتقل تلقائياً لأقرب مزود متاح وتكمل من نفس النقطة المحفوظة.
     /// الترتيب بعد المزود المطلوب مبني على ملاءمة الشريحة المجانية للفيديوهات
-    /// الطويلة: DeepL قبل OpenRouter لأن حدّه شهري (500 ألف حرف) بينما
-    /// OpenRouter محدود بـ 50 طلباً/يوم فقط، ثم Cerebras/SambaNova/Groq.
+    /// الطويلة: NVIDIA/Cerebras/SambaNova/Cohere/Z.ai (حصص يومية كبيرة) ثم
+    /// DeepL (حصة أحادية) ثم OpenRouter (50 طلب/يوم) ثم Lara، وMyMemory
+    /// دائماً في النهاية لأنه يعمل بدون مفتاح (5K كلمة/يوم).
     private static let failoverOrder: [TranslatorKind] =
-        [.gemini, .groqLLM, .cerebras, .sambaNova, .deepL, .openRouter]
+        [.gemini, .groqLLM, .nvidia, .cerebras, .sambaNova, .cohere, .zai, .deepL, .openRouter, .lara]
 
     static func failoverChain(from preferred: TranslatorKind) -> [TranslatorKind] {
         let start = resolved(provider: preferred)
@@ -145,6 +162,10 @@ enum TranslateService {
             if let key = candidate.keyID, KeychainStore.has(key) {
                 chain.append(candidate)
             }
+        }
+        // MyMemory لا يحتاج مفتاحاً — شبكة الأمان الأخيرة في كل الحالات.
+        if !chain.contains(.myMemory) {
+            chain.append(.myMemory)
         }
         return chain
     }
@@ -170,8 +191,21 @@ enum TranslateService {
         case .sambaNova:
             return ModelSelection.selected(purpose: "translator", provider: .sambaNova,
                                            fallback: defaultSambaNovaModel)
+        case .nvidia:
+            return ModelSelection.selected(purpose: "translator", provider: .nvidia,
+                                           fallback: defaultNVIDIAModel)
+        case .cohere:
+            return ModelSelection.selected(purpose: "translator", provider: .cohere,
+                                           fallback: defaultCohereModel)
+        case .zai:
+            return ModelSelection.selected(purpose: "translator", provider: .zai,
+                                           fallback: defaultZaiModel)
         case .deepL:
             return "DeepL API"
+        case .lara:
+            return "Lara Translate API"
+        case .myMemory:
+            return "MyMemory API"
         case .auto:
             return ""
         }
@@ -185,6 +219,11 @@ enum TranslateService {
         case .openRouter: return "OpenRouter"
         case .cerebras: return "Cerebras"
         case .sambaNova: return "SambaNova"
+        case .nvidia: return "NVIDIA NIM"
+        case .cohere: return "Cohere"
+        case .zai: return "Z.ai"
+        case .lara: return "Lara"
+        case .myMemory: return "MyMemory"
         case .auto: return "—"
         }
     }
@@ -231,9 +270,9 @@ enum TranslateService {
 
     // MARK: Gemini
 
-    /// الموديل الافتراضي الحالي. نعتمد اسماً ثابتاً بدلاً من موديلات 2.0
-    /// المتوقفة، لكننا نتحقق من الموديلات المتاحة فعلياً لكل مفتاح عند الحاجة.
-    static let defaultGeminiModel = "gemini-3.7-flash"
+    /// الموديل الافتراضي الحالي (Gemini 3.8 Flash — أحدث إصدار ثابت من Google).
+    /// نتحقق من الموديلات المتاحة فعلياً لكل مفتاح عند الحاجة، مع استرداد تلقائي.
+    static let defaultGeminiModel = "gemini-3.8-flash"
 
     // المزودات الجديدة المتوافقة مع OpenAI — كلها بدون فيزا ولها شريحة مجانية.
     /// موديلات OpenRouter التي تنتهي بـ :free مجانية بالكامل (50 طلب/يوم بلا شحن).
@@ -241,12 +280,20 @@ enum TranslateService {
     /// تشكيل الموديلات المجانية على OpenRouter يتغيّر باستمرار؛ لو توقف هذا
     /// الموديل يُعالجه الاسترداد التلقائي في openAIChatBatch (يبديل بنسخة حية).
     static let defaultOpenRouterModel = "google/gemma-4-31b-it:free"
-    /// Cerebras: مليون token/يوم مجاناً؛ Llama 3.3 70B توازن قوي للترجمة السياقية.
-    static let defaultCerebrasModel = "llama3.1-70b"
-    /// SambaNova: DeepSeek V3.2 ممتاز للسياق العربي ويعمل ضمن رصيد 5$ المجاني.
+    /// Cerebras: حوالي 200 ألف token/يوم مجاناً لكل موديل؛ Llama 3.3 70B هو
+    /// الافتراضي بعد إيقاف llama-4-scout وllama3.1-8b من القائمة.
+    static let defaultCerebrasModel = "llama-3.3-70b"
+    /// SambaNova: DeepSeek V3.2 ممتاز للسياق العربي ضمن حصة ~200K token/يوم.
     static let defaultSambaNovaModel = "DeepSeek-V3.2"
+    /// NVIDIA NIM: Nemotron 3 Super 120B (MoE) بسياق مليون token — 10K طلب/يوم.
+    static let defaultNVIDIAModel = "nvidia/nemotron-3-super-120b-a12b"
+    /// Cohere: Command A هو الأفضل للترجمة متعددة اللغات (Aya للعربية).
+    static let defaultCohereModel = "command-a-03-2025"
+    /// Z.ai: GLM-4.7-Flash مجاني بالكامل بسياق 200K.
+    static let defaultZaiModel = "glm-4.7-flash"
 
     private static let preferredGeminiModels = [
+        "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
         "gemini-3.5-flash",
@@ -281,6 +328,18 @@ enum TranslateService {
     static func isRetiredGeminiModel(_ value: String) -> Bool {
         let model = normalizedGeminiModel(value).lowercased()
         return model.hasPrefix("gemini-2.0-") || model.hasPrefix("gemini-1.")
+    }
+
+    /// موديلات Cerebras المسحوبة من القائمة (أُوقف llama-4-scout وllama3.1-8b،
+    /// وzai-glm-4.7 انتهى تجريبه). نرحّل أي اختيار محفوظ قديم إلى الافتراضي
+    /// الحالي Llama 3.3 70B حتى لا تفشل المهام بـ 404 على موديل غير موجود.
+    static func isRetiredCerebrasModel(_ value: String) -> Bool {
+        let model = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let retired = ["llama3.1-8b",
+                       "llama-4-scout-17b-16e-instruct",
+                       "llama-4-scout",
+                       "zai-glm-4.7"]
+        return retired.contains(model)
     }
 
     private static func selectedGeminiModel() -> String {
@@ -667,6 +726,23 @@ enum TranslateService {
         let url: String
         let defaultModel: String
         let extraHeaders: [String: String]
+        /// Z.ai له نطاقان (api.z.ai العالمي وopen.bigmodel.cn الصيني) بنفس
+        /// المفتاح — نمرر الطلب عبر ZaiAPI ليجرب الاثنين تلقائياً.
+        let usesZaiFallback: Bool
+
+        init(label: String,
+             keyID: String,
+             url: String,
+             defaultModel: String,
+             extraHeaders: [String: String],
+             usesZaiFallback: Bool = false) {
+            self.label = label
+            self.keyID = keyID
+            self.url = url
+            self.defaultModel = defaultModel
+            self.extraHeaders = extraHeaders
+            self.usesZaiFallback = usesZaiFallback
+        }
     }
 
     private static func spec(for provider: TranslatorKind) -> OpenAICompatSpec? {
@@ -695,6 +771,25 @@ enum TranslateService {
                 url: "https://api.sambanova.ai/v1/chat/completions",
                 defaultModel: defaultSambaNovaModel,
                 extraHeaders: [:])
+        case .nvidia:
+            // NVIDIA NIM (build.nvidia.com): متوافق مع OpenAI، 40 طلب/دقيقة و
+            // 10,000 طلب/يوم مجاناً بدون فيزا. للاستخدام التجريبي فقط.
+            return OpenAICompatSpec(
+                label: "NVIDIA NIM",
+                keyID: "nvidia",
+                url: "https://integrate.api.nvidia.com/v1/chat/completions",
+                defaultModel: defaultNVIDIAModel,
+                extraHeaders: ["Accept": "application/json"])
+        case .zai:
+            // Z.ai GLM: OpenAI-compatible على /chat/completions، مع تجربة
+            // النطاقين العالمي والصيني تلقائياً (نفس المفتاح يعمل عليهما).
+            return OpenAICompatSpec(
+                label: "Z.ai",
+                keyID: "zai",
+                url: "https://api.z.ai/api/paas/v4/chat/completions",
+                defaultModel: defaultZaiModel,
+                extraHeaders: [:],
+                usesZaiFallback: true)
         default:
             return nil
         }
@@ -780,6 +875,19 @@ enum TranslateService {
             ]
         ]
         let payload = try JSONSerialization.data(withJSONObject: body)
+        if spec.usesZaiFallback {
+            // Z.ai: نفس جسم OpenAI لكن عبر ZaiAPI التي تجرب النطاقين.
+            let key = KeychainStore.get(spec.keyID) ?? ""
+            let (data, _) = try await HTTP.withRetry(attempts: 5, baseDelay: 6) {
+                try await ZaiAPI.request("POST",
+                                         path: "/chat/completions",
+                                         key: key,
+                                         headers: headers,
+                                         body: payload,
+                                         timeout: 180)
+            }
+            return data
+        }
         let (data, _) = try await HTTP.withRetry(attempts: 5, baseDelay: 6) {
             try await HTTP.request("POST", spec.url,
                                    headers: headers,
@@ -800,13 +908,21 @@ enum TranslateService {
 
     // MARK: DeepL
 
+    /// يحدد نطاق DeepL الصحيح للمفتاح: المفاتيح المنتهية بـ :fx هي مفاتيح
+    /// الخطة المجانية القديمة وتعمل على api-free فقط، وغيرها (خطة Developer
+    /// الجديدة أو Pro) تعمل على api.deepl.com — استخدام النطاق الخاطئ يرجع 403.
+    static func deepLHost(key: String) -> String {
+        let clean = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.hasSuffix(":fx") ? "https://api-free.deepl.com" : "https://api.deepl.com"
+    }
+
     private static func deepLBatch(_ batch: Batch,
                                    source: SubLang,
                                    target: SubLang) async throws -> [String] {
         guard let key = KeychainStore.get("deepl") else {
             throw APIError(status: 401, body: "أدخل مفتاح DeepL من الإعدادات")
         }
-        let url = "https://api-free.deepl.com/v2/translate"
+        let url = deepLHost(key: key) + "/v2/translate"
         let texts = batch.texts
         // DeepL API expects uppercase 2-letter target lang codes
         let targetCode = target.rawValue.uppercased()
@@ -841,6 +957,58 @@ enum TranslateService {
             result.append("")
         }
         return Array(result.prefix(batch.texts.count))
+    }
+
+    // MARK: Cohere (Command A / Aya — v2 Chat، ليست صيغة OpenAI)
+
+    private static func cohereBatch(_ batch: Batch,
+                                    config: Config,
+                                    contextTail: [(String, String)],
+                                    source: SubLang,
+                                    target: SubLang,
+                                    videoTitle: String) async throws -> [String] {
+        guard let key = KeychainStore.get("cohere") else {
+            throw APIError(status: 401, body: "أدخل مفتاح Cohere من الإعدادات")
+        }
+        let model = config.model.isEmpty ? defaultCohereModel : config.model
+        let text = try await CohereChat.complete(
+            key: key,
+            model: model,
+            system: systemPrompt(source: source, target: target, videoTitle: videoTitle),
+            user: userPrompt(batch: batch, contextTail: contextTail),
+            temperature: config.temperature)
+        return parseLines(rawJSON: text, batch: batch)
+    }
+
+    // MARK: Lara Translate (محرك ترجمة متخصص — 10K حرف/شهر مجاناً)
+
+    private static func laraBatch(_ batch: Batch,
+                                  source: SubLang,
+                                  target: SubLang,
+                                  videoTitle: String) async throws -> [String] {
+        let translations = try await LaraTranslate.translate(texts: batch.texts,
+                                                              source: source,
+                                                              target: target,
+                                                              videoTitle: videoTitle)
+        // Lara تعيد نفس الترتيب؛ أي سطر فاشل يعود فارغاً ونسقط للنص الأصلي.
+        return batch.texts.indices.map { idx in
+            let translated = idx < translations.count ? translations[idx] : ""
+            return translated.isEmpty ? batch.texts[idx] : translated
+        }
+    }
+
+    // MARK: MyMemory (بدون مفتاح — ملاذ أخير)
+
+    private static func myMemoryBatch(_ batch: Batch,
+                                      source: SubLang,
+                                      target: SubLang) async throws -> [String] {
+        let translations = try await MyMemoryTranslate.translate(texts: batch.texts,
+                                                                  source: source,
+                                                                  target: target)
+        return batch.texts.enumerated().map { (idx, original) in
+            let translated = idx < translations.count ? translations[idx] : ""
+            return translated.isEmpty ? original : translated
+        }
     }
 
     // MARK: تحليل الاستجابة
