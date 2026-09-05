@@ -94,24 +94,53 @@ enum AzureSpeech {
     }
 }
 
-// MARK: - Groq PlayAI TTS
-// https://console.groq.com/docs/api-reference#audio
+// MARK: - Groq Orpheus TTS
+// https://console.groq.com/docs/text-to-speech/orpheus
+//
+// PlayAI models were retired by Groq on 2025-12-31. Orpheus uses the same
+// OpenAI-compatible endpoint but has distinct model/voice IDs and a strict
+// 200-character input limit per request.
 
 enum GroqTTS {
-    /// يولّد صوتاً عبر Groq PlayAI ويحفظه في ملف.
-    static func synthesize(text: String, voice: String, outputURL: URL) async throws -> Double {
+    private static let arabicVoiceIDs: Set<String> = [
+        "abdullah", "fahad", "sultan", "lulwa", "noura", "aisha"
+    ]
+    private static let englishVoiceIDs: Set<String> = [
+        "autumn", "diana", "hannah", "austin", "daniel", "troy"
+    ]
+
+    /// يولّد صوتاً عبر Groq Orpheus ويحفظه في ملف WAV.
+    static func synthesize(text: String, voice: DubbingVoice, outputURL: URL) async throws -> Double {
         guard let key = KeychainStore.get("groq") else {
             throw APIError(status: 401, body: "أدخل مفتاح Groq من الإعدادات")
         }
-        // Groq PlayAI: موديل "playai-tts" — يدعم English حالياً بشكل رئيسي.
-        // للعربية نستخدم Edge TTS كاحتياطي.
-        if voice.lowercased().contains("ar") {
-            return try await EdgeTTSClient.synthesizeAndSave(text: text, voice: voice, outputURL: outputURL)
+        let input = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !input.isEmpty else {
+            throw APIError(status: 400, body: "لا يوجد نص لتوليد الصوت")
         }
+        // SubtitleCodec.normalize splits dubbing cues at 140 characters, which
+        // stays below Orpheus's documented 200-character ceiling. Keep this
+        // hard guard to prevent a retired-model-style opaque 400 response.
+        guard input.unicodeScalars.count <= 200 else {
+            throw APIError(status: 400, body: "Groq Orpheus يقبل 200 حرف كحد أقصى لكل جملة؛ قسّم الترجمة إلى أسطر أقصر ثم أعد المحاولة")
+        }
+
+        let requestedVoice = voice.id.lowercased()
+        let isArabic = voice.language.lowercased().hasPrefix("ar") || arabicVoiceIDs.contains(requestedVoice)
+        let model = isArabic
+            ? "canopylabs/orpheus-arabic-saudi"
+            : "canopylabs/orpheus-v1-english"
+        let selectedVoice: String
+        if isArabic {
+            selectedVoice = arabicVoiceIDs.contains(requestedVoice) ? requestedVoice : "noura"
+        } else {
+            selectedVoice = englishVoiceIDs.contains(requestedVoice) ? requestedVoice : "hannah"
+        }
+
         let body: [String: Any] = [
-            "model": "playai-tts",
-            "voice": mapPlayAIVoice(voice),
-            "input": text,
+            "model": model,
+            "voice": selectedVoice,
+            "input": input,
             "response_format": "wav"
         ]
         let payload = try JSONSerialization.data(withJSONObject: body)
@@ -127,14 +156,9 @@ enum GroqTTS {
         return approximateWAVDuration(bytes: data.count)
     }
 
-    private static func mapPlayAIVoice(_ voice: String) -> String {
-        // PlayAI voices: Fritz, Baily, Celeste, ...
-        if voice.contains("english") || voice.contains("en") { return "Celeste" }
-        return "Celeste"
-    }
-
     private static func approximateWAVDuration(bytes: Int) -> Double {
-        // 24kHz mono 16-bit = 48000 bytes/sec
+        // Conservative fallback for a 24kHz mono 16-bit response. The final
+        // composition always reads the actual asset duration when available.
         return max(0.3, Double(bytes) / 48_000.0)
     }
 }

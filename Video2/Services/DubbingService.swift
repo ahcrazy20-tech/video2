@@ -21,7 +21,7 @@ struct DubbingRequest: Sendable {
 
 enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     case edge        // Microsoft Edge (مجاني بدون مفتاح)
-    case groqPlayAI  // Groq PlayAI TTS (نفس مفتاح Groq)
+    case groqPlayAI  // Groq Orpheus TTS (نفس مفتاح Groq؛ raw value retained)
     case siliconflow // SiliconFlow CosyVoice (مفتوح، أفضل جودة)
     case elevenlabs  // ElevenLabs (احترافي، مدفوع)
     case azure       // Azure Speech Neural TTS
@@ -32,7 +32,7 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     var titleAR: String {
         switch self {
         case .edge: return "Microsoft Edge (مجاني)"
-        case .groqPlayAI: return "Groq PlayAI TTS"
+        case .groqPlayAI: return "Groq Orpheus TTS"
         case .siliconflow: return "SiliconFlow CosyVoice"
         case .elevenlabs: return "ElevenLabs (احترافي)"
         case .azure: return "Azure Speech Neural"
@@ -45,7 +45,7 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .edge:
             return "بدون مفتاح — صوت Zariyah/Ryan. جودة جيدة جداً للعربية الفصحى."
         case .groqPlayAI:
-            return "نفس مفتاح Groq — أصوات متعددة، سرعة فائقة، لكن دعم العربية محدود."
+            return "Orpheus عبر نفس مفتاح Groq: إنجليزي أو عربي سعودي بستة أصوات. PlayAI أُوقف؛ لكل طلب حد 200 حرف، والسعر/الأهلية حسب خطة Groq."
         case .siliconflow:
             return "CosyVoice 2 من FunAudioLLM — جودة ممتازة للصينية، دعم العربية محدود لكن طبيعي."
         case .elevenlabs:
@@ -77,6 +77,17 @@ enum DubbingProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .elevenlabs: return "elevenlabs"
         case .azure: return "azure"
         case .edge, .auto: return nil
+        }
+    }
+
+    /// هل يدعم المزود لغة الدبلجة المطلوبة فعلاً؟
+    func supports(language: SubLang) -> Bool {
+        switch self {
+        case .groqPlayAI:
+            // Orpheus on Groq is currently English or Saudi Arabic only.
+            return language == .ar || language == .en
+        default:
+            return true
         }
     }
 
@@ -225,9 +236,14 @@ final class DubbingService: ObservableObject {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        // Azure يعيد MP3 فعلياً؛ احتفظ بامتداده الصحيح حتى يتعرّف عليه
-        // AVFoundation، بينما لا نغيّر مخرجات المزودات الموجودة.
-        let perCueExt = provider == .azure ? "mp3" : "m4a"
+        // احتفظ بامتداد الصوت الفعلي لكل مزود كي يتعرف AVFoundation على الملف:
+        // Azure يعيد MP3، وGroq Orpheus يعيد WAV فقط؛ المزودات الأخرى تبقى كما كانت.
+        let perCueExt: String
+        switch provider {
+        case .azure: perCueExt = "mp3"
+        case .groqPlayAI: perCueExt = "wav"
+        default: perCueExt = "m4a"
+        }
         statusText = "توليد الصوت لكل جملة…"
         var generated: [(cue: SubCue, audioURL: URL, duration: Double)] = []
         let total = Double(translatable.count)
@@ -240,13 +256,13 @@ final class DubbingService: ObservableObject {
                 let text = DubbingService.cleanText(cue.translated ?? cue.text)
                 guard !text.isEmpty else { continue }
                 let url = tempDir.appendingPathComponent("cue-\(cue.id).\(perCueExt)")
-                let dur = try await DubbingService.synthesizeOneStatic(text: text,
-                                                                       voice: voice,
-                                                                       provider: provider,
-                                                                       outputURL: url,
-                                                                       sampleRate: sampleRate)
-                guard DubbingService.isUsableAudioFile(url) else { continue }
-                generated.append((cue, url, dur))
+                let synthesized = try await DubbingService.synthesizeOneStatic(text: text,
+                                                                               voice: voice,
+                                                                               provider: provider,
+                                                                               outputURL: url,
+                                                                               sampleRate: sampleRate)
+                guard DubbingService.isUsableAudioFile(synthesized.url) else { continue }
+                generated.append((cue, synthesized.url, synthesized.duration))
                 let p = Double(generated.count) / total
                 progress = 0.85 * p
                 onProgress?(progress, "توليد الصوت \(generated.count)/\(translatable.count)")
@@ -270,13 +286,13 @@ final class DubbingService: ObservableObject {
                         let v = voice
                         let p = provider
                         group.addTask {
-                            let dur = try await DubbingService.synthesizeOneStatic(text: text,
-                                                                                   voice: v,
-                                                                                   provider: p,
-                                                                                   outputURL: url,
-                                                                                   sampleRate: sampleRate)
-                            guard DubbingService.isUsableAudioFile(url) else { return nil }
-                            return (cue, url, dur)
+                            let synthesized = try await DubbingService.synthesizeOneStatic(text: text,
+                                                                                           voice: v,
+                                                                                           provider: p,
+                                                                                           outputURL: url,
+                                                                                           sampleRate: sampleRate)
+                            guard DubbingService.isUsableAudioFile(synthesized.url) else { return nil }
+                            return (cue, synthesized.url, synthesized.duration)
                         }
                         inFlight += 1
                     }
@@ -339,13 +355,22 @@ final class DubbingService: ObservableObject {
                                                         voice: DubbingVoice,
                                                         provider: DubbingProvider,
                                                         outputURL: URL,
-                                                        sampleRate: Int) async throws -> Double {
+                                                        sampleRate: Int) async throws -> (url: URL, duration: Double) {
         do {
-            return try await synthesizeOnePrimaryStatic(text: text, voice: voice, provider: provider, outputURL: outputURL, sampleRate: sampleRate)
+            let duration = try await synthesizeOnePrimaryStatic(text: text,
+                                                                 voice: voice,
+                                                                 provider: provider,
+                                                                 outputURL: outputURL,
+                                                                 sampleRate: sampleRate)
+            return (outputURL, duration)
         } catch {
-            // الاحتياطي: صوت الجهاز — يعمل أوفلاين 100%
+            // LocalTTS exports AAC/M4A. Do not write that fallback into an
+            // Orpheus .wav (or Azure .mp3) path: AVFoundation uses the suffix
+            // when validating/importing the generated cue.
             if Task.isCancelled { throw CancellationError() }
-            return try await LocalTTS.synthesizeToFile(text: text, voice: voice, outputURL: outputURL)
+            let localURL = outputURL.deletingPathExtension().appendingPathExtension("m4a")
+            let duration = try await LocalTTS.synthesizeToFile(text: text, voice: voice, outputURL: localURL)
+            return (localURL, duration)
         }
     }
 
@@ -359,7 +384,7 @@ final class DubbingService: ObservableObject {
         case .edge:
             return try await EdgeTTSClient.synthesizeAndSave(text: text, voice: voice.id, outputURL: outputURL)
         case .groqPlayAI:
-            return try await GroqTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
+            return try await GroqTTS.synthesize(text: text, voice: voice, outputURL: outputURL)
         case .siliconflow:
             return try await SiliconFlowTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
         case .elevenlabs:
@@ -478,7 +503,8 @@ final class DubbingService: ObservableObject {
             if DubbingProvider.elevenlabs.isAvailable { return .elevenlabs }
             if DubbingProvider.azure.isAvailable { return .azure }
             if DubbingProvider.siliconflow.isAvailable { return .siliconflow }
-            if DubbingProvider.groqPlayAI.isAvailable { return .groqPlayAI }
+            if DubbingProvider.groqPlayAI.isAvailable,
+               DubbingProvider.groqPlayAI.supports(language: lang) { return .groqPlayAI }
             return .edge
         default:
             return requested
@@ -603,20 +629,30 @@ extension DubbingVoice {
     }
 
     private static func groqVoices(for lang: SubLang) -> [DubbingVoice] {
-        // Groq PlayAI — أوائل 2026: دعم إنجليزي قوي، دعم عربي محدود
-        // نُحافظ على هذه القائمة مع تنبيه المستخدم
+        // Groq retired playai-tts in December 2025. Orpheus now provides
+        // English and authentic Saudi-Arabic voices on the same endpoint.
         switch lang {
         case .ar:
             return [
-                DubbingVoice(id: "ar-SA-HamedNeural", name: "Hamed (عبر Edge المُحسَّن)", language: "ar-SA", gender: .male, naturalness: 3, provider: .groqPlayAI)
+                DubbingVoice(id: "noura", name: "Noura — Orpheus سعودي", language: "ar-SA", gender: .female, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "lulwa", name: "Lulwa — Orpheus سعودي", language: "ar-SA", gender: .female, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "aisha", name: "Aisha — Orpheus سعودي", language: "ar-SA", gender: .female, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "abdullah", name: "Abdullah — Orpheus سعودي", language: "ar-SA", gender: .male, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "fahad", name: "Fahad — Orpheus سعودي", language: "ar-SA", gender: .male, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "sultan", name: "Sultan — Orpheus سعودي", language: "ar-SA", gender: .male, naturalness: 4, provider: .groqPlayAI)
             ]
         case .en:
             return [
-                DubbingVoice(id: "playai-tts-arabic", name: "PlayAI Arabic", language: "ar", gender: .female, naturalness: 3, provider: .groqPlayAI),
-                DubbingVoice(id: "playai-tts-english", name: "PlayAI English", language: "en", gender: .female, naturalness: 4, provider: .groqPlayAI)
+                DubbingVoice(id: "hannah", name: "Hannah — Orpheus", language: "en-US", gender: .female, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "diana", name: "Diana — Orpheus", language: "en-US", gender: .female, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "autumn", name: "Autumn — Orpheus", language: "en-US", gender: .female, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "austin", name: "Austin — Orpheus", language: "en-US", gender: .male, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "daniel", name: "Daniel — Orpheus", language: "en-US", gender: .male, naturalness: 4, provider: .groqPlayAI),
+                DubbingVoice(id: "troy", name: "Troy — Orpheus", language: "en-US", gender: .male, naturalness: 4, provider: .groqPlayAI)
             ]
         default:
-            return [DubbingVoice(id: "playai-tts-english", name: "PlayAI English", language: "en", gender: .female, naturalness: 4, provider: .groqPlayAI)]
+            // Orpheus currently documents English and Saudi Arabic only.
+            return []
         }
     }
 

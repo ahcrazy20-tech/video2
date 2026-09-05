@@ -98,8 +98,8 @@ enum ModelBillingCatalog {
         let id = model.lowercased()
         switch provider {
         case .openRouter:
-            // كل ما ينتهي بـ :free على OpenRouter مجاني بالكامل بلا فيزا.
-            if id.hasSuffix(":free") {
+            // كل موديل :free، وكذلك Free Router الرسمي، مجانيان بلا فيزا.
+            if id == "openrouter/free" || id.hasSuffix(":free") {
                 return ModelBillingInfo(kind: .free,
                                         detailAR: "موديل مجاني بالكامل على OpenRouter — 20 طلب/دقيقة و50 طلب/يوم بلا شحن (1000/يوم بعد شحن 10$ لمرة واحدة). لا يحتاج فيزا.")
             }
@@ -107,12 +107,12 @@ enum ModelBillingCatalog {
                                     detailAR: "موديل مدفوع بالـ token من رصيد OpenRouter؛ الموديلات المنتهية بـ :free مجانية فاخترها أولاً.")
 
         case .cerebras:
-            return ModelBillingInfo(kind: .free,
-                                    detailAR: "Cerebras: مليون token/يوم مجاناً بدون فيزا. حد السياق في الشريحة المجانية قد يصل إلى 8K token — كافٍ لدفعات الترجمة.")
+            return ModelBillingInfo(kind: .trialQuota,
+                                    detailAR: "Cerebras: التجربة الحالية تمنح 5$ لمدة 30 يوماً، لكنها تتطلب إضافة وسيلة دفع موثَّقة لتفعيل API. ليست خياراً بلا فيزا؛ راجع لوحة الحساب قبل الاستخدام.")
 
         case .sambaNova:
-            return ModelBillingInfo(kind: .trialQuota,
-                                    detailAR: "SambaNova: رصيد 5$ مجاني لـ30 يوماً بدون فيزا. سريع جداً؛ راجع اللوحة للمتبقي الفعلي.")
+            return ModelBillingInfo(kind: .free,
+                                    detailAR: "SambaNova Free Tier بلا وسيلة دفع: 20 طلب/دقيقة و20 طلب/يوم و200 ألف token/يوم للموديلات المؤهلة. راجع Limits في اللوحة لأن الحد مشترك بين المفاتيح.")
 
         case .siliconflow:
             if id.contains("hunyuan-mt-7b") {
@@ -139,6 +139,14 @@ enum ModelBillingCatalog {
                                     detailAR: "ليس مجانياً بالضرورة؛ تحقّق من الرصيد والسعر في SiliconFlow.")
 
         case .groq:
+            if id.contains("orpheus-arabic-saudi") {
+                return ModelBillingInfo(kind: .paid,
+                                        detailAR: "Groq Orpheus Arabic Saudi: 40$ لكل مليون حرف وفق التسعير المنشور؛ الحد 200 حرف للطلب. تحقق من أهلية حساب Groq وفوترته.")
+            }
+            if id.contains("orpheus-v1-english") {
+                return ModelBillingInfo(kind: .paid,
+                                        detailAR: "Groq Orpheus English: 22$ لكل مليون حرف وفق التسعير المنشور؛ الحد 200 حرف للطلب. تحقق من أهلية حساب Groq وفوترته.")
+            }
             if id.contains("gpt-oss-120b") || id.contains("gpt-oss-20b") {
                 return ModelBillingInfo(kind: .accountDependent,
                                         detailAR: "قد يكون ضمن شريحة محدودة أو مدفوعاً حسب مشروع Groq؛ راجع Limits والتسعير الحاليين.")
@@ -152,7 +160,7 @@ enum ModelBillingCatalog {
 
         case .gemini:
             return ModelBillingInfo(kind: .accountDependent,
-                                    detailAR: "لا توجد قيمة متبقية عبر API key؛ راجع AI Studio لمعرفة الحصة/الفوترة الفعلية.")
+                                    detailAR: "Free Tier لا يحتاج وسيلة دفع للموديلات والبلدان المؤهلة؛ الحصة تختلف حسب المشروع، ولا يعيد API key رقماً متبقياً. راجع AI Studio.")
         case .openaiCompat, .elevenlabs:
             return ModelBillingInfo(kind: .unknown,
                                     detailAR: "تحقّق من تسعير المزود وحسابه قبل الاستخدام.")
@@ -167,8 +175,8 @@ enum ModelProvider: String, Codable, CaseIterable, Identifiable {
     case groq         // Groq (OpenAI-compatible)
     case siliconflow  // SiliconFlow (يُستخدم للتفريغ والدبلجة فقط)
     case openRouter   // OpenRouter (موديلات مجانية بدون فيزا)
-    case cerebras     // Cerebras (مليون token/يوم مجاناً)
-    case sambaNova    // SambaNova (DeepSeek/Llama — رصيد مجاني)
+    case cerebras     // Cerebras (تجربة مقيّدة تتطلب وسيلة دفع موثقة)
+    case sambaNova    // SambaNova (DeepSeek/Llama — طبقة مجانية بلا وسيلة دفع)
     case openaiCompat // OpenAI-compatible (نحتفظ به للتوسعة)
     case elevenlabs   // ElevenLabs TTS (للدبلجة)
 
@@ -274,11 +282,19 @@ enum ModelSelection {
                 }
                 return replacement
             }
-            if provider == .openRouter, !clean.hasSuffix(":free") {
-                // موديل OpenRouter محفوظ من إصدار أقدم ولا ينتهي بـ :free (مثل Qwen3
-                // أو أي إصدار أحدث بدون لاحقة) — استخدامه يُمضي من رصيد الحساب.
-                // نرحّله إلى الافتراضي المجاني حتى لا ينفق التطبيق بلا قصد.
+            if provider == .openRouter, clean.lowercased() != "openrouter/free", !clean.hasSuffix(":free") {
+                // موديل OpenRouter محفوظ من إصدار أقدم وليس :free ولا الـ Free
+                // Router الرسمي — استخدامه قد يمضي من رصيد الحساب. نرحّله إلى
+                // الافتراضي المجاني حتى لا ينفق التطبيق بلا قصد.
                 let replacement = TranslateService.defaultOpenRouterModel
+                save(replacement, purpose: purpose, provider: provider)
+                return replacement
+            }
+            if provider == .cerebras,
+               ["llama3.1-70b", "llama3.1-8b", "qwen-3-32b", "llama-4-scout-17b-16e-instruct"].contains(clean.lowercased()) {
+                // هذه المعرفات كانت في كتالوج قديم. تجربة Cerebras العامة الحالية
+                // تعرض GPT-OSS 120B وQwen 3.8؛ نرحّل الاختيار قبل أن يسبب 404.
+                let replacement = TranslateService.defaultCerebrasModel
                 save(replacement, purpose: purpose, provider: provider)
                 return replacement
             }
@@ -332,7 +348,10 @@ final class ModelCatalog: ObservableObject {
         // القوائم الثابتة الموثّقة تُعرض مباشرة حتى بلا مفتاح أو شبكة، ليتمكن
         // المستخدم من مقارنة الحصة/السعر واختيار الموديل قبل إدخال أي مفتاح.
         for provider in ModelProvider.allCases where provider.hasStaticCatalog {
-            if models[provider] == nil {
+            // Static entries are shipped compatibility metadata, not a stale
+            // remote snapshot. Refresh them on app update so corrected model
+            // IDs and billing eligibility replace an old disk cache immediately.
+            if !provider.hasLiveFreeCatalog || models[provider] == nil {
                 models[provider] = ModelCatalogParser.staticCatalog(for: provider)
             }
         }
@@ -672,21 +691,21 @@ final class ProviderUsageStore: ObservableObject {
                     provider: .openRouter,
                     status: .manual,
                     headlineAR: "OpenRouter: الموديلات :free بلا فيزا",
-                    detailAR: "50 طلب/يوم مجاناً (1000 بعد شحن 10$ اختياري). راجع Usage/Credits في اللوحة للمتبقي الفعلي؛ اختر موديلات تنتهي بـ :free.",
+                    detailAR: "20 طلب/دقيقة و50 طلب/يوم مجاناً (1000/يوم بعد شحن 10$ اختياري). راجع Usage/Credits في اللوحة للمتبقي الفعلي؛ اختر موديلات تنتهي بـ :free أو openrouter/free.",
                     updatedAt: Date())
             case .cerebras:
                 snapshot = ProviderUsageSnapshot(
                     provider: .cerebras,
                     status: .manual,
-                    headlineAR: "Cerebras: مليون token/يوم مجاناً",
-                    detailAR: "تتجدد يومياً بدون فيزا. راجع لوحة Cerebras للحدود الدقيقة (RPM/TPM)؛ حد السياق قد يصل 8K في الشريحة المجانية.",
+                    headlineAR: "Cerebras: تحقق من التجربة والرصيد في اللوحة",
+                    detailAR: "التجربة الحالية 5$ لمدة 30 يوماً وتتطلب وسيلة دفع موثقة لتفعيل API؛ ليست طبقة مجانية بلا فيزا. راجع حدود الـ Free Trial الدقيقة في لوحة Cerebras.",
                     updatedAt: Date())
             case .sambaNova:
                 snapshot = ProviderUsageSnapshot(
                     provider: .sambaNova,
                     status: .manual,
-                    headlineAR: "SambaNova: راجع الرصيد في اللوحة",
-                    detailAR: "رصيد 5$ مجاني/30 يوماً بدون فيزا. المتبقي الدقيق لا توفره واجهة API بسهولة؛ راجع لوحة SambaNova قبل المهام الطويلة.",
+                    headlineAR: "SambaNova Free: 20 طلب/يوم و200 ألف token/يوم",
+                    detailAR: "هذه حدود الطبقة المجانية بلا وسيلة دفع للموديلات المؤهلة؛ الحد الفعلي مشترك على مستوى الحساب. راجع SambaNova Limits قبل المهام الطويلة.",
                     updatedAt: Date())
             case .deepgram:
                 snapshot = ProviderUsageSnapshot(
@@ -833,10 +852,10 @@ final class ProviderUsageStore: ObservableObject {
 
 enum ModelCatalogParser {
 
-    // MARK: القوائم الثابتة للمزوّدات المجانية (بدون فيزا)
+    // MARK: القوائم الثابتة للمزوّدات ذات شروط مجانية موثّقة
 
-    /// قوائم موثّقة ثابتة للمزوّدات التي نعرض موديلاتها حتى قبل إدخال المفتاح.
-    /// لا نعتمد على GET /models لأن الموديلات المجانية تتغيّر، واخترنا أفضلها للترجمة.
+    /// قوائم توافق مضمّنة للعرض قبل إدخال المفتاح. تُستخدم فقط للأسماء
+    /// والحدود المستقرة، ولا تغني عن تحديث الكتالوج الحي عند توفره.
     static func staticCatalog(for provider: ModelProvider) -> [ModelEntry] {
         switch provider {
         case .openRouter: return openRouter()
@@ -846,57 +865,24 @@ enum ModelCatalogParser {
         }
     }
 
-    // MARK: OpenRouter (موديلات :free مجانية بالكامل — بدون فيزا)
-    // https://openrouter.ai/api/v1/chat/completions  ·  الموديلات المنتهية بـ :free مجانية
+    // MARK: OpenRouter (Free Router و :free بلا رصيد — بدون فيزا)
+    // https://openrouter.ai/api/v1/chat/completions
     //
-    // ⚠️ هام: تشكيل الموديلات المجانية على OpenRouter يتغيّر باستمرار (موديلات
-    // تُضاف وموديلات :free تُسحب — مثل Llama 3.3 وQwen3 Coder وGemma 3 التي أُوقفت
-    // نسخها المجانية). لذلك هذه القائمة المحفوظة "احتياطي" يُستخدم فقط قبل أول
-    // تحديث أو أثناء انقطاع الإنترنت؛ الشاشة تجلب القائمة الفعلية الحيّة من الـ API
-    // العام (openRouterFreeLive) وتعرض ما هو مجاني فعلاً الآن.
-    // آخر تحقق لكل موديل أدناه من API OpenRouter الرسمي: 2026-08-24.
+    // ⚠️ تشكيل موديلات :free يتغيّر باستمرار. لذلك نُبقي Free Router الرسمي
+    // فقط كاحتياط مضمّن، ثم تجلب الشاشة القائمة الحية من API العام وتعرض
+    // موديلات :free المتاحة فعلاً الآن.
     static func openRouter() -> [ModelEntry] {
         [
-            ModelEntry(rawID: "google/gemma-4-31b-it:free",
-                       displayName: "Gemma 4 31B (free)",
+            ModelEntry(rawID: "openrouter/free",
+                       displayName: "OpenRouter Free Router",
                        provider: .openRouter,
                        capabilities: [.translation, .chat],
-                       contextWindow: 262144,
-                       isMultimodal: true,
-                       supportsArabic: true,
-                       descriptionAR: "موديل Google المفتوح (Gemma 4) — سياق 262K ومتعدد اللغات بما فيها العربية. مجاني بالكامل.",
-                       recommended: true,
-                       recommendedReasonAR: "الخيار الافتراضي الحالي — مجاني ومستقر وجيد للترجمة السياقية."),
-            ModelEntry(rawID: "nvidia/nemotron-3-super-120b-a12b:free",
-                       displayName: "Nemotron 3 Super 120B (free)",
-                       provider: .openRouter,
-                       capabilities: [.translation, .chat],
-                       contextWindow: 262144,
+                       contextWindow: nil,
                        isMultimodal: false,
                        supportsArabic: true,
-                       descriptionAR: "موديل NVIDIA مفتوح 120B (MoE) — استدلال قوي وسياق 262K. مجاني بالكامل.",
+                       descriptionAR: "راوتر OpenRouter الرسمي: يوجّه الطلب إلى موديل مجاني متاح حالياً بدلاً من تثبيت موديل قد يُسحب. لا يضمن موديلًا أو جودة بعينها.",
                        recommended: true,
-                       recommendedReasonAR: "بديل قوي بالسياق الكبير — مجاني بالكامل."),
-            ModelEntry(rawID: "nvidia/nemotron-3-ultra-550b-a55b:free",
-                       displayName: "Nemotron 3 Ultra 550B (free)",
-                       provider: .openRouter,
-                       capabilities: [.translation, .chat],
-                       contextWindow: 1000000,
-                       isMultimodal: false,
-                       supportsArabic: true,
-                       descriptionAR: "أكبر الموديلات المجانية (550B MoE) بسياق مليون token — للدفعات الضخمة.",
-                       recommended: true,
-                       recommendedReasonAR: "سياق ضخم (1M) لدفعات ترجمة طويلة جداً بطلب واحد."),
-            ModelEntry(rawID: "nvidia/nemotron-3-nano-30b-a3b:free",
-                       displayName: "Nemotron 3 Nano 30B (free)",
-                       provider: .openRouter,
-                       capabilities: [.translation, .chat],
-                       contextWindow: 256000,
-                       isMultimodal: false,
-                       supportsArabic: true,
-                       descriptionAR: "أصغر موديلات Nemotron — الأسرع والأخف، كافٍ للترجمة البسيطة.",
-                       recommended: false,
-                       recommendedReasonAR: nil)
+                       recommendedReasonAR: "الخيار الافتراضي الأكثر مقاومة لتغيّر قائمة الموديلات المجانية.")
         ]
     }
 
@@ -972,107 +958,82 @@ enum ModelCatalogParser {
         return (false, nil)
     }
 
-    // MARK: Cerebras (مليون token/يوم مجاناً — بدون فيزا، سريع جداً)
+    // MARK: Cerebras (Free Trial: requires verified payment method)
     // https://api.cerebras.ai/v1/chat/completions
     static func cerebras() -> [ModelEntry] {
+        // Current public trial catalog as of 2026-09-05. Do not present these
+        // entries as a no-card allowance: Cerebras activates the $5/30-day
+        // Free Trial only after a verified payment method is added.
         [
-            ModelEntry(rawID: "llama3.1-70b",
-                       displayName: "Llama 3.1 70B",
-                       provider: .cerebras,
-                       capabilities: [.translation, .chat],
-                       contextWindow: 131072,
-                       isMultimodal: false,
-                       supportsArabic: true,
-                       descriptionAR: "موديل Meta 70B على رقائق Cerebras — سريع جداً وبدون فيزا.",
-                       recommended: true,
-                       recommendedReasonAR: "الخيار الافتراضي — جودة سياقية عالية وسرعة فائقة على الشريحة المجانية."),
-            ModelEntry(rawID: "qwen-3-32b",
-                       displayName: "Qwen3 32B",
-                       provider: .cerebras,
-                       capabilities: [.translation, .chat],
-                       contextWindow: 131072,
-                       isMultimodal: false,
-                       supportsArabic: true,
-                       descriptionAR: "Qwen متعدد اللغات — ممتاز للترجمة متعددة اللغات.",
-                       recommended: true,
-                       recommendedReasonAR: "قوي للترجمة متعددة اللغات بما فيها العربية."),
-            ModelEntry(rawID: "llama3.1-8b",
-                       displayName: "Llama 3.1 8B",
-                       provider: .cerebras,
-                       capabilities: [.translation, .chat],
-                       contextWindow: 131072,
-                       isMultimodal: false,
-                       supportsArabic: true,
-                       descriptionAR: "أصغر وأسرع — كافٍ للترجمة البسيطة جداً.",
-                       recommended: false,
-                       recommendedReasonAR: nil),
             ModelEntry(rawID: "gpt-oss-120b",
                        displayName: "GPT-OSS 120B",
                        provider: .cerebras,
                        capabilities: [.translation, .chat],
-                       contextWindow: 131072,
+                       contextWindow: 8_192,
                        isMultimodal: false,
                        supportsArabic: true,
-                       descriptionAR: "موديل تفكير من OpenAI — جودة عالية لكن قد يلفّ JSON.",
-                       recommended: false,
-                       recommendedReasonAR: "جرّبه بحذر: قد يلفّ JSON في وسوم تفكير؛ Llama أكثر استقراراً."),
-            ModelEntry(rawID: "llama-4-scout-17b-16e-instruct",
-                       displayName: "Llama 4 Scout 17B",
+                       descriptionAR: "موديل OpenAI المفتوح على Cerebras. تجربة Cerebras الحالية تحتاج وسيلة دفع موثقة؛ حد سياق الشريحة التجريبية المعلن 8K.",
+                       recommended: true,
+                       recommendedReasonAR: "الخيار الافتراضي لتجربة Cerebras الحالية؛ تحقّق من الرصيد وحدود الحساب قبل استخدامه."),
+            ModelEntry(rawID: "qwen-3.8-27b",
+                       displayName: "Qwen 3.8 27B",
                        provider: .cerebras,
                        capabilities: [.translation, .chat],
-                       contextWindow: 131072,
-                       isMultimodal: false,
+                       contextWindow: 8_192,
+                       isMultimodal: true,
                        supportsArabic: true,
-                       descriptionAR: "جيل Llama 4 الأحدث — سياق طويل وسريع.",
-                       recommended: false,
-                       recommendedReasonAR: nil)
+                       descriptionAR: "Qwen 3.8 متعدد اللغات مع دعم صور. متاح ضمن تجربة Cerebras المقيّدة بوسيلة دفع موثقة.",
+                       recommended: true,
+                       recommendedReasonAR: "بديل متعدد اللغات للترجمة والمراجعة؛ راجع أهلية التجربة في لوحة Cerebras.")
         ]
     }
 
-    // MARK: SambaNova (رصيد 5$ مجاني/30 يوماً — بدون فيزا)
+    // MARK: SambaNova (Free Tier without a payment method: 20 RPD / 200k TPD)
     // https://api.sambanova.ai/v1/chat/completions
     static func sambaNova() -> [ModelEntry] {
+        // Public SambaCloud catalog and no-payment-method Free Tier limits
+        // verified 2026-09-05: 20 RPM, 20 RPD and 200k TPD for eligible models.
         [
-            ModelEntry(rawID: "DeepSeek-V3.2",
-                       displayName: "DeepSeek V3.2",
-                       provider: .sambaNova,
-                       capabilities: [.translation, .chat],
-                       contextWindow: 128000,
-                       isMultimodal: false,
-                       supportsArabic: true,
-                       descriptionAR: "DeepSeek V3.2 — ممتاز للترجمة السياقية العربية على رقائق RDU السريعة.",
-                       recommended: true,
-                       recommendedReasonAR: "الخيار الافتراضي — أفضل جودة سياقية عربية ضمن الرصيد المجاني."),
             ModelEntry(rawID: "DeepSeek-V3.1",
                        displayName: "DeepSeek V3.1",
                        provider: .sambaNova,
                        capabilities: [.translation, .chat],
-                       contextWindow: 128000,
+                       contextWindow: 128_000,
                        isMultimodal: false,
                        supportsArabic: true,
-                       descriptionAR: "إصدار سابق مستقر من DeepSeek.",
-                       recommended: false,
-                       recommendedReasonAR: nil),
+                       descriptionAR: "موديل إنتاجي ثابت بسياق 128K. ضمن طبقة SambaNova المجانية بلا وسيلة دفع (20 طلب/يوم و200K token/يوم).",
+                       recommended: true,
+                       recommendedReasonAR: "الافتراضي المستقر للترجمة السياقية والمراجعة ضمن الشريحة المجانية."),
             ModelEntry(rawID: "Meta-Llama-3.3-70B-Instruct",
                        displayName: "Llama 3.3 70B",
                        provider: .sambaNova,
                        capabilities: [.translation, .chat],
-                       contextWindow: 128000,
+                       contextWindow: 128_000,
                        isMultimodal: false,
                        supportsArabic: true,
-                       descriptionAR: "Llama 3.3 70B — ترجمة قوية متعددة اللغات.",
+                       descriptionAR: "موديل إنتاجي متعدد اللغات من Meta. حد Free بلا وسيلة دفع: 20 طلباً/يوم و200K token/يوم.",
                        recommended: true,
-                       recommendedReasonAR: "بديل موثوق عن DeepSeek بنفس الرصيد المجاني."),
-            ModelEntry(rawID: "Meta-Llama-3.1-405B-Instruct",
-                       displayName: "Llama 3.1 405B",
+                       recommendedReasonAR: "بديل موثوق لـ DeepSeek V3.1 ضمن الحد المجاني نفسه."),
+            ModelEntry(rawID: "gpt-oss-120b",
+                       displayName: "GPT-OSS 120B",
                        provider: .sambaNova,
                        capabilities: [.translation, .chat],
-                       contextWindow: 128000,
+                       contextWindow: 128_000,
                        isMultimodal: false,
                        supportsArabic: true,
-                       descriptionAR: "أكبر موديل Llama — أعلى جودة وأبطأ، يستهلك رصيداً أكثر.",
+                       descriptionAR: "موديل OpenAI المفتوح، موديل إنتاجي في SambaCloud. قد يحتاج برومبت JSON صارماً للمراجعة والترجمة.",
                        recommended: false,
-                       recommendedReasonAR: "جودة قصوى لكنه مكلف للرصيد؛ استخدمه للسياقات الصعبة فقط.")
+                       recommendedReasonAR: nil),
+            ModelEntry(rawID: "DeepSeek-V3.2",
+                       displayName: "DeepSeek V3.2 (Preview)",
+                       provider: .sambaNova,
+                       capabilities: [.translation, .chat],
+                       contextWindow: 32_000,
+                       isMultimodal: false,
+                       supportsArabic: true,
+                       descriptionAR: "موديل Preview بسياق 32K؛ قد يتغير أو يُزال سريعاً. الحد المجاني أقل من أن يصلح كخيار افتراضي لفيديوهات طويلة.",
+                       recommended: false,
+                       recommendedReasonAR: "تجريبي — استخدم DeepSeek V3.1 المستقر أولاً.")
         ]
     }
 
@@ -1128,7 +1089,8 @@ enum ModelCatalogParser {
     private static func recommendGemini(id: String, capabilities: [ModelCapability]) -> (Bool, String?) {
         let lc = id.lowercased()
         guard capabilities.contains(.translation) else { return (false, nil) }
-        if lc.contains("3.7-flash") { return (true, "Gemini 3.7 Flash — أحدث خيار ثابت للترجمة السياقية") }
+        if lc.contains("3.8-flash") { return (true, "Gemini 3.8 Flash — أحدث خيار سريع للترجمة والمراجعة السياقية") }
+        if lc.contains("3.7-flash") { return (true, "Gemini 3.7 Flash — خيار ثابت للترجمة السياقية") }
         if lc.contains("3.6-flash") { return (true, "Gemini 3.6 Flash — سريع وقوي للدفعات الطويلة") }
         if lc.contains("3.5-flash-lite") { return (true, "Gemini 3.5 Flash-Lite — أسرع وأوفر للترجمة بالدفعات") }
         if lc.contains("3.5-flash") { return (true, "Gemini 3.5 Flash — خيار ثابت ومتوازن للترجمة") }
@@ -1169,9 +1131,9 @@ enum ModelCatalogParser {
         var caps: [ModelCapability] = [.chat]
         if lc.contains("whisper") { caps.append(.transcription) }
         if lc.contains("vision") || lc.contains("image") { caps.append(.realtime) }
-        if lc.contains("tts") || lc.contains("playai") { caps.append(.tts) }
+        if lc.contains("tts") || lc.contains("playai") || lc.contains("orpheus") { caps.append(.tts) }
         if lc.contains("guard") || lc.contains("compound") { caps.append(.realtime) }
-        if !lc.contains("whisper") && !lc.contains("tts") {
+        if !lc.contains("whisper") && !lc.contains("tts") && !lc.contains("orpheus") {
             caps.append(.translation) // أي LLM يصلح للترجمة
         }
         return caps
@@ -1182,14 +1144,17 @@ enum ModelCatalogParser {
         if lc.contains("whisper-large-v3-turbo") { return (true, "الأفضل للتفريغ الصوتي على Groq — سرعة فائقة بنفس مفتاحك") }
         if lc.contains("whisper-large-v3") { return (true, "Whisper الكامل — أعلى دقة وأبطأ") }
         if lc.contains("distil-whisper") { return (true, "Whisper مضغوط — أسرع مع دقة جيدة") }
-        if lc.contains("qwen3.6-27b") { return (true, "Qwen 3.6 27B — خيار ترجمة سريع جداً (500 token/ثانية حسب Groq). تحقق من توفره وحدود حسابك لأنه Preview.") }
+        if lc.contains("qwen3.8-27b") { return (true, "Qwen 3.8 27B — موديل حديث للترجمة؛ تحقق من السعر والحدود الفعلية في حساب Groq.") }
+        if lc.contains("qwen3.6-27b") { return (true, "Qwen 3.6 27B — خيار ترجمة سريع جداً؛ تحقق من توفره وحدود حسابك لأنه Preview.") }
         if lc.contains("gpt-oss-120b") { return (true, "GPT-OSS 120B — جودة قوية وسرعة عالية؛ السعر/الشريحة المجانية بحسب حساب Groq.") }
         if lc.contains("gpt-oss-20b") { return (true, "GPT-OSS 20B — أصغر وأسرع من 120B، ممتاز للترجمة السريعة.") }
         if lc.contains("llama-3.3") { return (true, "Llama 3.3 70B — ترجمة قوية") }
         if lc.contains("llama-3.1") { return (false, "لا يزال يعمل — Llama 3.3 أحدث وأفضل") }
         if lc.contains("compound") { return (false, "موديل مركّب — مخصص لاستدعاء الأدوات") }
         if lc.contains("guard") { return (false, "موديل أمان — لا يصلح للترجمة") }
-        if lc.contains("playai-tts") { return (true, "تحويل نص إلى كلام عربي على Groq — مفيد للدبلجة") }
+        if lc.contains("orpheus-arabic-saudi") { return (true, "Orpheus Arabic Saudi — دبلجة سعودية عربية؛ حد الطلب 200 حرف وسعره يعتمد على خطة Groq.") }
+        if lc.contains("orpheus-v1-english") { return (true, "Orpheus English — TTS تعبيري حديث على Groq؛ حد الطلب 200 حرف.") }
+        if lc.contains("playai-tts") { return (false, "PlayAI TTS أُوقف في 2025؛ اختر Orpheus بدلاً منه.") }
         return (false, nil)
     }
 

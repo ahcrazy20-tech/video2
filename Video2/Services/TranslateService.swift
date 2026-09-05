@@ -233,20 +233,27 @@ enum TranslateService {
 
     /// الموديل الافتراضي الحالي. نعتمد اسماً ثابتاً بدلاً من موديلات 2.0
     /// المتوقفة، لكننا نتحقق من الموديلات المتاحة فعلياً لكل مفتاح عند الحاجة.
-    static let defaultGeminiModel = "gemini-3.7-flash"
+    static let defaultGeminiModel = "gemini-3.8-flash"
 
-    // المزودات الجديدة المتوافقة مع OpenAI — كلها بدون فيزا ولها شريحة مجانية.
-    /// موديلات OpenRouter التي تنتهي بـ :free مجانية بالكامل (50 طلب/يوم بلا شحن).
-    /// الافتراضي الحالي مُتحقق منه مجاني ونشط على OpenRouter (2026-08-24).
-    /// تشكيل الموديلات المجانية على OpenRouter يتغيّر باستمرار؛ لو توقف هذا
-    /// الموديل يُعالجه الاسترداد التلقائي في openAIChatBatch (يبديل بنسخة حية).
-    static let defaultOpenRouterModel = "google/gemma-4-31b-it:free"
-    /// Cerebras: مليون token/يوم مجاناً؛ Llama 3.3 70B توازن قوي للترجمة السياقية.
-    static let defaultCerebrasModel = "llama3.1-70b"
-    /// SambaNova: DeepSeek V3.2 ممتاز للسياق العربي ويعمل ضمن رصيد 5$ المجاني.
-    static let defaultSambaNovaModel = "DeepSeek-V3.2"
+    // مزودات متوافقة مع OpenAI؛ أهلية الطبقة المجانية وشرط وسيلة الدفع يختلفان
+    // بين مزوّد وآخر، فلا نقدّمها كقائمة موحّدة "بلا فيزا".
+    /// :free وopenrouter/free هما المساران المجانيان بلا رصيد على OpenRouter.
+    /// نستخدم الـ Free Router الرسمي افتراضياً كي يختار مزوداً حياً بدلاً من
+    /// تثبيت معرّف موديل قد يسحب من القائمة المجانية في أي وقت.
+    static let defaultOpenRouterModel = "openrouter/free"
+
+    private static func isNoCreditOpenRouterModel(_ model: String) -> Bool {
+        let id = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return id == "openrouter/free" || id.hasSuffix(":free")
+    }
+    /// Cerebras: التجربة الحالية تتطلب وسيلة دفع موثقة؛ GPT-OSS هو الافتراضي
+    /// للكتالوج العام الحالي بدلاً من معرفات Llama القديمة التي قد تعيد 404.
+    static let defaultCerebrasModel = "gpt-oss-120b"
+    /// SambaNova: اختر الموديل الإنتاجي المستقر بدلاً من V3.2 Preview.
+    static let defaultSambaNovaModel = "DeepSeek-V3.1"
 
     private static let preferredGeminiModels = [
+        "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
         "gemini-3.5-flash",
@@ -330,7 +337,7 @@ enum TranslateService {
 
         let id = normalizedGeminiModel(model).lowercased()
         if id.hasPrefix("gemini-3.") {
-            // Gemini 3.7 Flash يدعم low/medium/high فقط؛ لا نرسل minimal.
+            // Gemini 3.x يدعم low/medium/high فقط؛ لا نرسل minimal.
             generationConfig.removeValue(forKey: "temperature")
             generationConfig.removeValue(forKey: "topP")
             generationConfig.removeValue(forKey: "topK")
@@ -658,7 +665,8 @@ enum TranslateService {
 
     // MARK: مزوّدات متوافقة مع OpenAI (OpenRouter / Cerebras / SambaNova)
 
-    /// كلها بدون فيزا وترجع JSON بصيغة choices[0].message.content تماماً مثل Groq.
+    /// تستخدم صيغة choices[0].message.content مثل Groq، لكن شروط الطبقة
+    /// المجانية ووسيلة الدفع تختلف بين OpenRouter وCerebras وSambaNova.
     /// لا نرسل response_format لأن بعض الموديلات المجانية لا تدعمها فترفض الطلب؛
     /// البرومبت صريح بطلب JSON وparseLines متسامح مع أسوار ``` والنص الخام.
     private struct OpenAICompatSpec {
@@ -715,10 +723,10 @@ enum TranslateService {
         }
         let model: String
         if provider == .openRouter {
-            // خط أمان مزدوج: لا نرسل الدفعة لموديل OpenRouter مدفوع (مثل Qwen3 أو
-            // أي إصدار أحدث بدون :free) بقصد أو بخلل — ولو بقيت قيمة قديمة
-            // محفوظة على الجهاز — طالما يوجد موديل مجاني نستخدمه.
-            model = config.model.hasSuffix(":free") ? config.model : spec.defaultModel
+            // خط أمان مزدوج: لا نرسل الدفعة لموديل OpenRouter مدفوع بقصد أو
+            // بخلل — ولو بقيت قيمة قديمة محفوظة على الجهاز. نقبل :free أو
+            // Free Router الرسمي فقط؛ وإلا نعيدها إلى المسار المجاني الافتراضي.
+            model = isNoCreditOpenRouterModel(config.model) ? config.model : spec.defaultModel
         } else {
             model = config.model.isEmpty ? spec.defaultModel : config.model
         }

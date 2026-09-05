@@ -279,7 +279,7 @@ enum L10n {
         "set.pref.title": "تفضيلات التفريغ والترجمة",
         "set.pref.stt": "مزود التفريغ",
         "set.pref.translator": "مزود الترجمة",
-        "set.pref.model": "موديل Gemini (gemini-3.7-flash)",
+        "set.pref.model": "موديل Gemini (gemini-3.8-flash)",
         "set.pref.concurrency": "توازي التفريغ: %d",
         "set.pref.concurrency.hint": "عدد أجزاء الصوت التي تُفرَّغ معاً. قلّله عند ظهور أخطاء 429.",
         "set.how.title": "كيف تعمل الترجمة؟",

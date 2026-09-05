@@ -97,7 +97,7 @@ enum SubtitleCodec {
             let text = c.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
             let duration = c.end - c.start
-            if text.count > 140 || duration > 12 {
+            if text.unicodeScalars.count > 140 || duration > 12 {
                 let pieces = splitLongText(text)
                 guard !pieces.isEmpty else { continue }
                 let span = max(duration, 0.6) / Double(pieces.count)
@@ -121,21 +121,68 @@ enum SubtitleCodec {
         return result
     }
 
-    private static func splitLongText(_ text: String) -> [String] {
-        let words = text.components(separatedBy: " ").filter { !$0.isEmpty }
-        guard words.count > 1 else { return [text] }
-        let mid = words.count / 2
-        let first = words[..<mid].joined(separator: " ")
-        let second = words[mid...].joined(separator: " ")
-        if second.count > 160 {
-            // تقسيم ثلاثي للأطراف الطويلة جداً
-            let third = words.count / 3
-            let a = words[..<third].joined(separator: " ")
-            let b = words[third..<(third * 2)].joined(separator: " ")
-            let c = words[(third * 2)...].joined(separator: " ")
-            return [a, b, c].filter { !$0.isEmpty }
+    /// يقسم النص إلى قطع مريحة لا تتجاوز 140 حرفاً. هذا أقل عمداً من حد
+    /// Groq Orpheus (200 حرف) حتى تظل كل جملة صالحة للدبلجة أيضاً، وليس فقط
+    /// للعرض. التقسيم حسب المسافات أولاً ثم حسب الأحرف للكلمة غير المنقطعة.
+    private static func splitLongText(_ text: String, maximumCharacters: Int = 140) -> [String] {
+        let words = text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard !words.isEmpty else { return [] }
+
+        // إذا كان التقسيم مطلوباً لطول التوقيت فقط، نقسم الجملة القصيرة إلى
+        // نصفين بدلاً من إبقائها كقطعة واحدة طويلة زمنياً.
+        if scalarCount(text) <= maximumCharacters, words.count > 1 {
+            let midpoint = words.count / 2
+            return [words[..<midpoint].joined(separator: " "),
+                    words[midpoint...].joined(separator: " ")]
+                .filter { !$0.isEmpty }
         }
-        return [first, second].filter { !$0.isEmpty }
+
+        var pieces: [String] = []
+        var current = ""
+        for word in words {
+            // كلمة أو رابط بلا مسافة: لا نسمح له بتجاوز السقف وحده.
+            if scalarCount(word) > maximumCharacters {
+                if !current.isEmpty {
+                    pieces.append(current)
+                    current = ""
+                }
+                pieces.append(contentsOf: splitUnbrokenText(word, maximumCharacters: maximumCharacters))
+                continue
+            }
+            let candidate = current.isEmpty ? word : "\(current) \(word)"
+            if scalarCount(candidate) > maximumCharacters, !current.isEmpty {
+                pieces.append(current)
+                current = word
+            } else {
+                current = candidate
+            }
+        }
+        if !current.isEmpty { pieces.append(current) }
+        return pieces
+    }
+
+    private static func splitUnbrokenText(_ text: String, maximumCharacters: Int) -> [String] {
+        var pieces: [String] = []
+        var current = ""
+        var currentScalars = 0
+        for character in text {
+            let fragment = String(character)
+            let fragmentScalars = scalarCount(fragment)
+            if currentScalars + fragmentScalars > maximumCharacters, !current.isEmpty {
+                pieces.append(current)
+                current = fragment
+                currentScalars = fragmentScalars
+            } else {
+                current += fragment
+                currentScalars += fragmentScalars
+            }
+        }
+        if !current.isEmpty { pieces.append(current) }
+        return pieces
+    }
+
+    private static func scalarCount(_ text: String) -> Int {
+        text.unicodeScalars.count
     }
 
     // MARK: - ترتيب ودمج

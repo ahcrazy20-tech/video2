@@ -114,7 +114,7 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
         case .groq: return "Groq Whisper (سريع جداً)"
         case .assemblyai: return "AssemblyAI (الأقوى للطويل)"
         case .sttai: return "STT.ai (600 دقيقة مجاناً/شهر)"
-        case .speechmatics: return "Speechmatics (480 دقيقة مجاناً/شهر)"
+        case .speechmatics: return "Speechmatics (10 ساعات/شهر ضمن Free)"
         case .deepgram: return "Deepgram Nova-3 (دقيق ومتعدد اللغات)"
         case .azure: return "Azure Speech (Neural STT)"
         case .siliconflow: return "SiliconFlow SenseVoice (متعدد اللغات)"
@@ -130,9 +130,9 @@ enum STTProviderKind: String, Codable, CaseIterable, Identifiable {
         case .assemblyai:
             return "ملف واحد حتى 10 ساعات بدون تقطيع، أعلى دقة في التوقيتات. يحتاج مفتاحاً ورصيداً."
         case .sttai:
-            return "STT.ai Enhanced Whisper — 600 دقيقة شهرية مجانية + 100 دقيقة API. بديل قوي وسريع."
+            return "STT.ai يعلن 600 دقيقة ويب + 100 دقيقة API شهرياً بلا بطاقة، لكن معلومات API متعارضة بين صفحاته؛ اختبره بمقطع قصير أولاً."
         case .speechmatics:
-            return "Speechmatics — 480 دقيقة مجانية شهرياً، دقة عالية لـ 55+ لغة مع دعم اللهجات."
+            return "Speechmatics Free — منحة 100$، وحد batch الموثق 10 ساعات/شهر (600 دقيقة). دقة عالية للهجات؛ راجع البوابة لأن الرصيد والحدود يتغيران حسب المنتج."
         case .deepgram:
             return "Nova-3 مع utterances وتوقيتات لكل مقطع — يدعم العربية ومتعدد اللغات. رصيد التسجيل ولوحة الاستخدام من Deepgram."
         case .azure:
@@ -167,9 +167,9 @@ enum SubtitleRefinerKind: String, Codable, CaseIterable, Identifiable {
         case .auto: return "تلقائي (الأفضل المتاح)"
         case .gemini: return "Gemini (مراجعة سياقية دقيقة)"
         case .groqLLM: return "Groq LLM (GPT-OSS 120B — فائق السرعة)"
-        case .cerebras: return "Cerebras (سريع — مليون token/يوم)"
-        case .sambaNova: return "SambaNova (DeepSeek V3.2 — رصيد مجاني)"
-        case .openRouter: return "OpenRouter (موديلات مجانية :free)"
+        case .cerebras: return "Cerebras (تجربة تتطلب وسيلة دفع)"
+        case .sambaNova: return "SambaNova (DeepSeek/Llama — Free بلا وسيلة دفع)"
+        case .openRouter: return "OpenRouter (Free Router / موديلات :free)"
         case .off: return "إيقاف المراجعة (ترجمة مباشرة)"
         }
     }
@@ -179,15 +179,15 @@ enum SubtitleRefinerKind: String, Codable, CaseIterable, Identifiable {
         case .auto:
             return "يبدأ بأفضل مزود متاح (Gemini ثم Groq ثم Cerebras ثم SambaNova ثم OpenRouter) لمراجعة نصوص التفريغ، إكمال الكلمات الناقصة، تصحيح الأخطاء الصوتية، وإزالة الهلاوس والتكرار قبل الترجمة."
         case .gemini:
-            return "مراجعة سياقية ذكية تفهم المصطلحات وتكمل الجمل غير المكتملة عبر Google AI Studio مجاناً بدون فيزا."
+            return "مراجعة سياقية ذكية عبر Google AI Studio. Free Tier لا يحتاج وسيلة دفع للموديلات والبلدان المؤهلة؛ راجع AI Studio لأن الحصة حسب المشروع والمنطقة."
         case .groqLLM:
-            return "تدقيق فائق السرعة عبر GPT-OSS 120B أو Qwen على Groq بنفس مفتاح التفريغ."
+            return "تدقيق فائق السرعة عبر GPT-OSS 120B أو Qwen على Groq بنفس مفتاح التفريغ. تحقق من السعر والحصة الفعليين في حساب Groq."
         case .cerebras:
-            return "مليون token/يوم مجاناً وسريع جداً عبر Llama 3.1 70B أو Qwen3 بدون فيزا."
+            return "تجربة Cerebras الحالية تمنح 5$ لمدة 30 يوماً لكن تتطلب وسيلة دفع موثقة لتفعيل API؛ ليست بديلاً بلا فيزا."
         case .sambaNova:
-            return "تدقيق عالي الجودة للسياق عبر DeepSeek V3.2 أو Llama 3.3 ضمن الرصيد المجاني."
+            return "تدقيق عالي الجودة عبر DeepSeek V3.1 أو Llama 3.3 ضمن Free Tier بلا وسيلة دفع: 20 طلباً/يوم و200K token/يوم للموديلات المؤهلة."
         case .openRouter:
-            return "قائمة حية من الموديلات المجانية (:free) لمراجعة وتدقيق النصوص بدون فيزا."
+            return "Free Router أو قائمة حية من موديلات :free للمراجعة والتدقيق بلا وسيلة دفع؛ تتغير السعة والموديلات المتاحة باستمرار."
         case .off:
             return "تخطي مرحلة مراجعة التفريغ والانتقال مباشرة إلى الترجمة بدون تدقيق."
         }
@@ -213,19 +213,19 @@ enum SubtitleRefinerKind: String, Codable, CaseIterable, Identifiable {
 // MARK: - مزودو الترجمة النصية
 
 enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
-    // مزودات بدون فيزا: كلها فيها شريحة مجانية ويمكن التسجيل فيها بالبريد/GitHub/Google.
+    // أهلية الطبقة المجانية وشرط وسيلة الدفع تختلف بين المزودين؛ راجع وصف كل مزود.
     case auto, gemini, groqLLM, deepL, openRouter, cerebras, sambaNova
     var id: String { rawValue }
 
     var titleAR: String {
         switch self {
         case .auto: return "تلقائي (الأفضل المتاح)"
-        case .gemini: return "Gemini (ترجمة سياقية)"
+        case .gemini: return "Gemini (ترجمة سياقية — Free حسب المشروع)"
         case .groqLLM: return "Groq LLM (GPT-OSS 120B — سريع جداً)"
-        case .deepL: return "DeepL (500K حرف/شهر مجاناً)"
+        case .deepL: return "DeepL API Free (تحقق من أهلية الحساب)"
         case .openRouter: return "OpenRouter (موديلات مجانية كثيرة)"
-        case .cerebras: return "Cerebras (سريع جداً — مليون token/يوم)"
-        case .sambaNova: return "SambaNova (DeepSeek/Llama — رصيد مجاني)"
+        case .cerebras: return "Cerebras (تجربة بوسيلة دفع موثقة)"
+        case .sambaNova: return "SambaNova (DeepSeek/Llama — Free بلا وسيلة دفع)"
         }
     }
 
@@ -234,17 +234,17 @@ enum TranslatorKind: String, Codable, CaseIterable, Identifiable {
         case .auto:
             return "يبدأ بأفضل مزود عندك ثم ينتقل تلقائياً للتالي لو نفدت حصته المجانية — لا تتوقف المهمة في منتصف الفيديو. الترتيب: Gemini ← Groq ← Cerebras ← SambaNova ← DeepL ← OpenRouter."
         case .gemini:
-            return "ترجمة طبيعية تفهم السياق والمصطلحات. للدفعات السريعة يضبط التطبيق التفكير المنخفض تلقائياً. مفتاح Google AI Studio مجاني بدون فيزا."
+            return "ترجمة طبيعية تفهم السياق والمصطلحات. للدفعات السريعة يضبط التطبيق التفكير المنخفض تلقائياً. Free Tier لا يحتاج وسيلة دفع للموديلات والبلدان المؤهلة؛ الحصة حسب المشروع والمنطقة."
         case .groqLLM:
-            return "GPT-OSS 120B أو Qwen عبر Groq — سريعان جداً بنفس مفتاح التفريغ. شريحة مجانية بدون فيزا."
+            return "GPT-OSS 120B أو Qwen عبر Groq — سريعان جداً بنفس مفتاح التفريغ. راجع السعر وحدود حساب Groq قبل مهمة طويلة."
         case .deepL:
-            return "DeepL — 500 ألف حرف/شهر مجاناً، جودة عالية للترجمة السياقية. يحتاج مفتاح DeepL (deepl)."
+            return "DeepL API Free يستخدم api-free.deepl.com ويعطي حسابه quota فعلية عبر /usage. تحقق من عرض التسجيل وشرط وسيلة الدفع في بلدك قبل الاعتماد عليه."
         case .openRouter:
-            return "قائمة حيّة من الموديلات المجانية (‎:free) تُحدَّث كل 30 دقيقة — التطبيق يقرأ ما هو مجاني فعلاً الآن بدون فيزا. حدود الشريحة المجانية الرسمية: 20 طلب/دقيقة و50 طلب/يوم (تصبح 1000/يوم بعد شحن 10$ لمرة واحدة). لهذا هو أبطأ المزودين — لو عندك مفتاح Groq أو Cerebras فالتطبيق يقدّمهما عليه تلقائياً."
+            return "قائمة حيّة من موديلات :free تُحدَّث كل 30 دقيقة، أو Free Router الرسمي الذي يختار موديلًا مجانيًا متاحًا. كلاهما بلا وسيلة دفع؛ الحد الرسمي 20 طلب/دقيقة و50 طلب/يوم (1000/يوم بعد شحن 10$ اختياري). لذلك هو أبطأ الخيارات عادة."
         case .cerebras:
-            return "مليون token يومياً مجاناً وسريع جداً. Llama 3.3 70B / Qwen3 / GLM. بدون فيزا."
+            return "التجربة الحالية: 5$ لـ30 يوماً، وتتطلب وسيلة دفع موثقة لتفعيل API. لا يعرضها التطبيق كخيار بلا فيزا."
         case .sambaNova:
-            return "DeepSeek V3.2 / Llama 3.3 عبر SambaNova — رصيد 5$ مجاني بدون فيزا. سريع جداً."
+            return "DeepSeek V3.1 / Llama 3.3 عبر SambaNova — Free Tier بلا وسيلة دفع: 20 طلباً/يوم و200K token/يوم للموديلات المؤهلة."
         }
     }
 

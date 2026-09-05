@@ -534,7 +534,7 @@ private struct RefineActionSheet: View {
                     .padding(.vertical, 4)
                 }
 
-                Section("مزود خدمة المراجعة المجاني") {
+                Section("مزود خدمة المراجعة") {
                     Picker("مزود المراجعة", selection: $selectedProviderRaw) {
                         ForEach(SubtitleRefinerKind.allCases.filter { $0 != .off }) { p in
                             Text(p.titleAR).tag(p.rawValue)

@@ -42,7 +42,10 @@ struct DubbingView: View {
         switch resolvedProvider {
         case .elevenlabs: return "eleven_multilingual_v2"
         case .siliconflow: return "FunAudioLLM/CosyVoice2-0.5B"
-        case .groqPlayAI: return "playai-tts"
+        case .groqPlayAI:
+            if targetLang == .ar { return "canopylabs/orpheus-arabic-saudi" }
+            if targetLang == .en { return "canopylabs/orpheus-v1-english" }
+            return "Orpheus يدعم العربية السعودية والإنجليزية فقط"
         case .azure: return "Azure Speech Neural TTS"
         case .edge: return "Microsoft Edge Neural TTS"
         case .auto: return "—"
@@ -58,7 +61,8 @@ struct DubbingView: View {
 
     private var canStart: Bool {
         guard let v = currentVoice else { return false }
-        return !loadingVoices && serviceResolveProvider(provider).isAvailable && v.naturalness > 0
+        let resolved = serviceResolveProvider(provider)
+        return !loadingVoices && resolved.isAvailable && resolved.supports(language: targetLang) && v.naturalness > 0
     }
 
     var body: some View {
@@ -400,9 +404,12 @@ struct DubbingView: View {
     private func previewVoice(_ v: DubbingVoice) {
         Task {
             do {
-                let sample = "السلام عليكم، اسمي \(v.name). هذا اختبار للصوت المختار."
+                let sample = v.language.lowercased().hasPrefix("ar")
+                    ? "السلام عليكم، اسمي \(v.name). هذا اختبار للصوت المختار."
+                    : "Hello, my name is \(v.name). This is a preview of the selected voice."
+                let fileExtension = v.provider == .groqPlayAI ? "wav" : "mp3"
                 let tempURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("preview-\(UUID().uuidString).mp3")
+                    .appendingPathComponent("preview-\(UUID().uuidString).\(fileExtension)")
                 _ = try await service.preview(text: sample, voice: v, outputURL: tempURL)
                 await MainActor.run { playPreview(url: tempURL) }
             } catch {
@@ -445,7 +452,8 @@ struct DubbingView: View {
             if DubbingProvider.elevenlabs.isAvailable { return .elevenlabs }
             if DubbingProvider.azure.isAvailable { return .azure }
             if DubbingProvider.siliconflow.isAvailable { return .siliconflow }
-            if DubbingProvider.groqPlayAI.isAvailable { return .groqPlayAI }
+            if DubbingProvider.groqPlayAI.isAvailable,
+               DubbingProvider.groqPlayAI.supports(language: targetLang) { return .groqPlayAI }
             return .edge
         default: return p
         }
@@ -462,7 +470,7 @@ extension DubbingService {
         case .edge:
             return try await EdgeTTSClient.synthesizeAndSave(text: text, voice: voice.id, outputURL: outputURL)
         case .groqPlayAI:
-            return try await GroqTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
+            return try await GroqTTS.synthesize(text: text, voice: voice, outputURL: outputURL)
         case .siliconflow:
             return try await SiliconFlowTTS.synthesize(text: text, voice: voice.id, outputURL: outputURL)
         case .elevenlabs:

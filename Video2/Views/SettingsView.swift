@@ -115,7 +115,7 @@ struct SettingsView: View {
                     Link(destination: URL(string: "https://deepgram.com/pricing")!) {
                         Label("حدود وأسعار Deepgram الرسمية", systemImage: "creditcard")
                     }
-                    Text("الطبقة المجانية F0 الموثقة: 5 ساعات Speech-to-Text و500,000 حرف Neural Text-to-Speech شهرياً. Deepgram يعلن رصيد تسجيل يصل إلى 200$ للحسابات المؤهلة. قد تتطلب بعض الحسابات اشتراكاً/بطاقة؛ تحقق من اللوحة قبل الاستخدام الطويل.")
+                    Text("Deepgram يمنح الحسابات الجديدة المؤهلة 200$ رصيداً مجانياً بلا تاريخ انتهاء وبلا بطاقة وفق صفحة الأسعار؛ الرصيد والاستهلاك الفعليان في Console. لا تخلط ذلك مع حصص Azure F0 المنفصلة.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -124,23 +124,23 @@ struct SettingsView: View {
                     APIKeyRow(title: "مفتاح Groq",
                               placeholder: "gsk_...",
                               keyID: "groq",
-                              hint: "للتفريغ الصوتي (Whisper Turbo)، تدقيق النصوص، وترجمة GPT-OSS 120B — فيه شريحة مجانية سريعة جداً.")
+                              hint: "للتفريغ الصوتي (Whisper Turbo)، تدقيق النصوص، وترجمة GPT-OSS 120B وOrpheus TTS. راجع Limits والتسعير الفعليين في حساب Groq؛ لا نؤكد أهلية بلا بطاقة من التطبيق.")
                     APIKeyRow(title: "مفتاح Gemini",
                               placeholder: "AIza...",
                               keyID: "gemini",
-                              hint: "لمراجعة وتدقيق نصوص التفريغ والترجمة النصية السياقية. مجاني بدون فيزا من Google AI Studio.")
+                              hint: "لمراجعة وتدقيق نصوص التفريغ والترجمة السياقية. Free Tier لا يحتاج وسيلة دفع للموديلات والبلدان المؤهلة؛ الحصة حسب مشروع Google AI Studio.")
                     APIKeyRow(title: "مفتاح OpenRouter",
                               placeholder: "sk-or-v1-...",
                               keyID: "openrouter",
-                              hint: "للمراجعة والترجمة: الموديلات المجانية (‎:free) — التطبيق يجلب قائمتهم الحيّة تلقائياً. التسجيل بالبريد/GitHub بدون فيزا.")
+                              hint: "للمراجعة والترجمة: :free وopenrouter/free بلا وسيلة دفع. التطبيق يجلب القائمة الحية؛ الحد الرسمي 20 طلب/دقيقة و50/يوم قبل شحن رصيد اختياري.")
                     APIKeyRow(title: "مفتاح Cerebras",
                               placeholder: "csk-...",
                               keyID: "cerebras",
-                              hint: "لتدقيق وترجمة النصوص بسرعة فائقة — مليون token/يوم مجاناً بدون فيزا (Llama 3.1 70B / Qwen3). سجّل من cloud.cerebras.ai.")
+                              hint: "لتدقيق وترجمة النصوص عبر GPT-OSS/Qwen. التجربة الحالية 5$ لمدة 30 يوماً، وتتطلب وسيلة دفع موثقة لتفعيل API؛ ليست خياراً بلا فيزا.")
                     APIKeyRow(title: "مفتاح SambaNova",
                               placeholder: "مفتاح API من اللوحة",
                               keyID: "sambanova",
-                              hint: "للمراجعة والترجمة عبر DeepSeek V3.2 / Llama 3.3 — رصيد 5$ مجاني بدون فيزا. سريع جداً من cloud.sambanova.ai.")
+                              hint: "للمراجعة والترجمة عبر DeepSeek V3.1 / Llama 3.3. Free Tier بلا وسيلة دفع: 20 طلب/دقيقة و20/يوم و200K token/يوم للموديلات المؤهلة.")
                     APIKeyRow(title: "مفتاح SiliconFlow",
                               placeholder: "sk-...",
                               keyID: "siliconflow",
@@ -160,19 +160,19 @@ struct SettingsView: View {
                     APIKeyRow(title: "مفتاح Azure Speech",
                               placeholder: "مفتاح Speech من Azure",
                               keyID: "azure",
-                              hint: "لـ Neural TTS والدبلجة وSTT. أنشئ Speech resource من Azure Portal، ثم أدخل Region أعلاه والمفتاح هنا. حد F0 الموثق: 5 ساعات STT + 500 ألف حرف TTS شهرياً.")
+                              hint: "لـ Neural TTS والدبلجة وSTT. حد F0: 5 ساعات STT + 500 ألف حرف TTS شهرياً. حساب Azure Free القياسي يتطلب بطاقة/وسيلة دفع؛ Azure for Students استثناء بتحقق الطالب.")
                     APIKeyRow(title: "مفتاح DeepL",
                               placeholder: "DeepL-...",
                               keyID: "deepl",
-                              hint: "لترجمة نصية عالية الجودة — 500 ألف حرف/شهر مجاناً.")
+                              hint: "لترجمة نصية عالية الجودة عبر api-free.deepl.com. راجع عرض التسجيل وشرط وسيلة الدفع الحاليين في بلدك؛ يظهر الحد الفعلي من /usage.")
                     APIKeyRow(title: "مفتاح STT.ai",
                               placeholder: "sttai_...",
                               keyID: "sttai",
-                              hint: "تفريغ صوتي — 600 دقيقة شهرية مجانية + 100 دقيقة API.")
+                              hint: "يعلن 600 دقيقة ويب و100 دقيقة API مجانية شهرياً بلا بطاقة، لكن صفحات المنتج متعارضة؛ اختبر API بمهمة صغيرة قبل الاعتماد عليه.")
                     APIKeyRow(title: "مفتاح Speechmatics",
                               placeholder: "مفتاح Speechmatics API",
                               keyID: "speechmatics",
-                              hint: "تفريغ صوتي — 480 دقيقة مجانية شهرياً لدقة عالية بأكثر من 55 لغة.")
+                              hint: "Speechmatics Free: منحة 100$، والحد الموثق للـ batch هو 10 ساعات/شهر (600 دقيقة) بلا بطاقة. راجع لوحة الاستخدام.")
                     APIKeyRow(title: "مفتاح CloudConvert",
                               placeholder: "مفتاح API من اللوحة",
                               keyID: "cloudconvert",
@@ -184,11 +184,11 @@ struct SettingsView: View {
                     APIKeyRow(title: "مفتاح ConvertAPI",
                               placeholder: "Secret من convertapi.com",
                               keyID: "convertapi",
-                              hint: "مزوّد سحابي ثالث (شريحة تجريبية بدون فيزا غالباً). بديل قوي إذا رُفض CloudConvert بـ 403.")
+                              hint: "مزوّد سحابي ثالث؛ راجع شروط التجربة ووسيلة الدفع في لوحة ConvertAPI قبل الاعتماد عليه.")
                 } header: {
                     Text("مفاتيح مزودي الصوت والترجمة والفيديو")
                 } footer: {
-                    Text("تُخزَّن المفاتيح في Keychain على جهازك فقط. مزودات المراجعة والترجمة الحالية لها شرائح مجانية مختلفة؛ Azure وDeepgram قد يطلبان إعداداً/فوترة حسب الحساب، فراجع قسم الرصيد والحدود واللوحات الرسمية قبل المهام الطويلة.")
+                    Text("تُخزَّن المفاتيح في Keychain على جهازك فقط. لا تعني شارة «مجاني» أن كل حساب أو بلد مؤهل: Gemini وSambaNova وOpenRouter هي الخيارات المؤكدة بلا وسيلة دفع ضمن شروطها؛ Cerebras يحتاج وسيلة دفع للتجربة، وAzure القياسي يحتاج بطاقة. راجع اللوحات قبل المهام الطويلة.")
                         .font(.caption2)
                 }
 
@@ -785,7 +785,7 @@ enum KeyTester {
             do {
                 _ = try await HTTP.request("GET", "https://api.cerebras.ai/v1/models",
                                            headers: ["Authorization": "Bearer \(key)"], timeout: 30)
-                return "✅ مفتاح Cerebras يعمل — مليون token/يوم مجاناً بدون فيزا"
+                return "✅ مفتاح Cerebras يعمل — راجع لوحة الحساب: التجربة 5$ لـ30 يوماً وتتطلب وسيلة دفع موثقة"
             } catch let e as APIError {
                 if e.status == 401 { return "❌ مفتاح Cerebras غير صحيح (401)" }
                 if e.status == 403 { return "❌ تم رفض المفتاح (403)" }
@@ -800,7 +800,7 @@ enum KeyTester {
             do {
                 _ = try await HTTP.request("GET", "https://api.sambanova.ai/v1/models",
                                            headers: ["Authorization": "Bearer \(key)"], timeout: 30)
-                return "✅ مفتاح SambaNova يعمل — رصيد 5$ مجاني/30 يوماً بدون فيزا"
+                return "✅ مفتاح SambaNova يعمل — Free Tier بلا وسيلة دفع: 20 طلب/يوم و200K token/يوم للموديلات المؤهلة"
             } catch let e as APIError {
                 if e.status == 401 { return "❌ مفتاح SambaNova غير صحيح (401)" }
                 if e.status == 403 { return "❌ تم رفض المفتاح (403)" }
