@@ -1,0 +1,51 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "arena/**"]
+    paths: ["android/**", ".github/workflows/build-android.yml"]
+
+jobs:
+  apk:
+    name: Debug APK (Android twin of Video2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Unit tests
+        run: |
+          chmod +x gradlew || true
+          (test -f gradlew && ./gradlew :app:testDebugUnitTest --stacktrace) || \
+          gradle :app:testDebugUnitTest --stacktrace
+        continue-on-error: true
+
+      - name: Build debug APK
+        run: |
+          if [ -f gradlew ]; then ./gradlew :app:assembleDebug --stacktrace;
+          else gradle :app:assembleDebug --stacktrace; fi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Video2-Android
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
