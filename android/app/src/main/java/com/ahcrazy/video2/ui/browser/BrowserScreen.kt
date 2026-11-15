@@ -191,7 +191,7 @@ fun BrowserScreen(ar: Boolean, openUrl: String?, onConsumeOpenUrl: () -> Unit, o
         }
         if (tab.loading) LinearProgressIndicator(progress = { tab.progress }, Modifier.fillMaxWidth(), color = V2.Accent)
         if (tab.drm.isProtected) {
-            Row(Modifier.fillMaxWidth().background(V2.Accent.copy(alpha = .16f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().background(V2.Accent.copy(alpha = 0.16f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Filled.Shield, null, tint = V2.Accent)
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
@@ -344,7 +344,7 @@ private fun DetectorSheet(tab: BrowserTab, ar: Boolean, onClose: () -> Unit,
                           onPlay: (DetectedMedia) -> Unit, onDownload: (DetectedMedia, Int?) -> Unit) {
     var onlyPlayable by remember { mutableStateOf(false) }
     var qualityFor by remember { mutableStateOf<DetectedMedia?>(null) }
-    val items = tab.detected.filter { !onlyPlayable || it.kind.exoSupported }
+    val filteredItems = tab.detected.filter { !onlyPlayable || it.kind.exoSupported }
     Column(Modifier.fillMaxSize().padding(18.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(if (ar) "الوسائط المكتشفة" else "Detected media", fontWeight = FontWeight.Bold, fontSize = 17.sp, modifier = Modifier.weight(1f))
@@ -355,13 +355,13 @@ private fun DetectorSheet(tab: BrowserTab, ar: Boolean, onClose: () -> Unit,
             Text(if (ar) "القابل للتشغيل بس" else "Only playable", fontSize = 12.sp, modifier = Modifier.weight(1f))
             Switch(checked = onlyPlayable, onCheckedChange = { onlyPlayable = it })
         }
-        Text("${items.size} " + if (ar) "مصدر" else "sources", fontSize = 12.sp, color = V2.TextDim)
+        Text("${filteredItems.size} " + if (ar) "مصدر" else "sources", fontSize = 12.sp, color = V2.TextDim)
         Spacer(Modifier.height(10.dp))
-        if (items.isEmpty()) EmptyState(Icons.Filled.VideoLibrary,
+        if (filteredItems.isEmpty()) EmptyState(Icons.Filled.VideoLibrary,
             if (ar) "لسه مفيش وسائط" else "No media yet",
             if (ar) "شغّل الفيديو في الصفحة وهيظهر هنا على طول" else "Play the video on the page and it will appear here")
         LazyColumn {
-            items(items) { m -> MediaCard(m, ar, onPlay = { onPlay(m) }, onDownload = { onDownload(m, null) }, onQuality = { qualityFor = m }) }
+            items(filteredItems) { m -> MediaCard(m, ar, onPlay = { onPlay(m) }, onDownload = { onDownload(m, null) }, onQuality = { qualityFor = m }) }
         }
     }
     qualityFor?.let { m ->
@@ -426,7 +426,7 @@ fun MediaCard(m: DetectedMedia, ar: Boolean, onPlay: () -> Unit, onDownload: () 
 }
 
 @Composable fun Chip(text: String, color: Color) {
-    Box(Modifier.clip(RoundedCornerShape(50)).background(color.copy(alpha = .15f)).padding(horizontal = 7.dp, vertical = 3.dp)) {
+    Box(Modifier.clip(RoundedCornerShape(50)).background(color.copy(alpha = 0.15f)).padding(horizontal = 7.dp, vertical = 3.dp)) {
         Text(text, fontSize = 10.sp, color = color, fontWeight = FontWeight.Bold)
     }
 }

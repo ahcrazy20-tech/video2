@@ -22,7 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Captions
+import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Lock
@@ -193,7 +193,7 @@ fun PlayerScreen(video: SavedVideo?, streamUrl: String?, streamTitle: String?, a
             }
         } else {
             // Top bar
-            Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color.Black.copy(alpha = .55f)).padding(10.dp),
+            Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color.Black.copy(alpha = 0.55f)).padding(10.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, null, tint = Color.White) }
                 Column(Modifier.weight(1f)) {
@@ -241,7 +241,7 @@ fun PlayerScreen(video: SavedVideo?, streamUrl: String?, streamTitle: String?, a
             }
 
             // Bottom controls
-            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(alpha = .62f)).padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(alpha = 0.62f)).padding(horizontal = 14.dp, vertical = 10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(MagicDuration.format(nowSec), color = Color.White, fontSize = 11.sp)
                     Slider(value = if (duration > 0) position.toFloat() / duration else 0f,
@@ -253,7 +253,7 @@ fun PlayerScreen(video: SavedVideo?, streamUrl: String?, streamTitle: String?, a
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { showSpeed = true }) { Text(if (rate == 1f) "السرعة" else "×$rate", color = Color.White, fontSize = 12.sp) }
                     IconButton(onClick = { muted = !muted }) { Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, null, tint = Color.White) }
-                    IconButton(onClick = { showSubs = true }) { Icon(Icons.Filled.Captions, null, tint = if (subMode == SubMode.OFF) Color.White else V2.Gold) }
+                    IconButton(onClick = { showSubs = true }) { Icon(Icons.Filled.ClosedCaption, null, tint = if (subMode == SubMode.OFF) Color.White else V2.Gold) }
                     IconButton(onClick = { showSearch = true }) { Icon(Icons.Filled.Search, null, tint = Color.White) }
                     if (video?.hasDubbedAudio == true) TextButton(onClick = { dubOn = !dubOn }) {
                         Text("🎙 " + if (dubOn) "الدبلجة شغالة" else "الدبلجة", color = if (dubOn) V2.Gold else Color.White, fontSize = 11.sp)
@@ -331,7 +331,7 @@ fun PlayerScreen(video: SavedVideo?, streamUrl: String?, streamTitle: String?, a
 }
 
 @Composable private fun SubtitleLine(text: String, sizeSp: Int, color: Color) {
-    Box(Modifier.padding(top = 4.dp).clip(RoundedCornerShape(8.dp)).background(Color.Black.copy(alpha = .68f)).padding(horizontal = 10.dp, vertical = 5.dp)) {
+    Box(Modifier.padding(top = 4.dp).clip(RoundedCornerShape(8.dp)).background(Color.Black.copy(alpha = 0.68f)).padding(horizontal = 10.dp, vertical = 5.dp)) {
         Text(text, color = color, fontSize = sizeSp.sp, textAlign = TextAlign.Center, fontWeight = FontWeight.SemiBold)
     }
 }
@@ -344,7 +344,9 @@ private fun saveSnapshot(ctx: android.content.Context, video: SavedVideo?, atSec
         val values = android.content.ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, "video2-${System.currentTimeMillis()}.jpg")
             put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Video2")
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Video2")
+            }
         }
         val uri = ctx.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return false
         ctx.contentResolver.openOutputStream(uri)?.use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, it) }

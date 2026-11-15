@@ -84,7 +84,7 @@ fun <T> PickerRow(label: String, current: T, options: List<T>, title: (T) -> Str
 
 @Composable
 fun ChipPreview(text: String, color: Color) {
-    Box(Modifier.clip(RoundedCornerShape(50)).background(color.copy(alpha = .15f)).padding(horizontal = 7.dp, vertical = 3.dp)) {
+    Box(Modifier.clip(RoundedCornerShape(50)).background(color.copy(alpha = 0.15f)).padding(horizontal = 7.dp, vertical = 3.dp)) {
         Text(text, fontSize = 10.sp, color = color, fontWeight = FontWeight.Bold)
     }
 }

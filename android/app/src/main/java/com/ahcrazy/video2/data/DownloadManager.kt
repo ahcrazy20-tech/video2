@@ -281,7 +281,7 @@ class DownloadManager(
 
 /** Foreground-service shell so long downloads survive the UI being swiped away. */
 class DownloadService : android.app.Service() {
-    override fun onBind(intent: android.content.Intent?) = null
+    override fun onBind(intent: android.content.Intent?): android.os.IBinder? = null
     override fun onStartCommand(intent: android.content.Intent?, flags: Int, startId: Int): Int {
         val channel = android.app.NotificationChannel("downloads", "التحميلات", android.app.NotificationManager.IMPORTANCE_LOW)
         getSystemService(android.app.NotificationManager::class.java).createNotificationChannel(channel)

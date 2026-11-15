@@ -1,8 +1,10 @@
 package com.ahcrazy.video2.data
 
 import com.ahcrazy.video2.core.util.MagicQuery
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -21,11 +23,21 @@ data class MagicResult(
  * Real no-key APIs: Internet Archive, Dailymotion, PeerTube (SepiaSearch), YouTube via Piped.
  */
 class MagicSearchRepository(
-    private val http: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS).readTimeout(25, TimeUnit.SECONDS)
-        .headerDefaults().build()
+    private val http: OkHttpClient = defaultHttpClient()
 ) {
-    private fun OkHttpClient.Builder.headerDefaults() = header("User-Agent", com.ahcrazy.video2.core.model.DownloadAuth.CHROME_UA)
+    companion object {
+        private fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(25, TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                chain.proceed(
+                    chain.request().newBuilder()
+                        .header("User-Agent", com.ahcrazy.video2.core.model.DownloadAuth.CHROME_UA)
+                        .build()
+                )
+            }
+            .build()
+    }
 
     private fun get(url: String): String {
         http.newCall(Request.Builder().url(url).build()).execute().use { res ->
@@ -107,7 +119,7 @@ class MagicSearchRepository(
         )
         jobs.filterKeys { it in sources }.map { (src, fn) ->
             async {
-                val results = runCatching { fn() }.getOrDefault(emptyList())
+                val results = runCatching { withContext(Dispatchers.IO) { fn() } }.getOrDefault(emptyList())
                     .filter { r ->
                         com.ahcrazy.video2.core.util.MagicDuration.inBounds(r.durationSec, query) &&
                             query.excluded.none { ex -> r.title.contains(ex, true) } &&

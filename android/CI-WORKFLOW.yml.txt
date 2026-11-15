@@ -23,25 +23,35 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          log-accepted-android-sdk-licenses: false
+          packages: "platform-tools platforms;android-34 build-tools;34.0.0"
 
-      - name: Install SDK packages
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
 
       - name: Unit tests
         run: |
-          chmod +x gradlew || true
-          (test -f gradlew && ./gradlew :app:testDebugUnitTest --stacktrace) || \
-          gradle :app:testDebugUnitTest --stacktrace
-        continue-on-error: true
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew :app:testDebugUnitTest --stacktrace
+          else
+            gradle :app:testDebugUnitTest --stacktrace
+          fi
 
       - name: Build debug APK
         run: |
-          if [ -f gradlew ]; then ./gradlew :app:assembleDebug --stacktrace;
-          else gradle :app:assembleDebug --stacktrace; fi
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew :app:assembleDebug --stacktrace
+          else
+            gradle :app:assembleDebug --stacktrace
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
