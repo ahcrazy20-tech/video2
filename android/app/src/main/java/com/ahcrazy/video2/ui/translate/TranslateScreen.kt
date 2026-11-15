@@ -13,7 +13,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Captions
+import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -83,7 +83,7 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
                 ).forEach { Text(it, fontSize = 11.sp, color = V2.TextDim, modifier = Modifier.padding(top = 4.dp)) }
             }
         }
-        if (jobs.isEmpty()) EmptyState(Icons.Filled.Captions,
+        if (jobs.isEmpty()) EmptyState(Icons.Filled.ClosedCaption,
             if (ar) "مفيش مهام ترجمة" else "No translation jobs",
             if (ar) "دوس + واختار فيديو من المكتبة نبدأ بيه" else "Tap + and pick a library video")
         LazyColumn {
@@ -193,7 +193,7 @@ fun SubtitleReviewScreen(job: TranslationJob, ar: Boolean, onBack: () -> Unit) {
                 TextButton(onClick = { mode = k }) { Text(label, color = if (mode == k) V2.Accent else V2.TextDim) }
             }
         }
-        if (cues.isEmpty()) EmptyState(Icons.Filled.Captions, if (ar) "مفيش نصوص محفوظة" else "No saved subtitles",
+        if (cues.isEmpty()) EmptyState(Icons.Filled.ClosedCaption, if (ar) "مفيش نصوص محفوظة" else "No saved subtitles",
             if (ar) "ابدأ مهمة ترجمة من تبويب الترجمة." else "Start a job from the Translate tab.")
         LazyColumn {
             items(cues) { c ->

@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Captions
+import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Lock
@@ -85,7 +85,7 @@ fun Video2Root() {
     val tabs = listOf(
         TabDef(0, "tab.browser", Icons.Filled.Explore),
         TabDef(1, "tab.library", Icons.Filled.PlayCircle),
-        TabDef(2, "tab.translate", Icons.Filled.Captions),
+        TabDef(2, "tab.translate", Icons.Filled.ClosedCaption),
         TabDef(3, "tab.downloads", Icons.Filled.CloudDownload),
         TabDef(4, "tab.settings", Icons.Filled.Settings),
         TabDef(5, "tab.magic", Icons.Filled.AutoAwesome)
@@ -131,7 +131,7 @@ fun Video2Root() {
                     }
                     // Custom 6-tab bar — never a system "More" tab (same fix as iOS)
                     Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(62.dp)
-                        .background(V2.Card.copy(alpha = .98f)).padding(horizontal = 2.dp, vertical = 6.dp)) {
+                        .background(V2.Card.copy(alpha = 0.98f)).padding(horizontal = 2.dp, vertical = 6.dp)) {
                         tabs.forEach { def ->
                             val active = tab == def.index
                             Column(Modifier.weight(1f).clip(RoundedCornerShape(10.dp))

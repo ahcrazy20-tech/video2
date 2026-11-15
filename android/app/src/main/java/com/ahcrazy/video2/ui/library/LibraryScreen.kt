@@ -23,7 +23,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Captions
+import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
@@ -213,7 +213,7 @@ private fun VideoCard(v: SavedVideo, ar: Boolean, onPlay: () -> Unit, onTranslat
             Box(Modifier.fillMaxWidth().height(86.dp).clip(RoundedCornerShape(12.dp)).background(V2.CardSoft).clickable(onClick = onPlay)) {
                 if (v.thumbnailPath != null) AsyncImage(File(v.thumbnailPath), null, Modifier.fillMaxSize())
                 Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.align(Alignment.Center).size(34.dp))
-                Box(Modifier.align(Alignment.BottomStart).padding(6.dp).clip(RoundedCornerShape(6.dp)).background(Color.Black.copy(alpha = .65f)).padding(horizontal = 6.dp, vertical = 2.dp)) {
+                Box(Modifier.align(Alignment.BottomStart).padding(6.dp).clip(RoundedCornerShape(6.dp)).background(Color.Black.copy(alpha = 0.65f)).padding(horizontal = 6.dp, vertical = 2.dp)) {
                     Text(MagicDuration.format(v.durationSec), fontSize = 10.sp, color = Color.White)
                 }
             }
@@ -228,7 +228,7 @@ private fun VideoCard(v: SavedVideo, ar: Boolean, onPlay: () -> Unit, onTranslat
                 IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, null, tint = V2.TextDim) }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(text = { Text(if (ar) "تشغيل" else "Play") }, onClick = { menu = false; onPlay() })
-                    DropdownMenuItem(text = { Text(if (ar) "ترجمة الفيديو" else "Translate video") }, leadingIcon = { Icon(Icons.Filled.Captions, null) }, onClick = { menu = false; onTranslate() })
+                    DropdownMenuItem(text = { Text(if (ar) "ترجمة الفيديو" else "Translate video") }, leadingIcon = { Icon(Icons.Filled.ClosedCaption, null) }, onClick = { menu = false; onTranslate() })
                     DropdownMenuItem(text = { Text(if (ar) "مراجعة وتعديل الترجمة" else "Review & edit subtitles") }, onClick = { menu = false; onReview() })
                     DropdownMenuItem(text = { Text(if (v.hasDubbedAudio) "إعادة الدبلجة" else "دبلجة عربية") }, leadingIcon = { Icon(Icons.Filled.Waves, null) }, onClick = { menu = false; onDub() })
                     DropdownMenuItem(text = { Text(if (ar) "مشاركة" else "Share") }, onClick = { menu = false; onShare() })

@@ -27,7 +27,7 @@ data class MagicQuery(
             if (s.isEmpty()) return null
             if (s.contains(":")) {
                 val p = s.split(":").map { it.toDoubleOrNull() ?: return null }
-                return when (p.size) { 3 -> p[0] * 3600 + p[1] * 60 + p[2]; 2 -> p[0] * 60 + p[1]; else -> null }
+                return when (p.size) { 3 -> p[0] * 3600 + p[1] * 60 + p[2]; 2 -> p[0] * 3600 + p[1] * 60; else -> null }
             }
             var total = 0.0; var matched = false
             Regex("""(\d+(?:\.\d+)?)\s*(h|س|ساعة|hr)""").find(s)?.let { total += it.groupValues[1].toDouble() * 3600; matched = true }
