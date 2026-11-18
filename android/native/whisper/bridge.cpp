@@ -5,12 +5,15 @@
 #include <memory>
 #include <vector>
 
-#if defined(__ANDROID__) && defined(__aarch64__) && !defined(VIDEO2_WHISPER_FP16)
+#if defined(__ANDROID__) && defined(__aarch64__) && !defined(VIDEO2_WHISPER_FP16) && !defined(VIDEO2_WHISPER_VULKAN)
 #include <asm/hwcap.h>
 #include <sys/auxv.h>
 #endif
 
-#ifdef VIDEO2_WHISPER_FP16
+#if defined(VIDEO2_WHISPER_VULKAN)
+#define WHISPER_JNI(name) Java_com_ahcrazy_video2_data_offline_WhisperVulkanJni_##name
+extern "C" bool video2_whisper_uses_vulkan(const whisper_context * ctx);
+#elif defined(VIDEO2_WHISPER_FP16)
 #define WHISPER_JNI(name) Java_com_ahcrazy_video2_data_offline_WhisperFp16Jni_##name
 #else
 #define WHISPER_JNI(name) Java_com_ahcrazy_video2_data_offline_WhisperJni_##name
@@ -35,7 +38,7 @@ struct DecodeProgress {
 };
 } // namespace
 
-#ifndef VIDEO2_WHISPER_FP16
+#if !defined(VIDEO2_WHISPER_FP16) && !defined(VIDEO2_WHISPER_VULKAN)
 extern "C" JNIEXPORT jboolean JNICALL WHISPER_JNI(supportsFp16)(JNIEnv *, jobject) {
 #if defined(__ANDROID__) && defined(__aarch64__)
     constexpr auto required = HWCAP_FPHP | HWCAP_ASIMDHP;
@@ -65,11 +68,18 @@ extern "C" JNIEXPORT void JNICALL WHISPER_JNI(load)(JNIEnv * env, jobject, jlong
         s.threads = threads;
         whisper_log_set(quiet, nullptr);
         auto params = whisper_context_default_params();
+#ifdef VIDEO2_WHISPER_VULKAN
+        params.use_gpu = true;
+#else
         params.use_gpu = false;
+#endif
         params.flash_attn = true;
         s.engine.reset(whisper_init_from_file_with_params(video2::utf8(env, path, 4096).c_str(), params));
         s.check();
         if (!s.engine) throw std::runtime_error("Whisper could not load its model");
+#ifdef VIDEO2_WHISPER_VULKAN
+        if (!video2_whisper_uses_vulkan(s.engine.get())) throw std::runtime_error("Whisper did not initialize a Vulkan device");
+#endif
         return true;
     });
 }

@@ -98,7 +98,7 @@ val verifyOfflineDebugApk by tasks.registering {
             .orEmpty().filter { it.extension == "apk" }
         check(apks.isNotEmpty()) { "No debug APK was produced" }
         for (apk in apks) ZipFile(apk).use { zip ->
-            for (engine in listOf("whisper", "whisper_fp16", "hymt", "hymt_dotprod")) {
+            for (engine in listOf("whisper", "whisper_fp16", "whisper_vulkan", "hymt", "hymt_dotprod")) {
                 check(zip.getEntry("lib/arm64-v8a/libvideo2_$engine.so") != null) {
                     "${apk.name} is missing the on-device $engine runtime"
                 }
