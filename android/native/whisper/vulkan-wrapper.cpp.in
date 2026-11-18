@@ -1,0 +1,2 @@
+#include "@VIDEO2_SOURCES@/src/whisper.cpp"
+#include "@CMAKE_CURRENT_SOURCE_DIR@/vulkan-probe.inc"

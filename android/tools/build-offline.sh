@@ -2,6 +2,17 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 
+# Give CI a small actionable annotation even when the zipped job log is inaccessible.
+if [[ "${GITHUB_ACTIONS:-}" == true && "${VIDEO2_NATIVE_DIAGNOSTICS:-}" != 1 ]]; then
+  log=$(mktemp)
+  trap 'rm -f "$log"' EXIT
+  if VIDEO2_NATIVE_DIAGNOSTICS=1 bash "$0" "$@" 2>&1 | tee "$log"; then exit 0; fi
+  detail=$( { grep -iE -A 6 'CMake Error|fatal error:|error:|failed to compile|^FAILED:' "$log" || tail -40 "$log"; } | tail -50 | head -c 2300)
+  detail=${detail//%/%25}; detail=${detail//$'\r'/%0D}; detail=${detail//$'\n'/%0A}
+  printf '::error title=Video2 native build::%s\n' "$detail"
+  exit 1
+fi
+
 # Usage: build-offline.sh android <work-dir> <jniLibs-dir> <Android SDK>
 #        build-offline.sh host    <work-dir> <lib-dir>     <JDK JNI include dir>
 mode=$1
@@ -74,7 +85,9 @@ build() {
     if [[ "$variant" == whisper_vulkan ]]; then
       vulkan_tools
       variant_args+=(-DVIDEO2_WHISPER_VULKAN=ON "-DVulkan_GLSLC_EXECUTABLE=$glslc"
-                     "-DVulkan_INCLUDE_DIR=$vulkan_headers/include" "-DVIDEO2_SPIRV_INCLUDE=$spirv_source/include"
+                     "-DVulkan_INCLUDE_DIR=$vulkan_headers/include"
+                     "-DVulkan_LIBRARY=$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/26/libvulkan.so"
+                     "-DVIDEO2_SPIRV_INCLUDE=$spirv_source/include"
                      "-DSPIRV-Headers_DIR=$spirv_prefix/share/cmake/SPIRV-Headers")
     else
       variant_args+=(-DVIDEO2_WHISPER_VULKAN=OFF)

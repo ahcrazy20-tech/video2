@@ -7,7 +7,7 @@ set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 if((VIDEO2_WHISPER_FP16 OR VIDEO2_WHISPER_VULKAN) AND NOT ANDROID)
     message(FATAL_ERROR "The hardware-checked variants are Android-only")
 endif()
-set(GGML_VULKAN ${VIDEO2_WHISPER_VULKAN} CACHE BOOL "" FORCE)
+set(GGML_VULKAN "${VIDEO2_WHISPER_VULKAN}" CACHE BOOL "" FORCE)
 if(VIDEO2_WHISPER_FP16)
     # Compile only the ggml CPU backend for the FP16 extension. The generic
     # sibling probes Linux HWCAP before ART can load this library.
@@ -19,9 +19,7 @@ if(VIDEO2_WHISPER_VULKAN)
     # Compile the state probe in the same translation unit as the opaque Whisper state.
     # Work on our build tree; do not edit the SHA-pinned source archive.
     set(wrapped "${CMAKE_CURRENT_BINARY_DIR}/whisper-vulkan.cpp")
-    file(GENERATE OUTPUT "${wrapped}" CONTENT "#include \"${VIDEO2_SOURCES}/src/whisper.cpp\"
-#include \"${CMAKE_CURRENT_SOURCE_DIR}/vulkan-probe.inc\"
-")
+    configure_file(vulkan-wrapper.cpp.in "${wrapped}" @ONLY)
     get_target_property(whisper_src whisper SOURCES)
     if(NOT "whisper.cpp" IN_LIST whisper_src)
         message(FATAL_ERROR "Pinned Whisper layout changed; audit the Vulkan state probe")
