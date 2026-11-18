@@ -31,7 +31,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], qualifiers = "w360dp-h800dp")
+@Config(sdk = [34], qualifiers = "w360dp-h800dp", application = Video2Application::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class BrowserNavigationTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
