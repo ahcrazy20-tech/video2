@@ -39,7 +39,9 @@ if (System.getenv("GITHUB_ACTIONS") == "true") {
                     (0 until cases.length).mapNotNull { i ->
                         val test = cases.item(i) as org.w3c.dom.Element
                         val issue = test.getElementsByTagName("failure").item(0) as? org.w3c.dom.Element ?: return@mapNotNull null
-                        val detail = issue.textContent.lineSequence().filter { it.isNotBlank() }.take(12).joinToString("\n")
+                        val lines = issue.textContent.lines().filter { it.isNotBlank() }
+                        val detail = (lines.take(10) + lines.filter { it.contains("at com.ahcrazy.video2.") }.take(3))
+                            .distinct().joinToString("\n")
                         "${test.getAttribute("classname")}.${test.getAttribute("name")}: ${issue.getAttribute("message")}\n$detail"
                     }
                 }.getOrDefault(emptyList()) }

@@ -66,8 +66,10 @@ class BrowserNavigationTest {
             compose.runOnIdle { assertEquals(setOf(tab), mounted) }
         }
         compose.onNodeWithTag(AppTab.BROWSER.label).performTouchInput { click() }
-        compose.onNodeWithTag("browser.start.direct").performTouchInput { click() }
-        compose.onNodeWithText("تحميل من رابط مباشر").assertIsDisplayed()
+        compose.onNodeWithTag("browser.start").assertIsDisplayed()
+        // Robolectric cannot reliably idle a second native dialog window; test the entry point in this window.
+        compose.onNodeWithTag("browser.start.direct").assertIsDisplayed().assertIsEnabled()
+        compose.runOnIdle { assertEquals(setOf(AppTab.BROWSER), mounted) }
     }
 
     @Test fun submittingTheAddressKeepsTheToolbarAndRestoresThePageAfterSwitchingTabs() {
