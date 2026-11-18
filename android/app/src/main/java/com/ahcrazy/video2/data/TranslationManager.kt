@@ -27,6 +27,8 @@ import com.ahcrazy.video2.data.offline.OfflineWork
 import com.ahcrazy.video2.data.offline.OfflineWorkKind
 import com.ahcrazy.video2.data.offline.RETIRED_TRANSLATOR_ID
 import com.ahcrazy.video2.data.offline.atomicText
+import com.ahcrazy.video2.data.offline.hasCheckpoint
+import com.ahcrazy.video2.data.offline.readCheckpoint
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -59,7 +61,7 @@ class TranslationManager internal constructor(
     private val chat by lazy { ChatClient() }
     private val translator by lazy { TranslateClient(settings, chat) }
     private val stt by lazy { SttClient(settings) }
-    private val offline = OfflinePipeline(offlineModels::path)
+    private val offline = OfflinePipeline(offlineModels::path, checkTranslationMemory = offlineModels::checkTranslationMemory)
     private val cloudWorkers = mutableMapOf<String, Job>()
 
     private val _jobs = MutableStateFlow<List<TranslationJob>>(emptyList())
@@ -76,11 +78,13 @@ class TranslationManager internal constructor(
         return job
     }
 
-    @Synchronized internal fun startOffline(videoId: String, source: SubLang, target: SubLang, speech: OfflineModel): Boolean {
+    @Synchronized internal fun startOffline(videoId: String, source: SubLang, target: SubLang, speech: OfflineModel,
+                                             fastSpeech: Boolean = false): Boolean {
         if (offlineWork.status.value != null || speech !in OfflineModel.speechModels || target == SubLang.AUTO) return false
         val video = library.byId(videoId) ?: return false
         val job = TranslationJob(UUID.randomUUID().toString(), videoId, video.title, source.code, target.code,
-            mode = TranslationMode.ON_DEVICE, offlineModel = OfflineModel.HYMT_Q4.id, offlineSpeechModel = speech.id)
+            mode = TranslationMode.ON_DEVICE, offlineModel = OfflineModel.HYMT_Q4.id, offlineSpeechModel = speech.id,
+            offlineFastSpeech = fastSpeech && speech == OfflineModel.WHISPER_MEDIUM)
         add(job)
         startOffline(job)
         return true
@@ -125,16 +129,29 @@ class TranslationManager internal constructor(
         }
         val speech = OfflineModel.speechForJob(job.offlineSpeechModel)
         val target = SubLang.of(job.targetLang)
-        if (job.offlineModel != OfflineModel.HYMT_Q4.id || speech == null || target == SubLang.AUTO) {
+        if (job.offlineModel != OfflineModel.HYMT_Q4.id || speech == null || target == SubLang.AUTO ||
+            (job.offlineFastSpeech && speech != OfflineModel.WHISPER_MEDIUM)) {
             failOffline(job.id, OfflineIssue.NOT_SUPPORTED)
             return
         }
+        var savedProgress = job.progress
+        var savedCount = job.cueCount
         patch(job.id) { it.copy(phase = TranslationPhase.PREPARING, offlineIssue = null, message = null) }
         try {
             offlineWork.submit(OfflineWorkKind.SUBTITLES, job.id, onFinish = { error ->
-                if (error != null) {
-                    if (OfflineWork.cancelled(error)) patch(job.id) { it.copy(phase = TranslationPhase.CANCELLED) }
-                    else failOffline(job.id, (error as? OfflineFailure)?.issue ?: OfflineIssue.SAVE)
+                if (error != null) patch(job.id) {
+                    val issue = when {
+                        OfflineWork.cancelled(error) -> null
+                        error is OfflineFailure -> error.issue
+                        error is OutOfMemoryError -> OfflineIssue.MEMORY
+                        else -> OfflineIssue.SAVE
+                    }
+                    val phase = when (issue) {
+                        null -> TranslationPhase.CANCELLED
+                        OfflineIssue.MEMORY, OfflineIssue.LARGE_MODEL_MEMORY, OfflineIssue.TRANSLATOR_MEMORY -> TranslationPhase.PAUSED
+                        else -> TranslationPhase.FAILED
+                    }
+                    it.copy(phase = phase, offlineIssue = issue?.name, progress = savedProgress, cueCount = savedCount)
                 }
             }) { signal, notify ->
                 val dir = File(root, job.id).apply { mkdirs() }
@@ -143,12 +160,16 @@ class TranslationManager internal constructor(
                 if (video.kind == MediaKind.HLS || video.kind == MediaKind.DASH || input.extension.lowercase() in setOf("m3u8", "mpd")) {
                     throw OfflineFailure(OfflineIssue.AUDIO)
                 }
-                // Don't spend time decoding an entire video if a required model isn't installed.
-                if ((!File(dir, "cues-original.json").exists() && !offlineModels.ready(speech)) || !offlineModels.ready(OfflineModel.HYMT_Q4)) {
+                val source = SubLang.of(job.sourceLang)
+                // Preflight fresh jobs only. Resumes require just the runtime for unfinished work.
+                if (!hasCheckpoint(File(dir, "cues-original.json")) && !File(dir, "audio-16k.pcm").isFile &&
+                    (!offlineModels.ready(speech) || (source != target && !offlineModels.ready(OfflineModel.HYMT_Q4)))) {
                     throw OfflineFailure(OfflineIssue.MISSING_MODELS)
                 }
-                val cues = offline.run(dir, input, SubLang.of(job.sourceLang), target, speech, signal) { phase, progress, count ->
-                    patch(job.id, progressOnly = true) { it.copy(phase = phase, progress = progress, cueCount = count) }
+                val cues = offline.run(dir, input, source, target, speech, signal, job.offlineFastSpeech) { phase, progress, count, checkpoint ->
+                    if (checkpoint) { savedProgress = progress; savedCount = count }
+                    // Persist the committed boundary, not partial progress from a running decoder.
+                    patch(job.id, progressOnly = !checkpoint) { it.copy(phase = phase, progress = progress, cueCount = count) }
                     notify(progress)
                 }
                 signal.throwIfCanceled()
@@ -342,14 +363,15 @@ class TranslationManager internal constructor(
                 put("mode", j.mode.name); put("offlineModel", j.offlineModel ?: JSONObject.NULL)
                 put("offlineIssue", j.offlineIssue ?: JSONObject.NULL)
                 put("offlineSpeechModel", j.offlineSpeechModel ?: JSONObject.NULL)
+                put("offlineFastSpeech", j.offlineFastSpeech)
             }) }
             atomicText(jobsFile, arr.toString())
         }
     }
     private fun loadJobs() {
-        if (!jobsFile.exists()) return
+        if (!hasCheckpoint(jobsFile)) return
         runCatching {
-            val arr = JSONArray(jobsFile.readText())
+            val arr = JSONArray(readCheckpoint(jobsFile))
             _jobs.value = (0 until arr.length()).map { val o = arr.getJSONObject(it)
                 TranslationJob(o.getString("id"), o.getString("videoId"), o.getString("videoTitle"),
                     o.optString("sourceLang", "auto"), o.optString("targetLang", "ar"),
@@ -361,7 +383,8 @@ class TranslationManager internal constructor(
                     mode = TranslationMode.fromStored(if (o.has("mode")) o.optString("mode", "unknown") else null),
                     offlineModel = o.optString("offlineModel", "").takeIf { !o.isNull("offlineModel") && it.isNotBlank() },
                     offlineIssue = o.optString("offlineIssue", "").takeIf { !o.isNull("offlineIssue") && it.isNotBlank() },
-                    offlineSpeechModel = o.optString("offlineSpeechModel", "").takeUnless { o.isNull("offlineSpeechModel") })
+                    offlineSpeechModel = o.optString("offlineSpeechModel", "").takeUnless { o.isNull("offlineSpeechModel") },
+                    offlineFastSpeech = o.optBoolean("offlineFastSpeech"))
             }
         }
     }

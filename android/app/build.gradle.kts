@@ -10,6 +10,11 @@ plugins {
 }
 
 val offlineLibs = layout.buildDirectory.dir("generated/offline/jniLibs")
+// A local/release operator can use the original signing key without putting it in the repo.
+// Unconfigured CI still uses its own debug signing key; that is not an upgrade guarantee.
+val signingStore = providers.environmentVariable("VIDEO2_SIGNING_STORE").orNull
+fun signingSecret(name: String): String = providers.environmentVariable(name).orNull?.takeIf { it.isNotBlank() }
+    ?: error("$name is required with VIDEO2_SIGNING_STORE")
 
 android {
     sourceSets.getByName("main").jniLibs.srcDir(offlineLibs)
@@ -21,10 +26,17 @@ android {
         applicationId = "com.ahcrazy.video2"
         minSdk = 26
         targetSdk = 34
-        versionCode = 11
-        versionName = "1.8"
+        versionCode = 12
+        versionName = "1.9"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
+    }
+
+    if (signingStore != null) signingConfigs.getByName("debug").apply {
+        storeFile = file(signingStore).also { check(it.isFile) { "VIDEO2_SIGNING_STORE is not a file" } }
+        storePassword = signingSecret("VIDEO2_SIGNING_STORE_PASSWORD")
+        keyAlias = signingSecret("VIDEO2_SIGNING_KEY_ALIAS")
+        keyPassword = signingSecret("VIDEO2_SIGNING_KEY_PASSWORD")
     }
 
     buildTypes {
@@ -78,7 +90,7 @@ tasks.named("preBuild") { dependsOn(compileOfflineRuntimes) }
 tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }
     .configureEach { dependsOn(compileOfflineRuntimes) }
 
-// The existing APK workflow verifies that the assembled debug APK really includes both engines.
+// The existing APK workflow verifies that the assembled debug APK includes the baseline and accelerated engines.
 val verifyOfflineDebugApk by tasks.registering {
     dependsOn("packageDebug")
     doLast {
@@ -86,7 +98,7 @@ val verifyOfflineDebugApk by tasks.registering {
             .orEmpty().filter { it.extension == "apk" }
         check(apks.isNotEmpty()) { "No debug APK was produced" }
         for (apk in apks) ZipFile(apk).use { zip ->
-            for (engine in listOf("whisper", "hymt")) {
+            for (engine in listOf("whisper", "whisper_fp16", "hymt")) {
                 check(zip.getEntry("lib/arm64-v8a/libvideo2_$engine.so") != null) {
                     "${apk.name} is missing the on-device $engine runtime"
                 }

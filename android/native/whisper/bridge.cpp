@@ -5,7 +5,16 @@
 #include <memory>
 #include <vector>
 
+#if defined(__ANDROID__) && defined(__aarch64__) && !defined(VIDEO2_WHISPER_FP16)
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+#endif
+
+#ifdef VIDEO2_WHISPER_FP16
+#define WHISPER_JNI(name) Java_com_ahcrazy_video2_data_offline_WhisperFp16Jni_##name
+#else
 #define WHISPER_JNI(name) Java_com_ahcrazy_video2_data_offline_WhisperJni_##name
+#endif
 
 namespace {
 struct Whisper : video2::Cancellable {
@@ -13,7 +22,29 @@ struct Whisper : video2::Cancellable {
     int threads = 4;
 };
 void quiet(ggml_log_level, const char *, void *) {}
+
+// whisper_full invokes the progress callback on the calling thread, not a ggml worker.
+struct DecodeProgress {
+    JNIEnv * env;
+    jobject callback;
+    jmethodID update;
+    static void report(whisper_context *, whisper_state *, int percent, void * opaque) {
+        auto & p = *static_cast<DecodeProgress *>(opaque);
+        if (!p.env->ExceptionCheck()) p.env->CallVoidMethod(p.callback, p.update, static_cast<jint>(percent));
+    }
+};
 } // namespace
+
+#ifndef VIDEO2_WHISPER_FP16
+extern "C" JNIEXPORT jboolean JNICALL WHISPER_JNI(supportsFp16)(JNIEnv *, jobject) {
+#if defined(__ANDROID__) && defined(__aarch64__)
+    constexpr auto required = HWCAP_FPHP | HWCAP_ASIMDHP;
+    return (getauxval(AT_HWCAP) & required) == required ? JNI_TRUE : JNI_FALSE;
+#else
+    return JNI_FALSE;
+#endif
+}
+#endif
 
 extern "C" JNIEXPORT jlong JNICALL WHISPER_JNI(create)(JNIEnv * env, jobject) {
     return video2::guarded(env, [] { return reinterpret_cast<jlong>(new Whisper()); });
@@ -44,7 +75,8 @@ extern "C" JNIEXPORT void JNICALL WHISPER_JNI(load)(JNIEnv * env, jobject, jlong
 }
 
 extern "C" JNIEXPORT jobjectArray JNICALL WHISPER_JNI(decode)(
-        JNIEnv * env, jobject, jlong handle, jshortArray pcm, jbyteArray source, jbyteArray previous) {
+        JNIEnv * env, jobject, jlong handle, jshortArray pcm, jbyteArray source, jbyteArray previous,
+        jboolean fast, jobject progress) {
     return video2::guarded(env, [&]() -> jobjectArray {
         auto & s = video2::session<Whisper>(handle);
         s.check();
@@ -68,11 +100,22 @@ extern "C" JNIEXPORT jobjectArray JNICALL WHISPER_JNI(decode)(
         p.print_progress = false;
         p.print_timestamps = false;
         p.suppress_nst = true;
-        p.beam_search.beam_size = 5;
-        p.greedy.best_of = 5; // low-confidence temperature fallback
+        p.beam_search.beam_size = fast ? 2 : 5;
+        p.greedy.best_of = 5; // Keep the existing low-confidence temperature fallback in both modes.
+        DecodeProgress update{env, progress, nullptr};
+        if (progress) {
+            const auto cls = env->GetObjectClass(progress);
+            if (!cls) return nullptr;
+            update.update = env->GetMethodID(cls, "update", "(I)V");
+            env->DeleteLocalRef(cls);
+            if (!update.update) return nullptr;
+            p.progress_callback = DecodeProgress::report;
+            p.progress_callback_user_data = &update;
+        }
         p.abort_callback = video2::Cancellable::abort<Whisper>;
         p.abort_callback_user_data = &s;
         const int result = whisper_full(s.engine.get(), p, samples.data(), static_cast<int>(samples.size()));
+        if (env->ExceptionCheck()) return nullptr;
         s.check();
         if (result != 0) throw std::runtime_error("Whisper could not transcribe this audio window");
 

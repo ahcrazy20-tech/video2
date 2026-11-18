@@ -18,6 +18,7 @@ import com.ahcrazy.video2.data.offline.*
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -198,11 +199,16 @@ class OfflineSubtitleTest {
         var session: String? = null
         var decodeCalls = 0
         var translateCalls = 0
+        val transient = mutableListOf<Double>()
         val loader = object : LocalEngines {
             override fun speech(model: File, signal: CancellationSignal): LocalSpeech {
                 assertNull(session); session = "speech"
                 return object : LocalSpeech {
-                    override fun decode(pcm: ShortArray, language: String, prompt: String): SpeechResult {
+                    override fun decode(pcm: ShortArray, language: String, prompt: String,
+                                        fast: Boolean, progress: WhisperProgress): SpeechResult {
+                        assertTrue(fast)
+                        progress.update(30)
+                        progress.update(20) // native retry/regression is not reported to the UI
                         decodeCalls++
                         return when (decodeCalls) {
                             1 -> { assertEquals("auto", language); SpeechResult("en", listOf(SpeechSegment(100, 250, "Good morning"))) }
@@ -241,7 +247,10 @@ class OfflineSubtitleTest {
             }
             progress(1.0)
         }
-        fun run() = pipeline.run(dir, input, SubLang.AUTO, SubLang.AR, OfflineModel.WHISPER_MEDIUM, CancellationSignal()) { _, _, _ -> }
+        fun run() = pipeline.run(dir, input, SubLang.AUTO, SubLang.AR, OfflineModel.WHISPER_MEDIUM,
+            CancellationSignal(), fastSpeech = true) { phase, p, _, checkpoint ->
+                if (phase == TranslationPhase.TRANSCRIBING && !checkpoint) transient += p
+            }
         assertThrows(OperationCanceledException::class.java) { run() }
         assertEquals(0, translateCalls)
         assertNull(session)
@@ -249,6 +258,9 @@ class OfflineSubtitleTest {
         assertEquals(3, decodeCalls)
         val cues = run()
         assertEquals(1, exports)
+        assertEquals(3, transient.size)
+        assertEquals(0.15 + 0.44 * 0.3 / 2, transient[0], 0.0001)
+        assertEquals(transient[1], transient[2], 0.0001)
         assertEquals(listOf(OfflineModel.WHISPER_MEDIUM, OfflineModel.WHISPER_MEDIUM,
             OfflineModel.HYMT_Q4, OfflineModel.HYMT_Q4), modelLoads)
         assertEquals(listOf("صباح الخير", "مع السلامة"), cues.map { it.translated })
@@ -259,6 +271,88 @@ class OfflineSubtitleTest {
         assertFalse(File(dir, "audio-16k.pcm").exists())
         input.appendText("new file content")
         assertEquals(OfflineIssue.VIDEO, assertThrows(OfflineFailure::class.java) { run() }.issue)
+    }
+
+    @Test fun loadsMmapTranslatorWithoutRequiringAllWeightsInFreeRamButHonorsAndroidPressure() {
+        val q4 = OfflineModel.HYMT_Q4
+        val phone = 11_440 * MIB
+        val androidThreshold = 640 * MIB
+        val ramBeforeTranslation = 4_600 * MIB // would fail the old 5000 MiB gate
+        assertTrue(canOpenModel(q4, phone, ramBeforeTranslation, androidThreshold, false))
+        assertFalse(canOpenModel(q4, phone, ramBeforeTranslation, androidThreshold, true))
+        assertFalse(canOpenModel(q4, phone, 3_000 * MIB, androidThreshold, false))
+        assertFalse(canOpenModel(q4, 7_300 * MIB, 3_500 * MIB, androidThreshold, false))
+        assertFalse(canOpenModel(q4, phone, 4_800 * MIB, 4_600 * MIB, false))
+        assertFalse(translationUnderPressure(1_500 * MIB, androidThreshold, false))
+        assertTrue(translationUnderPressure(800 * MIB, androidThreshold, false))
+        assertTrue(translationUnderPressure(1_500 * MIB, androidThreshold, true))
+    }
+
+    @Test fun resumesEighteenTranscriptAt62PercentAndDoesNotRepeatCompletedBatchesOrExportInference() {
+        val dir = tmp.newFolder()
+        val input = tmp.newFile().apply { writeText("old video container") }
+        val cues = listOf(SubCue(0, 1.0, 2.0, "First line"), SubCue(1, 15.0, 16.0, "Second line"))
+        File(dir, "offline-source.json").writeText(JSONObject().put("path", input.absolutePath).put("size", input.length())
+            .put("mtime", input.lastModified()).toString())
+        File(dir, "offline-language.txt").writeText("en")
+        // Android AtomicFile recovery is needed when only the .bak from an older write survives.
+        File(dir, "cues-original.json.bak").writeText(CueJson.encode(cues).toString())
+        var gate = true
+        var underPressure = false
+        var pauseAfterFirst = true
+        var sessions = 0
+        var closed = 0
+        val prompts = mutableListOf<String>()
+        val pipeline = OfflinePipeline({ model ->
+            assertEquals(OfflineModel.HYMT_Q4, model)
+            if (gate) throw OfflineFailure(OfflineIssue.TRANSLATOR_MEMORY)
+            input
+        }, object : LocalEngines {
+            override fun speech(model: File, signal: CancellationSignal): LocalSpeech = error("Whisper must not load again")
+            override fun translator(model: File, signal: CancellationSignal): LocalTranslator {
+                sessions++
+                return object : LocalTranslator {
+                    override fun close() { closed++ }
+                    override fun translate(prompt: String, seed: Int): String {
+                        prompts += prompt.substringAfter("[Source Text]\n")
+                        if (pauseAfterFirst) underPressure = true
+                        return if (prompt.endsWith("First line")) "الأول" else "الثاني"
+                    }
+                }
+            }
+        }, checkTranslationMemory = { if (underPressure) throw OfflineFailure(OfflineIssue.TRANSLATOR_MEMORY) }) { _, _, _, _ ->
+            error("PCM must not be decoded again")
+        }
+        var savedProgress = 0.0
+        fun run() = pipeline.run(dir, input, SubLang.AUTO, SubLang.AR, OfflineModel.WHISPER_MEDIUM, CancellationSignal()) { phase, p, count, saved ->
+            assertEquals(TranslationPhase.TRANSLATING, phase)
+            assertTrue(saved)
+            assertEquals(2, count)
+            savedProgress = p
+        }
+        assertEquals(OfflineIssue.TRANSLATOR_MEMORY, assertThrows(OfflineFailure::class.java) { run() }.issue)
+        assertEquals(0.62, savedProgress, 0.0001)
+        assertEquals(0, sessions)
+        assertEquals(cues, CueJson.read(File(dir, "cues-original.json")))
+        gate = false
+        assertEquals(OfflineIssue.TRANSLATOR_MEMORY, assertThrows(OfflineFailure::class.java) { run() }.issue)
+        assertEquals(1, sessions)
+        assertEquals(1, closed)
+        assertEquals(listOf("First line"), prompts)
+        assertEquals(0.79, savedProgress, 0.0001)
+        pauseAfterFirst = false
+        underPressure = false
+        val done = run()
+        assertEquals(listOf("First line", "Second line"), prompts)
+        assertEquals(listOf("الأول", "الثاني"), done.map { it.translated })
+        assertEquals(cues.map { it.startSec to it.endSec }, done.map { it.startSec to it.endSec })
+        assertEquals(2, sessions)
+        assertEquals(2, closed)
+        CueJson.write(File(dir, "cues-translated-ar.json"), done)
+        OfflinePipeline.translationCheckpoint(dir, SubLang.AR).deleteRecursively()
+        gate = true
+        assertEquals(done, run())
+        assertEquals(2, sessions)
     }
 
     @Test fun pinsModelsAndRejectsAnInvalidRangeBeforeAppending() {
@@ -326,7 +420,7 @@ class OfflineSubtitleTest {
             [{"id":"offline","videoId":"test-video","videoTitle":"Title","mode":"ON_DEVICE","offlineModel":"removed","phase":"TRANSCRIBING"},
              {"id":"future","videoId":"test-video","videoTitle":"Title","mode":"FUTURE_MODE","phase":"SAVING"},
              {"id":"retired","videoId":"test-video","videoTitle":"Title","mode":"ON_DEVICE","offlineModel":"hymt2-7b-q6","phase":"PAUSED"},
-             {"id":"medium","videoId":"test-video","videoTitle":"Title","mode":"ON_DEVICE","offlineModel":"hymt2-7b-q4","offlineSpeechModel":"whisper-medium","phase":"DONE"},
+             {"id":"medium","videoId":"test-video","videoTitle":"Title","mode":"ON_DEVICE","offlineModel":"hymt2-7b-q4","offlineSpeechModel":"whisper-medium","offlineFastSpeech":true,"phase":"DONE"},
              {"id":"legacy","videoId":"test-video","videoTitle":"Title","phase":"DONE"}]
         """.trimIndent())
         val manager = TranslationManager(app, library, AppSettings(app), models, work)
@@ -341,6 +435,8 @@ class OfflineSubtitleTest {
         val reloaded = TranslationManager(app, library, AppSettings(app), models, work)
         assertEquals(OfflineModel.WHISPER_MEDIUM.id, reloaded.jobs.value[3].offlineSpeechModel)
         assertEquals(OfflineModel.HYMT_Q4.id, reloaded.jobs.value[3].offlineModel)
+        assertTrue(reloaded.jobs.value[3].offlineFastSpeech)
+        assertFalse(reloaded.jobs.value[2].offlineFastSpeech)
         assertNull(work.status.value)
         assertTrue(library.attachSubtitles(video.id, video.localPath, mapOf("orig" to "/local.srt"), "ar"))
         library.updatePosition(video, 5.0, 22.0) // the player still holds the old SavedVideo

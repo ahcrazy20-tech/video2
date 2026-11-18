@@ -19,47 +19,55 @@ import kotlin.random.Random
 internal class OfflinePipeline(
     private val modelPath: (OfflineModel) -> File,
     private val engines: LocalEngines = JniEngines,
+    private val checkTranslationMemory: () -> Unit = {},
     private val pcmDecoder: (File, File, CancellationSignal, (Double) -> Unit) -> Unit = ::decodeLocalPcm
 ) {
     fun run(
         dir: File, input: File, source: SubLang, target: SubLang, speechModel: OfflineModel, signal: CancellationSignal,
-        progress: (TranslationPhase, Double, Int) -> Unit
+        fastSpeech: Boolean = false, progress: (TranslationPhase, Double, Int, Boolean) -> Unit
     ): List<SubCue> {
-        require(speechModel in OfflineModel.speechModels)
+        require(speechModel in OfflineModel.speechModels && (!fastSpeech || speechModel == OfflineModel.WHISPER_MEDIUM))
         signal.throwIfCanceled()
         val title = stamp(input)
         val fingerprint = File(dir, "offline-source.json")
-        if (fingerprint.exists()) {
-            if (fingerprint.readText() != title) throw OfflineFailure(OfflineIssue.VIDEO)
+        if (hasCheckpoint(fingerprint)) {
+            if (readCheckpoint(fingerprint) != title) throw OfflineFailure(OfflineIssue.VIDEO)
         } else atomicText(fingerprint, title)
         val original = File(dir, "cues-original.json")
         val langFile = File(dir, "offline-language.txt")
-        if (!original.exists()) {
-            val pcm = File(dir, "audio-16k.pcm")
+        val pcm = File(dir, "audio-16k.pcm")
+        if (!hasCheckpoint(original)) {
             if (!pcm.exists()) {
-                progress(TranslationPhase.EXTRACTING, 0.02, 0)
+                progress(TranslationPhase.EXTRACTING, 0.02, 0, false)
                 val temp = File(dir, "audio-16k.pcm.tmp")
                 try {
                     stage(OfflineIssue.AUDIO) {
-                        pcmDecoder(input, temp, signal) { progress(TranslationPhase.EXTRACTING, 0.02 + 0.12 * it, 0) }
+                        pcmDecoder(input, temp, signal) { progress(TranslationPhase.EXTRACTING, 0.02 + 0.12 * it, 0, false) }
                     }
                     signal.throwIfCanceled()
                     if (!temp.renameTo(pcm)) throw OfflineFailure(OfflineIssue.SAVE)
                 } finally { temp.delete() }
             }
-            val (language, cues) = transcribe(dir, pcm, source, speechModel, signal, progress)
+            val (language, cues) = transcribe(dir, pcm, source, speechModel, fastSpeech, signal, progress)
             if (cues.isEmpty()) throw OfflineFailure(OfflineIssue.NO_SPEECH)
             signal.throwIfCanceled()
             atomicText(langFile, language)
             CueJson.write(original, cues)
-            pcm.delete()
-            File(dir, "offline-stt").deleteRecursively()
         }
-        // Whisper context and all native speech tensors are already freed here.
+        // A process can stop after committing the transcript but before removing the temporary PCM.
+        // Read and validate that checkpoint first; Whisper does not load again to translate it.
         val cues = CueJson.read(original)
-        val language = langFile.readText().trim()
+        val language = readCheckpoint(langFile).trim()
+        pcm.delete()
+        File(dir, "offline-stt").deleteRecursively()
         if (language !in hymtSourceLanguages) throw OfflineFailure(OfflineIssue.LANGUAGE)
         if (language == target.code) return cues.map { it.copy(translated = it.original) }
+        // If only the final SRT export was interrupted, don't require either runtime again.
+        val final = File(dir, "cues-translated-${target.code}.json")
+        if (hasCheckpoint(final)) {
+            val saved = CueJson.read(final)
+            if (matchesTranslation(cues, saved)) return saved
+        }
         return translate(dir, cues, target, signal, progress)
     }
 
@@ -69,8 +77,8 @@ internal class OfflinePipeline(
     }
 
     private fun transcribe(
-        dir: File, pcm: File, source: SubLang, speechModel: OfflineModel, signal: CancellationSignal,
-        progress: (TranslationPhase, Double, Int) -> Unit
+        dir: File, pcm: File, source: SubLang, speechModel: OfflineModel, fastSpeech: Boolean, signal: CancellationSignal,
+        progress: (TranslationPhase, Double, Int, Boolean) -> Unit
     ): Pair<String, List<SubCue>> {
         val frames = pcm.length() / 2L
         if (frames <= 0 || pcm.length() % 2L != 0L) throw OfflineFailure(OfflineIssue.AUDIO)
@@ -83,17 +91,18 @@ internal class OfflinePipeline(
         while (index < count) {
             signal.throwIfCanceled()
             val file = File(checkpoints, "$index.json")
-            if (!file.exists()) break
-            val part = JSONObject(file.readText())
+            if (!hasCheckpoint(file)) break
+            val part = JSONObject(readCheckpoint(file))
             language = part.getString("language")
             cues += CueJson.decode(part.getJSONArray("cues"))
             index++
         }
-        fun report() = progress(TranslationPhase.TRANSCRIBING, 0.15 + 0.44 * index / count, cues.size)
+        fun report(fraction: Double = 0.0, checkpoint: Boolean = true) =
+            progress(TranslationPhase.TRANSCRIBING, 0.15 + 0.44 * (index + fraction) / count, cues.size, checkpoint)
         report()
         if (index < count) {
             val path = modelPath(speechModel)
-            val speech = stage(OfflineIssue.TRANSCRIPTION) { engines.speech(path, signal) }
+            val speech = stage(OfflineIssue.TRANSCRIPTION, speechModel.memoryIssue) { engines.speech(path, signal) }
             speech.use { engine ->
                 RandomAccessFile(pcm, "r").use { audio ->
                     while (index < count) {
@@ -110,7 +119,17 @@ internal class OfflinePipeline(
                             // Only pass previous text that isn't already in the acoustic overlap.
                             val prompt = cues.takeLast(8).filter { it.endSec in (t - 8.0)..(t - 0.15) }
                                 .joinToString(" ") { it.original }.takeLast(200)
-                            val result = stage(OfflineIssue.TRANSCRIPTION) { engine.decode(samples, language, prompt) }
+                            val result = stage(OfflineIssue.TRANSCRIPTION, speechModel.memoryIssue) {
+                                var lastPercent = 0
+                                engine.decode(samples, language, prompt, fastSpeech) { value ->
+                                    // UI-only until the whole window is atomically saved. Ignore repeat/regressing updates.
+                                    val percent = value.coerceIn(0, 95)
+                                    if (percent > lastPercent) {
+                                        lastPercent = percent
+                                        report(percent / 100.0, checkpoint = false)
+                                    }
+                                }
+                            }
                             added = cuesInWindow(window, result, cues.lastOrNull(), cues.size)
                             if (language == "auto" && added.isNotEmpty() && result.language.isNotBlank()) language = result.language
                         }
@@ -129,7 +148,7 @@ internal class OfflinePipeline(
 
     private fun translate(
         dir: File, cues: List<SubCue>, target: SubLang, signal: CancellationSignal,
-        progress: (TranslationPhase, Double, Int) -> Unit
+        progress: (TranslationPhase, Double, Int, Boolean) -> Unit
     ): List<SubCue> {
         val batches = planTranslation(cues)
         val work = translationCheckpoint(dir, target).apply { mkdirs() }
@@ -138,28 +157,27 @@ internal class OfflinePipeline(
         while (index < batches.size) {
             signal.throwIfCanceled()
             val file = File(work, "$index.json")
-            if (!file.exists()) break
+            if (!hasCheckpoint(file)) break
             val batch = CueJson.read(file)
-            if (batch.map { it.index } != batches[index].map { it.index } || batch.any { it.translated.isBlank() }) {
-                throw OfflineFailure(OfflineIssue.SAVE)
-            }
+            if (!matchesTranslation(batches[index], batch)) throw OfflineFailure(OfflineIssue.SAVE)
             translated += batch
             index++
         }
-        fun report() = progress(TranslationPhase.TRANSLATING, 0.62 + 0.34 * translated.size / cues.size, cues.size)
+        fun report() = progress(TranslationPhase.TRANSLATING, 0.62 + 0.34 * translated.size / cues.size, cues.size, true)
         report()
         if (index < batches.size) {
             val path = modelPath(OfflineModel.HYMT_Q4)
-            val engine = stage(OfflineIssue.TRANSLATION) { engines.translator(path, signal) }
+            val engine = stage(OfflineIssue.TRANSLATION, OfflineIssue.TRANSLATOR_MEMORY) { engines.translator(path, signal) }
             engine.use { llm ->
                 val seed = Random.nextInt()
                 while (index < batches.size) {
                     signal.throwIfCanceled()
                     val batch = batches[index]
-                    val outputs = stage(OfflineIssue.TRANSLATION) {
+                    val outputs = stage(OfflineIssue.TRANSLATION, OfflineIssue.TRANSLATOR_MEMORY) {
                         val context = contextForBatch(cues, translated.size, batch.size)
                         translateLines(batch.map { it.original }, target.englishName, seed + index * 7919, context) { prompt, callSeed ->
                             signal.throwIfCanceled()
+                            checkTranslationMemory()
                             llm.translate(prompt, callSeed)
                         }
                     }
@@ -180,11 +198,18 @@ internal class OfflinePipeline(
         fun translationCheckpoint(dir: File, target: SubLang) = File(dir, "offline-mt-${OfflineModel.HYMT_Q4.id}-${target.code}")
     }
 
-    private inline fun <T> stage(issue: OfflineIssue, body: () -> T): T {
+    private fun matchesTranslation(source: List<SubCue>, saved: List<SubCue>) =
+        saved.size == source.size && saved.indices.all { i ->
+            val cue = saved[i]
+            cue.translated.isNotBlank() && cue.copy(translated = source[i].translated) == source[i]
+        }
+
+    private inline fun <T> stage(issue: OfflineIssue, memoryIssue: OfflineIssue = OfflineIssue.MEMORY, body: () -> T): T {
         try { return body() }
         catch (e: OfflineFailure) { throw e }
         catch (e: OperationCanceledException) { throw e }
         catch (e: LinkageError) { throw OfflineFailure(OfflineIssue.NOT_SUPPORTED, e) }
+        catch (e: OutOfMemoryError) { throw OfflineFailure(memoryIssue, e) }
         catch (e: Exception) { throw OfflineFailure(issue, e) }
     }
 }
@@ -200,9 +225,12 @@ internal object CueJson {
         SubCue(cue.getInt("i"), cue.getDouble("s"), cue.getDouble("e"), cue.getString("o"), cue.optString("t"))
     }
 
-    fun read(file: File) = decode(JSONArray(file.readText()))
+    fun read(file: File) = decode(JSONArray(readCheckpoint(file)))
     fun write(file: File, cues: List<SubCue>) = atomicText(file, encode(cues).toString())
 }
+
+internal fun hasCheckpoint(file: File) = file.isFile || File("${file.path}.bak").isFile
+internal fun readCheckpoint(file: File) = AtomicFile(file).openRead().bufferedReader(Charsets.UTF_8).use { it.readText() }
 
 internal fun atomicText(file: File, text: String) {
     val atomic = AtomicFile(file)

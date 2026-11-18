@@ -37,7 +37,7 @@ work=$(cd "$work" && pwd)
 out=$(cd "$out" && pwd)
 
 build() {
-  local engine=$1 repo=$2 rev=$3 hash=$4
+  local engine=$1 repo=$2 rev=$3 hash=$4 variant=${5:-$1}
   local archive="$work/$engine.tgz" source="$work/$engine-$rev"
   if [[ ! -f "$source/.verified" ]]; then
     if [[ ! -f "$archive" ]] || ! printf '%s  %s\n' "$hash" "$archive" | sha256sum --check --status; then
@@ -48,19 +48,24 @@ build() {
     tar -xzf "$archive" -C "$source" --strip-components=1
     touch "$source/.verified"
   fi
-  "$cmake" -S "$root/native/$engine" -B "$work/$engine-build" "${args[@]}" \
-    -DCMAKE_BUILD_TYPE=Release "-DVIDEO2_SOURCES=$source" "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$out"
-  "$cmake" --build "$work/$engine-build" --target "video2_$engine" --parallel "${VIDEO2_NATIVE_JOBS:-$jobs}"
+  local fp16=OFF
+  if [[ "$variant" == whisper_fp16 ]]; then fp16=ON; fi
+  "$cmake" -S "$root/native/$engine" -B "$work/$variant-build" "${args[@]}" \
+    -DCMAKE_BUILD_TYPE=Release "-DVIDEO2_SOURCES=$source" "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$out" \
+    "-DVIDEO2_WHISPER_FP16=$fp16"
+  "$cmake" --build "$work/$variant-build" --target "video2_$variant" --parallel "${VIDEO2_NATIVE_JOBS:-$jobs}"
 }
 
 # whisper.cpp v1.9.5 and llama.cpp b12503: separate static ggml builds, no servers/tools.
-build whisper whisper.cpp d1be6fde11ac6e0407606b4e42fe72d34add8037 645445da884df6dbd52b30f82d7be7c01d1767c938714e477e786b88d529e9f4
+whisper=(whisper whisper.cpp d1be6fde11ac6e0407606b4e42fe72d34add8037 645445da884df6dbd52b30f82d7be7c01d1767c938714e477e786b88d529e9f4)
+build "${whisper[@]}"
+if [[ "$mode" == android ]]; then build "${whisper[@]}" whisper_fp16; fi
 build hymt llama.cpp 4577932fab595eaa8b27ad71734d5de1f3c07d8c cb0058aa0d883a1f8b3704b85158776dd0c67fbd1e6922a361ec1f74d82f9381
 
 if [[ "$mode" == android ]]; then
   # Android 15+ devices can use 16 KiB pages; reject a misaligned engine before packaging.
   readelf="$sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
-  for so in "$out/libvideo2_whisper.so" "$out/libvideo2_hymt.so"; do
+  for so in "$out/libvideo2_whisper.so" "$out/libvideo2_whisper_fp16.so" "$out/libvideo2_hymt.so"; do
     loads=$("$readelf" -lW "$so")
     # Pass numeric comparison to bash: awk implementations differ on coercing hexadecimal text.
     mapfile -t alignments < <(awk '$1 == "LOAD" { print $NF }' <<< "$loads")

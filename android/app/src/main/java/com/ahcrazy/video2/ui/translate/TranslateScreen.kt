@@ -114,7 +114,8 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
                         val engine = if (offline) {
                             val local = if (ar) "على الجهاز" else "On device"
                             val speech = OfflineModel.speechForJob(job.offlineSpeechModel)?.label
-                            listOfNotNull(local, speech, "Q6".takeIf { retired }).joinToString(" · ")
+                            listOfNotNull(local, speech, (if (ar) "سريع" else "Fast").takeIf { job.offlineFastSpeech },
+                                "Q6".takeIf { retired }).joinToString(" · ")
                         } else STTProvider.of(job.sttProvider).let { if (ar) it.titleAr else it.titleEn }
                         Text("$engine → ${SubLang.of(job.targetLang).let { if (ar) it.nameAr else it.englishName }}",
                             fontSize = 11.sp, color = V2.TextDim, modifier = Modifier.padding(top = 4.dp))
@@ -179,6 +180,7 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
     var target by remember { mutableStateOf(SubLang.AR) }
     var mode by remember { mutableStateOf(TranslationMode.ON_DEVICE) }
     var speech by remember { mutableStateOf(app.offlineModels.defaultSpeech) }
+    var fastSpeech by remember { mutableStateOf(false) }
     var stt by remember { mutableStateOf(STTProvider.AUTO) }
     var refiner by remember { mutableStateOf(RefinerProvider.AUTO) }
     var translator by remember { mutableStateOf(TranslatorProvider.AUTO) }
@@ -202,6 +204,12 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
                 val manifest = video.kind in setOf(MediaKind.HLS, MediaKind.DASH)
                 if (offline) {
                     OfflineModelPanel(app, ar, speech, { speech = it })
+                    if (speech == OfflineModel.WHISPER_MEDIUM) {
+                        PickerRow(if (ar) "سرعة التفريغ" else "Transcription speed", fastSpeech, listOf(false, true), {
+                            if (it) { if (ar) "سريع · للكلام الواضح" else "Fast · clear speech" }
+                            else { if (ar) "دقة أعلى" else "Higher accuracy" }
+                        }) { fastSpeech = it }
+                    }
                     if (manifest) Text(if (ar) "اختار ملف فيديو أو صوت محفوظ واحد، مش قائمة HLS أو DASH." else "Choose a single saved video or audio file, not an HLS or DASH playlist.",
                         color = V2.Gold, fontSize = 12.sp)
                 } else {
@@ -218,7 +226,7 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
                 val compatible = remember(app, speech) { pack.all(app.offlineModels::compatible) }
                 Button(onClick = {
                     if (offline) {
-                        if (app.translations.startOffline(video.id, source, target, speech)) onDismiss()
+                        if (app.translations.startOffline(video.id, source, target, speech, fastSpeech)) onDismiss()
                     } else {
                         app.translations.start(video.id, source, target, stt, refiner, translator)
                         onDismiss()

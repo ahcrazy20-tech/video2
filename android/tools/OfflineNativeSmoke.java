@@ -9,7 +9,8 @@ final class WhisperJni {
     native void cancel(long h);
     native void destroy(long h);
     native void load(long h, byte[] path, int threads);
-    native byte[][] decode(long h, short[] samples, byte[] lang, byte[] prompt);
+    native boolean supportsFp16();
+    native byte[][] decode(long h, short[] samples, byte[] lang, byte[] prompt, boolean fast, Object progress);
 }
 
 final class HymtJni {
@@ -29,10 +30,11 @@ public final class OfflineNativeSmoke {
             Files.write(model, new byte[128]);
             byte[] bad = model.toString().getBytes(StandardCharsets.UTF_8);
             var w = new WhisperJni();
+            if (w.supportsFp16()) throw new AssertionError("Host smoke build must use the generic engine");
             long wHandle = w.create();
             try {
                 mustFail(() -> w.load(wHandle, bad, 1), "Whisper could not load its model");
-                mustFail(() -> w.decode(wHandle, new short[16000], new byte[0], new byte[0]), "Whisper model is not loaded");
+                mustFail(() -> w.decode(wHandle, new short[16000], new byte[0], new byte[0], false, null), "Whisper model is not loaded");
                 w.cancel(wHandle);
                 mustFail(() -> w.load(wHandle, bad, 1), "On-device work cancelled");
             } finally { w.destroy(wHandle); }

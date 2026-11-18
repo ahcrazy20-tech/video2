@@ -3,6 +3,7 @@
 #include <jni.h>
 #include <atomic>
 #include <exception>
+#include <new>
 #include <stdexcept>
 #include <string>
 
@@ -46,6 +47,8 @@ inline jbyteArray bytes(JNIEnv * env, const std::string & str) {
 template<class Fn> auto guarded(JNIEnv * env, Fn fn) -> decltype(fn()) {
     try {
         return fn();
+    } catch (const std::bad_alloc &) {
+        if (!env->ExceptionCheck()) env->ThrowNew(env->FindClass("java/lang/OutOfMemoryError"), "On-device allocation failed");
     } catch (const std::exception & e) {
         if (!env->ExceptionCheck()) env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), e.what());
     } catch (...) {

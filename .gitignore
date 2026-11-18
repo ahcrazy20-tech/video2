@@ -9,3 +9,9 @@ xcuserdata/
 /android/.gradle/
 /android/local.properties
 /artifacts/*.apk
+
+# Never commit signing keys or local device backup archives.
+*.jks
+*.keystore
+video2-offline*.tar
+video2-offline*.tar.json

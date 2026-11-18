@@ -34,7 +34,13 @@ internal enum class OfflineModel(
         "bin", 7_168 * MIB, 4_300 * MIB),
     HYMT_Q4("hymt2-7b-q4", "Hy-MT2 7B · Q4_K_M",
         PinnedModel("$HYMT/Hy-MT2-7B-Q4_K_M.gguf", 4_624_648_896, "9f96256500f3fc1ab4d64336b58f52a949a95ad7516b0c229476eef782f9f77b"),
-        "gguf", 7_168 * MIB, 5_000 * MIB);
+        "gguf", 7_168 * MIB, 3_072 * MIB);
+
+    val memoryIssue: OfflineIssue get() = when (this) {
+        WHISPER_MEDIUM -> OfflineIssue.MEMORY
+        WHISPER_LARGE -> OfflineIssue.LARGE_MODEL_MEMORY
+        HYMT_Q4 -> OfflineIssue.TRANSLATOR_MEMORY
+    }
 
     companion object {
         val speechModels = listOf(WHISPER_MEDIUM, WHISPER_LARGE)
@@ -48,6 +54,16 @@ internal enum class OfflineModel(
         }
     }
 }
+
+// Translation weights are file-backed mmap pages, not a 4.62 GB heap allocation.
+// Preserve headroom for native scratch/KV and Android. Be more conservative below ~10 GiB physical RAM.
+internal fun canOpenModel(model: OfflineModel, total: Long, available: Long, threshold: Long, low: Boolean): Boolean {
+    val floor = if (model == OfflineModel.HYMT_Q4 && total < 9_728 * MIB) 4_096 * MIB else model.requiredFreeRam
+    return !low && available >= maxOf(floor, threshold + 512 * MIB)
+}
+
+internal fun translationUnderPressure(available: Long, threshold: Long, low: Boolean): Boolean =
+    low || available < threshold + 256 * MIB
 
 internal data class ModelState(val downloaded: Long, val installed: Boolean)
 
@@ -74,10 +90,13 @@ internal class OfflineModels(private val context: Context, private val work: Off
         if (!ready(model)) throw OfflineFailure(OfflineIssue.MISSING_MODELS)
         if (!compatible(model)) throw OfflineFailure(OfflineIssue.NOT_SUPPORTED)
         val ram = memory()
-        if (ram.lowMemory || ram.availMem < model.requiredFreeRam) {
-            throw OfflineFailure(if (model == OfflineModel.WHISPER_LARGE) OfflineIssue.LARGE_MODEL_MEMORY else OfflineIssue.MEMORY)
-        }
+        if (!canOpenModel(model, ram.totalMem, ram.availMem, ram.threshold, ram.lowMemory)) throw OfflineFailure(model.memoryIssue)
         return file(model)
+    }
+
+    fun checkTranslationMemory() {
+        val ram = memory()
+        if (translationUnderPressure(ram.availMem, ram.threshold, ram.lowMemory)) throw OfflineFailure(OfflineIssue.TRANSLATOR_MEMORY)
     }
 
     fun downloadPack(speech: OfflineModel) {
