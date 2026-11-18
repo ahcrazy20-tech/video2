@@ -25,6 +25,7 @@ import com.ahcrazy.video2.data.offline.OfflineModels
 import com.ahcrazy.video2.data.offline.OfflinePipeline
 import com.ahcrazy.video2.data.offline.OfflineWork
 import com.ahcrazy.video2.data.offline.OfflineWorkKind
+import com.ahcrazy.video2.data.offline.RETIRED_TRANSLATOR_ID
 import com.ahcrazy.video2.data.offline.atomicText
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -75,11 +76,11 @@ class TranslationManager internal constructor(
         return job
     }
 
-    @Synchronized internal fun startOffline(videoId: String, source: SubLang, target: SubLang, model: OfflineModel): Boolean {
-        if (offlineWork.status.value != null || model !in OfflineModel.translators || target == SubLang.AUTO) return false
+    @Synchronized internal fun startOffline(videoId: String, source: SubLang, target: SubLang, speech: OfflineModel): Boolean {
+        if (offlineWork.status.value != null || speech !in OfflineModel.speechModels || target == SubLang.AUTO) return false
         val video = library.byId(videoId) ?: return false
         val job = TranslationJob(UUID.randomUUID().toString(), videoId, video.title, source.code, target.code,
-            mode = TranslationMode.ON_DEVICE, offlineModel = model.id)
+            mode = TranslationMode.ON_DEVICE, offlineModel = OfflineModel.HYMT_Q4.id, offlineSpeechModel = speech.id)
         add(job)
         startOffline(job)
         return true
@@ -118,9 +119,13 @@ class TranslationManager internal constructor(
 
     private fun startOffline(job: TranslationJob) {
         if (offlineWork.status.value != null) return
-        val model = OfflineModel.translator(job.offlineModel)
+        if (job.offlineModel == RETIRED_TRANSLATOR_ID) {
+            failOffline(job.id, OfflineIssue.RETIRED_TRANSLATOR)
+            return
+        }
+        val speech = OfflineModel.speechForJob(job.offlineSpeechModel)
         val target = SubLang.of(job.targetLang)
-        if (model == null || target == SubLang.AUTO) {
+        if (job.offlineModel != OfflineModel.HYMT_Q4.id || speech == null || target == SubLang.AUTO) {
             failOffline(job.id, OfflineIssue.NOT_SUPPORTED)
             return
         }
@@ -139,10 +144,10 @@ class TranslationManager internal constructor(
                     throw OfflineFailure(OfflineIssue.AUDIO)
                 }
                 // Don't spend time decoding an entire video if a required model isn't installed.
-                if ((!File(dir, "cues-original.json").exists() && !offlineModels.ready(OfflineModel.WHISPER_LARGE)) || !offlineModels.ready(model)) {
+                if ((!File(dir, "cues-original.json").exists() && !offlineModels.ready(speech)) || !offlineModels.ready(OfflineModel.HYMT_Q4)) {
                     throw OfflineFailure(OfflineIssue.MISSING_MODELS)
                 }
-                val cues = offline.run(dir, input, SubLang.of(job.sourceLang), target, model, signal) { phase, progress, count ->
+                val cues = offline.run(dir, input, SubLang.of(job.sourceLang), target, speech, signal) { phase, progress, count ->
                     patch(job.id, progressOnly = true) { it.copy(phase = phase, progress = progress, cueCount = count) }
                     notify(progress)
                 }
@@ -152,7 +157,7 @@ class TranslationManager internal constructor(
                 signal.throwIfCanceled()
                 exportSubtitles(job, video.localPath, cues, target)
                 patch(job.id) { it.copy(phase = TranslationPhase.DONE, progress = 1.0, cueCount = cues.size) }
-                File(dir, "offline-mt-${model.id}-${target.code}").deleteRecursively()
+                OfflinePipeline.translationCheckpoint(dir, target).deleteRecursively()
             }
         } catch (e: OfflineFailure) { failOffline(job.id, e.issue) }
     }
@@ -336,6 +341,7 @@ class TranslationManager internal constructor(
                 put("createdAt", j.createdAt); put("message", j.message ?: JSONObject.NULL)
                 put("mode", j.mode.name); put("offlineModel", j.offlineModel ?: JSONObject.NULL)
                 put("offlineIssue", j.offlineIssue ?: JSONObject.NULL)
+                put("offlineSpeechModel", j.offlineSpeechModel ?: JSONObject.NULL)
             }) }
             atomicText(jobsFile, arr.toString())
         }
@@ -354,7 +360,8 @@ class TranslationManager internal constructor(
                     if (o.isNull("message")) null else o.getString("message"), o.optLong("createdAt"),
                     mode = TranslationMode.fromStored(if (o.has("mode")) o.optString("mode", "unknown") else null),
                     offlineModel = o.optString("offlineModel", "").takeIf { !o.isNull("offlineModel") && it.isNotBlank() },
-                    offlineIssue = o.optString("offlineIssue", "").takeIf { !o.isNull("offlineIssue") && it.isNotBlank() })
+                    offlineIssue = o.optString("offlineIssue", "").takeIf { !o.isNull("offlineIssue") && it.isNotBlank() },
+                    offlineSpeechModel = o.optString("offlineSpeechModel", "").takeUnless { o.isNull("offlineSpeechModel") })
             }
         }
     }

@@ -22,9 +22,10 @@ internal class OfflinePipeline(
     private val pcmDecoder: (File, File, CancellationSignal, (Double) -> Unit) -> Unit = ::decodeLocalPcm
 ) {
     fun run(
-        dir: File, input: File, source: SubLang, target: SubLang, model: OfflineModel, signal: CancellationSignal,
+        dir: File, input: File, source: SubLang, target: SubLang, speechModel: OfflineModel, signal: CancellationSignal,
         progress: (TranslationPhase, Double, Int) -> Unit
     ): List<SubCue> {
+        require(speechModel in OfflineModel.speechModels)
         signal.throwIfCanceled()
         val title = stamp(input)
         val fingerprint = File(dir, "offline-source.json")
@@ -46,7 +47,7 @@ internal class OfflinePipeline(
                     if (!temp.renameTo(pcm)) throw OfflineFailure(OfflineIssue.SAVE)
                 } finally { temp.delete() }
             }
-            val (language, cues) = transcribe(dir, pcm, source, signal, progress)
+            val (language, cues) = transcribe(dir, pcm, source, speechModel, signal, progress)
             if (cues.isEmpty()) throw OfflineFailure(OfflineIssue.NO_SPEECH)
             signal.throwIfCanceled()
             atomicText(langFile, language)
@@ -59,7 +60,7 @@ internal class OfflinePipeline(
         val language = langFile.readText().trim()
         if (language !in hymtSourceLanguages) throw OfflineFailure(OfflineIssue.LANGUAGE)
         if (language == target.code) return cues.map { it.copy(translated = it.original) }
-        return translate(dir, cues, model, target, signal, progress)
+        return translate(dir, cues, target, signal, progress)
     }
 
     private fun stamp(file: File): String {
@@ -68,7 +69,7 @@ internal class OfflinePipeline(
     }
 
     private fun transcribe(
-        dir: File, pcm: File, source: SubLang, signal: CancellationSignal,
+        dir: File, pcm: File, source: SubLang, speechModel: OfflineModel, signal: CancellationSignal,
         progress: (TranslationPhase, Double, Int) -> Unit
     ): Pair<String, List<SubCue>> {
         val frames = pcm.length() / 2L
@@ -91,7 +92,7 @@ internal class OfflinePipeline(
         fun report() = progress(TranslationPhase.TRANSCRIBING, 0.15 + 0.44 * index / count, cues.size)
         report()
         if (index < count) {
-            val path = modelPath(OfflineModel.WHISPER_LARGE)
+            val path = modelPath(speechModel)
             val speech = stage(OfflineIssue.TRANSCRIPTION) { engines.speech(path, signal) }
             speech.use { engine ->
                 RandomAccessFile(pcm, "r").use { audio ->
@@ -127,11 +128,11 @@ internal class OfflinePipeline(
     }
 
     private fun translate(
-        dir: File, cues: List<SubCue>, model: OfflineModel, target: SubLang, signal: CancellationSignal,
+        dir: File, cues: List<SubCue>, target: SubLang, signal: CancellationSignal,
         progress: (TranslationPhase, Double, Int) -> Unit
     ): List<SubCue> {
         val batches = planTranslation(cues)
-        val work = File(dir, "offline-mt-${model.id}-${target.code}").apply { mkdirs() }
+        val work = translationCheckpoint(dir, target).apply { mkdirs() }
         val translated = mutableListOf<SubCue>()
         var index = 0
         while (index < batches.size) {
@@ -148,7 +149,7 @@ internal class OfflinePipeline(
         fun report() = progress(TranslationPhase.TRANSLATING, 0.62 + 0.34 * translated.size / cues.size, cues.size)
         report()
         if (index < batches.size) {
-            val path = modelPath(model)
+            val path = modelPath(OfflineModel.HYMT_Q4)
             val engine = stage(OfflineIssue.TRANSLATION) { engines.translator(path, signal) }
             engine.use { llm ->
                 val seed = Random.nextInt()
@@ -156,7 +157,8 @@ internal class OfflinePipeline(
                     signal.throwIfCanceled()
                     val batch = batches[index]
                     val outputs = stage(OfflineIssue.TRANSLATION) {
-                        translateLines(batch.map { it.original }, target.englishName, seed + index * 7919) { prompt, callSeed ->
+                        val context = contextForBatch(cues, translated.size, batch.size)
+                        translateLines(batch.map { it.original }, target.englishName, seed + index * 7919, context) { prompt, callSeed ->
                             signal.throwIfCanceled()
                             llm.translate(prompt, callSeed)
                         }
@@ -171,6 +173,11 @@ internal class OfflinePipeline(
             }
         }
         return translated
+    }
+
+    companion object {
+        // Same directory as 1.7 Q4 jobs so their finished batches are reusable.
+        fun translationCheckpoint(dir: File, target: SubLang) = File(dir, "offline-mt-${OfflineModel.HYMT_Q4.id}-${target.code}")
     }
 
     private inline fun <T> stage(issue: OfflineIssue, body: () -> T): T {

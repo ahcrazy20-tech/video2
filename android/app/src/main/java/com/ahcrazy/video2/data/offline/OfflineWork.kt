@@ -29,7 +29,9 @@ import kotlinx.coroutines.launch
 internal enum class OfflineIssue(val en: String, val ar: String) {
     BACKGROUND("Couldn't start the background task. Reopen Video2 and retry.", "تعذر بدء المهمة في الخلفية. افتح Video2 وحاول تاني."),
     NOT_SUPPORTED("On-device models require an ARM64 phone and enough physical RAM.", "الموديلات المحلية تحتاج جهاز ARM64 ورام فعلية كافية."),
-    MEMORY("Not enough free RAM. Close other apps or choose the Q4 model for a new job.", "الرام المتاحة مش كفاية. اقفل التطبيقات التانية، أو اختار Q4 في مهمة جديدة."),
+    MEMORY("Not enough free RAM. Close other apps, then resume.", "الرام المتاحة مش كفاية. اقفل التطبيقات التانية وبعدها استأنف."),
+    LARGE_MODEL_MEMORY("Not enough free RAM for Large-v3. Close other apps, or start a new job with Medium if the speech is clear.", "الرام المتاحة مش كفاية لـLarge-v3. اقفل التطبيقات التانية، أو ابدأ مهمة بـMedium لو الكلام واضح."),
+    RETIRED_TRANSLATOR("This job used the old Q6 translator. Start a new on-device job with Q4. Finished subtitles are unchanged.", "المهمة دي كانت بتستخدم موديل Q6 القديم. ابدأ مهمة جديدة على الجهاز بـQ4. الترجمات المكتملة مفيهاش تغيير."),
     STORAGE("Not enough free storage. Free space and retry.", "المساحة الحرة مش كفاية. فضّي مساحة وحاول تاني."),
     MISSING_MODELS("Install the required models from On-device models, then resume.", "نزّل الموديلات المطلوبة من «الموديلات المحلية»، وبعدها استأنف."),
     DOWNLOAD("Model download interrupted. Retry to continue from the saved bytes.", "تنزيل الموديل اتوقف. حاول تاني عشان يكمل من المكان اللي وقف عنده."),

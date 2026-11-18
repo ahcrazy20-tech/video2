@@ -126,6 +126,71 @@ class OfflineSubtitleTest {
         assertEquals(OfflineIssue.TRANSLATION, error.issue)
     }
 
+    @Test fun givesTranslationNearbyContextButNotUnrelatedScenesOrExtraOutput() {
+        val cues = listOf(
+            SubCue(0, 0.0, 1.0, "Earlier scene"),
+            SubCue(1, 10.0, 11.0, "They reached the river at sunset."),
+            SubCue(2, 11.0, 12.0, "She stood on the bank."),
+            SubCue(3, 12.0, 13.0, "The water was rising."),
+            SubCue(4, 13.0, 14.0, "They moved uphill."),
+            SubCue(5, 28.0, 30.0, "Different topic")
+        )
+        val context = contextForBatch(cues, 2, 1)
+        assertEquals(listOf(cues[1].original), context.before)
+        assertEquals(cues.subList(3, 5).map { it.original }, context.after)
+        val translated = translateLines(listOf(cues[2].original), "Arabic", 7, context) { prompt, _ ->
+            assertTrue(prompt.contains("Previous lines: They reached the river"))
+            assertTrue(prompt.contains("Following lines: The water was rising."))
+            assertFalse(prompt.contains("Earlier scene"))
+            assertFalse(prompt.contains("Different topic"))
+            assertEquals(cues[2].original, prompt.substringAfter("[Source Text]\n"))
+            "وقفت على الضفة."
+        }
+        assertEquals(listOf("وقفت على الضفة."), translated)
+    }
+
+    @Test fun retainsContextOnSplitRetryAndDoesNotAcceptEchoedBackground() {
+        val lines = listOf("The leaves were dry.", "She struck a match.")
+        val context = SubtitleContext(before = listOf("They collected kindling."), after = listOf("The fire caught."))
+        val translated = translateLines(lines, "Arabic", 7, context) { prompt, _ ->
+            when (prompt.substringAfter("[Source Text]\n")) {
+                lines.joinToString("\n$SUBTITLE_DELIMITER\n") -> "[Background Information] ناتج غير صالح"
+                lines[0] -> {
+                    assertTrue(prompt.contains("Following lines: She struck a match. The fire caught."))
+                    "كانت الأوراق جافة."
+                }
+                lines[1] -> {
+                    assertTrue(prompt.contains("Previous lines: They collected kindling. The leaves were dry."))
+                    "أشعلت عود ثقاب."
+                }
+                else -> error("Unexpected subtitle prompt")
+            }
+        }
+        assertEquals(listOf("كانت الأوراق جافة.", "أشعلت عود ثقاب."), translated)
+        var calls = 0
+        val single = translateLines(listOf(lines[1]), "Arabic", 7, context) { prompt, _ ->
+            calls++
+            if (prompt.contains("[Background Information]")) "[Background Information] كلمات زيادة" else "أشعلت عود ثقاب."
+        }
+        assertEquals(listOf("أشعلت عود ثقاب."), single)
+        assertEquals(2, calls)
+    }
+
+    @Test fun bothSpeechModelsUseTheSameQ4WeightsAndMediumDoesNotPullLarge() {
+        val medium = OfflineModel.WHISPER_MEDIUM
+        val large = OfflineModel.WHISPER_LARGE
+        val q4 = OfflineModel.HYMT_Q4
+        assertEquals(listOf(medium, q4), OfflineModel.pack(medium))
+        assertEquals(listOf(large, q4), OfflineModel.pack(large))
+        assertEquals(6_158_411_955L, OfflineModel.pack(medium).sumOf { it.spec.bytes })
+        assertTrue(medium.requiredFreeRam < large.requiredFreeRam)
+        assertEquals(medium, OfflineModel.speechForJob(medium.id))
+        assertEquals(large, OfflineModel.speechForJob(null)) // 1.7 jobs implicitly used Large-v3
+        assertNull(OfflineModel.speechForJob(q4.id))
+        assertNull(OfflineModel.speechForJob("unavailable-whisper"))
+        assertEquals(listOf(q4), OfflineModel.entries.filter { it.extension == "gguf" })
+    }
+
     @Test fun restartsFromSpeechAndTranslationCheckpointsAndNeverOverlapsModels() {
         val dir = tmp.newFolder()
         val input = tmp.newFile().apply { writeText("dummy container") }
@@ -165,7 +230,8 @@ class OfflineSubtitleTest {
                 }
             }
         }
-        val pipeline = OfflinePipeline({ input }, loader) { _, target, _, progress ->
+        val modelLoads = mutableListOf<OfflineModel>()
+        val pipeline = OfflinePipeline({ modelLoads += it; input }, loader) { _, target, _, progress ->
             exports++
             RandomAccessFile(target, "rw").use { audio -> // one nonzero sample in each read window
                 audio.setLength(55L * SAMPLE_RATE * 2)
@@ -175,7 +241,7 @@ class OfflineSubtitleTest {
             }
             progress(1.0)
         }
-        fun run() = pipeline.run(dir, input, SubLang.AUTO, SubLang.AR, OfflineModel.HYMT_Q4, CancellationSignal()) { _, _, _ -> }
+        fun run() = pipeline.run(dir, input, SubLang.AUTO, SubLang.AR, OfflineModel.WHISPER_MEDIUM, CancellationSignal()) { _, _, _ -> }
         assertThrows(OperationCanceledException::class.java) { run() }
         assertEquals(0, translateCalls)
         assertNull(session)
@@ -183,6 +249,8 @@ class OfflineSubtitleTest {
         assertEquals(3, decodeCalls)
         val cues = run()
         assertEquals(1, exports)
+        assertEquals(listOf(OfflineModel.WHISPER_MEDIUM, OfflineModel.WHISPER_MEDIUM,
+            OfflineModel.HYMT_Q4, OfflineModel.HYMT_Q4), modelLoads)
         assertEquals(listOf("صباح الخير", "مع السلامة"), cues.map { it.translated })
         assertEquals(listOf(1.0, 53.0), cues.map { it.startSec })
         assertEquals(cues.size, SrtCodec.parse(SrtCodec.write(cues, "bilingual")).size)
@@ -213,7 +281,7 @@ class OfflineSubtitleTest {
             assertFalse(part.exists())
             assertEquals("bytes=8-", server.takeRequest().getHeader("Range"))
         }
-        assertTrue(OfflineModel.HYMT_Q6.spec.bytes > Int.MAX_VALUE)
+        assertTrue(OfflineModel.HYMT_Q4.spec.bytes > Int.MAX_VALUE)
     }
 
     @Test fun whenServerIgnoresRangeTheWholeFileIsHashedAndBadWeightsNeverInstall() {
@@ -229,6 +297,23 @@ class OfflineSubtitleTest {
         }
     }
 
+    @Test fun retiredQ6CanBeRemovedWithoutTouchingQ4OrSavedSubtitles() {
+        val app: Application = RuntimeEnvironment.getApplication()
+        val models = OfflineModels(app, OfflineWork(app))
+        val weights = File(app.noBackupFilesDir, "offline-models")
+        val q6 = File(weights, "$RETIRED_TRANSLATOR_ID-88ef0aba5995.gguf").apply { writeText("old") }
+        val partial = File(weights, "${q6.name}.part").apply { writeText("part") }
+        val q4 = File(weights, "hymt2-7b-q4-9f96256500f3.gguf").apply { writeText("keep") }
+        val subtitle = File(app.filesDir, "existing.srt").apply { writeText("subtitle") }
+        assertEquals(7L, models.retiredBytes())
+        models.removeRetired()
+        assertFalse(q6.exists())
+        assertFalse(partial.exists())
+        assertTrue(q4.exists())
+        assertTrue(subtitle.exists())
+        assertEquals(0L, models.retiredBytes())
+    }
+
     @Test fun persistedLocalWorkNeverResumesAsCloudAndSubtitleRegistrationSurvivesPlaybackUpdates() {
         val app: Application = RuntimeEnvironment.getApplication()
         val library = LibraryStore(app)
@@ -240,14 +325,22 @@ class OfflineSubtitleTest {
         File(dir, "jobs.json").writeText("""
             [{"id":"offline","videoId":"test-video","videoTitle":"Title","mode":"ON_DEVICE","offlineModel":"removed","phase":"TRANSCRIBING"},
              {"id":"future","videoId":"test-video","videoTitle":"Title","mode":"FUTURE_MODE","phase":"SAVING"},
+             {"id":"retired","videoId":"test-video","videoTitle":"Title","mode":"ON_DEVICE","offlineModel":"hymt2-7b-q6","phase":"PAUSED"},
+             {"id":"medium","videoId":"test-video","videoTitle":"Title","mode":"ON_DEVICE","offlineModel":"hymt2-7b-q4","offlineSpeechModel":"whisper-medium","phase":"DONE"},
              {"id":"legacy","videoId":"test-video","videoTitle":"Title","phase":"DONE"}]
         """.trimIndent())
         val manager = TranslationManager(app, library, AppSettings(app), models, work)
-        assertEquals(listOf(TranslationMode.ON_DEVICE, TranslationMode.ON_DEVICE, TranslationMode.CLOUD), manager.jobs.value.map { it.mode })
+        assertEquals(listOf(TranslationMode.ON_DEVICE, TranslationMode.ON_DEVICE, TranslationMode.ON_DEVICE, TranslationMode.ON_DEVICE, TranslationMode.CLOUD), manager.jobs.value.map { it.mode })
         assertEquals(TranslationPhase.PAUSED, manager.jobs.value.first().phase)
         manager.resume("offline")
         manager.resume("future")
-        assertEquals(listOf(TranslationPhase.FAILED, TranslationPhase.FAILED, TranslationPhase.DONE), manager.jobs.value.map { it.phase })
+        manager.resume("retired")
+        assertEquals(listOf(TranslationPhase.FAILED, TranslationPhase.FAILED, TranslationPhase.FAILED, TranslationPhase.DONE, TranslationPhase.DONE),
+            manager.jobs.value.map { it.phase })
+        assertEquals(OfflineIssue.RETIRED_TRANSLATOR.name, manager.jobs.value[2].offlineIssue)
+        val reloaded = TranslationManager(app, library, AppSettings(app), models, work)
+        assertEquals(OfflineModel.WHISPER_MEDIUM.id, reloaded.jobs.value[3].offlineSpeechModel)
+        assertEquals(OfflineModel.HYMT_Q4.id, reloaded.jobs.value[3].offlineModel)
         assertNull(work.status.value)
         assertTrue(library.attachSubtitles(video.id, video.localPath, mapOf("orig" to "/local.srt"), "ar"))
         library.updatePosition(video, 5.0, 22.0) // the player still holds the old SavedVideo

@@ -21,8 +21,8 @@ android {
         applicationId = "com.ahcrazy.video2"
         minSdk = 26
         targetSdk = 34
-        versionCode = 10
-        versionName = "1.7"
+        versionCode = 11
+        versionName = "1.8"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
     }
@@ -91,7 +91,8 @@ val verifyOfflineDebugApk by tasks.registering {
                     "${apk.name} is missing the on-device $engine runtime"
                 }
             }
-            check(zip.entries().asSequence().none { it.name.endsWith(".gguf") || it.name.endsWith("ggml-large-v3.bin") }) {
+            check(zip.entries().asSequence().none { it.name.endsWith(".gguf") ||
+                it.name.substringAfterLast('/').let { name -> name.startsWith("ggml-") && name.endsWith(".bin") } }) {
                 "Model weights must remain outside the APK"
             }
         }

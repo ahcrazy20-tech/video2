@@ -54,6 +54,7 @@ import com.ahcrazy.video2.core.util.SrtCodec
 import com.ahcrazy.video2.data.offline.OfflineIssue
 import com.ahcrazy.video2.data.offline.OfflineModel
 import com.ahcrazy.video2.data.offline.OfflineWorkKind
+import com.ahcrazy.video2.data.offline.RETIRED_TRANSLATOR_ID
 import com.ahcrazy.video2.ui.components.EmptyState
 import com.ahcrazy.video2.ui.components.GlassCard
 import com.ahcrazy.video2.ui.components.PickerRow
@@ -104,6 +105,7 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
         LazyColumn {
             items(jobs, key = { it.id }) { job ->
                 val offline = job.mode == TranslationMode.ON_DEVICE
+                val retired = offline && job.offlineModel == RETIRED_TRANSLATOR_ID
                 val running = job.phase !in setOf(TranslationPhase.FAILED, TranslationPhase.PAUSED, TranslationPhase.CANCELLED, TranslationPhase.DONE)
                 val stopping = offline && localWork?.key == job.id && localWork?.stopping == true
                 GlassCard(Modifier.fillMaxWidth().padding(bottom = 10.dp).clickable(enabled = job.phase == TranslationPhase.DONE) { onReviewJob(job) }) {
@@ -111,7 +113,8 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
                         Text(job.videoTitle, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
                         val engine = if (offline) {
                             val local = if (ar) "على الجهاز" else "On device"
-                            "$local · ${OfflineModel.translator(job.offlineModel)?.label ?: "Hy-MT2"}"
+                            val speech = OfflineModel.speechForJob(job.offlineSpeechModel)?.label
+                            listOfNotNull(local, speech, "Q6".takeIf { retired }).joinToString(" · ")
                         } else STTProvider.of(job.sttProvider).let { if (ar) it.titleAr else it.titleEn }
                         Text("$engine → ${SubLang.of(job.targetLang).let { if (ar) it.nameAr else it.englishName }}",
                             fontSize = 11.sp, color = V2.TextDim, modifier = Modifier.padding(top = 4.dp))
@@ -124,11 +127,12 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
                         }
                         if (job.phase !in setOf(TranslationPhase.DONE)) LinearProgressIndicator(
                             progress = { job.progress.toFloat() }, Modifier.fillMaxWidth().padding(top = 7.dp), color = V2.Accent)
-                        val issue = OfflineIssue.entries.firstOrNull { it.name == job.offlineIssue }
+                        val issue = if (retired && job.phase != TranslationPhase.DONE) OfflineIssue.RETIRED_TRANSLATOR
+                            else OfflineIssue.entries.firstOrNull { it.name == job.offlineIssue }
                         (issue?.text(ar) ?: job.message)?.let { Text(it, fontSize = 11.sp, color = V2.Gold, modifier = Modifier.padding(top = 6.dp)) }
                         Row {
                             if (job.phase == TranslationPhase.DONE) TextButton(onClick = { onReviewJob(job) }) { Text(if (ar) "مراجعة وتعديل" else "Review & edit") }
-                            if (job.phase in setOf(TranslationPhase.FAILED, TranslationPhase.PAUSED, TranslationPhase.CANCELLED))
+                            if (!retired && job.phase in setOf(TranslationPhase.FAILED, TranslationPhase.PAUSED, TranslationPhase.CANCELLED))
                                 TextButton(enabled = !offline || localWork == null, onClick = { app.translations.resume(job.id) }) { Text(if (ar) "استئناف" else "Resume") }
                             if (running) TextButton(enabled = !stopping, onClick = { app.translations.cancel(job.id) }) { Text(if (ar) "إيقاف" else "Stop") }
                             Spacer(Modifier.weight(1f))
@@ -142,10 +146,11 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
 
     if (showNew) NewTranslationSheet(app, ar, videos, preselected, onDismiss = { showNew = false; onConsumePreselected() })
     if (showModels) ModalBottomSheet(onDismissRequest = { showModels = false }) {
-        var model by remember { mutableStateOf(app.offlineModels.recommended) }
+        var speech by remember { mutableStateOf(app.offlineModels.defaultSpeech) }
         Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
             Text(if (ar) "الموديلات المحلية" else "On-device models", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            OfflineModelPanel(app, ar, model, { model = it })
+            OfflineModelPanel(app, ar, speech, { speech = it })
+            RetiredModelCleanup(app, ar, localWork == null)
             Spacer(Modifier.height(20.dp))
         }
     }
@@ -173,7 +178,7 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
     var source by remember { mutableStateOf(SubLang.AUTO) }
     var target by remember { mutableStateOf(SubLang.AR) }
     var mode by remember { mutableStateOf(TranslationMode.ON_DEVICE) }
-    var model by remember { mutableStateOf(app.offlineModels.recommended) }
+    var speech by remember { mutableStateOf(app.offlineModels.defaultSpeech) }
     var stt by remember { mutableStateOf(STTProvider.AUTO) }
     var refiner by remember { mutableStateOf(RefinerProvider.AUTO) }
     var translator by remember { mutableStateOf(TranslatorProvider.AUTO) }
@@ -196,7 +201,7 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
                 PickerRow(if (ar) "لغة الهدف" else "Target", target, SubLang.entries.filter { it != SubLang.AUTO }, { if (ar) it.nameAr else it.englishName }) { target = it }
                 val manifest = video.kind in setOf(MediaKind.HLS, MediaKind.DASH)
                 if (offline) {
-                    OfflineModelPanel(app, ar, model, { model = it })
+                    OfflineModelPanel(app, ar, speech, { speech = it })
                     if (manifest) Text(if (ar) "اختار ملف فيديو أو صوت محفوظ واحد، مش قائمة HLS أو DASH." else "Choose a single saved video or audio file, not an HLS or DASH playlist.",
                         color = V2.Gold, fontSize = 12.sp)
                 } else {
@@ -208,15 +213,17 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
                         "Cloud mode sends audio and text to providers. API keys are in Settings.", fontSize = 11.sp, color = V2.TextDim)
                 }
                 Spacer(Modifier.height(14.dp))
-                val ready = models[OfflineModel.WHISPER_LARGE]?.installed == true && models[model]?.installed == true
+                val pack = OfflineModel.pack(speech)
+                val ready = pack.all { models[it]?.installed == true }
+                val compatible = remember(app, speech) { pack.all(app.offlineModels::compatible) }
                 Button(onClick = {
                     if (offline) {
-                        if (app.translations.startOffline(video.id, source, target, model)) onDismiss()
+                        if (app.translations.startOffline(video.id, source, target, speech)) onDismiss()
                     } else {
                         app.translations.start(video.id, source, target, stt, refiner, translator)
                         onDismiss()
                     }
-                }, modifier = Modifier.fillMaxWidth(), enabled = !offline || (ready && work == null && !manifest && app.offlineModels.compatible(model))) {
+                }, modifier = Modifier.fillMaxWidth(), enabled = !offline || (ready && work == null && !manifest && compatible)) {
                     Text(if (offline) { if (ar) "ابدأ على الجهاز" else "Start on device" } else { if (ar) "ابدأ بالسحابة" else "Start in cloud" })
                 }
             }
@@ -226,21 +233,28 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
 }
 
 @Composable
-private fun OfflineModelPanel(app: Video2Application, ar: Boolean, model: OfflineModel, onSelect: (OfflineModel) -> Unit) {
+private fun OfflineModelPanel(app: Video2Application, ar: Boolean, speech: OfflineModel, onSelect: (OfflineModel) -> Unit) {
     val models by app.offlineModels.models.collectAsState()
     val issue by app.offlineModels.issue.collectAsState()
     val work by app.offlineWork.status.collectAsState()
     val downloading = work?.takeIf { it.kind == OfflineWorkKind.DOWNLOAD }
     var remove by remember { mutableStateOf<OfflineModel?>(null) }
-    val whisper = OfflineModel.WHISPER_LARGE
-    val pack = listOf(whisper, model)
-    val compatible = pack.all(app.offlineModels::compatible)
+    val pack = OfflineModel.pack(speech)
+    val compatible = remember(app, speech) { pack.all(app.offlineModels::compatible) }
     val ready = pack.all { models[it]?.installed == true }
-    val total = pack.sumOf { it.spec.bytes }
+    val remaining = pack.sumOf { (it.spec.bytes - (models[it]?.downloaded ?: 0)).coerceAtLeast(0) }
     SectionTitle(if (ar) "الموديلات المحلية" else "Local models")
-    PickerRow(if (ar) "موديل الترجمة" else "Translation model", model, OfflineModel.translators, {
-        it.label + if (it == OfflineModel.HYMT_Q6) { if (ar) " · يُفضّل ١٦ GB RAM" else " · 16 GB RAM recommended" } else ""
+    PickerRow(if (ar) "موديل التفريغ" else "Speech model", speech, OfflineModel.speechModels, {
+        val hint = if (it == OfflineModel.WHISPER_MEDIUM) {
+            if (ar) "للصوت الواضح" else "Clear speech"
+        } else {
+            if (ar) "للصوت الأصعب" else "Challenging speech"
+        }
+        "${it.label} · $hint"
     }, onSelect)
+    Text(if (ar) "الترجمة في الحالتين: Hy‑MT2 7B Q4. بياخد السطور القريبة كسياق." else
+        "Both speech models use Hy-MT2 7B Q4 for translation, with nearby lines as context.",
+        fontSize = 11.sp, color = V2.TextDim)
     for (asset in pack) {
         val current = models[asset]
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -259,20 +273,22 @@ private fun OfflineModelPanel(app: Video2Application, ar: Boolean, model: Offlin
             }
         }
     }
-    if (!ready) Text(if (ar) "الحزمة ${gb(total)}. نزّلها على واي فاي من مصدر الموديلات. الصوت والنصوص مابيطلعوش من جهازك." else
-        "${gb(total)} model pack. Wi-Fi recommended. Only model files are downloaded; audio and text stay on your device.",
+    if (!ready) Text(if (ar) "المتبقي للتنزيل: ${gb(remaining)}. يُفضّل واي فاي. الصوت والنصوص مابيطلعوش من جهازك." else
+        "Remaining download: ${gb(remaining)}. Wi-Fi recommended. Audio and text stay on your device.",
         fontSize = 11.sp, color = V2.TextDim)
     else Text(if (ar) "جاهز من غير نت. المعالجة المحلية ممكن تاخد وقت وتسخّن الجهاز، خصوصًا مع الفيديو الطويل." else
         "Ready offline. Long videos can take time and warm up your phone.", fontSize = 11.sp, color = V2.TextDim)
     if (!compatible) Text(OfflineIssue.NOT_SUPPORTED.text(ar), color = V2.Gold, fontSize = 12.sp)
     if (downloading != null) {
+        val label = OfflineModel.speechForJob(downloading.key)?.label.orEmpty()
+        Text(if (ar) "جارٍ تنزيل حزمة $label" else "Downloading $label pack", fontSize = 11.sp, color = V2.TextDim)
         LinearProgressIndicator(progress = { downloading.progress.toFloat() }, Modifier.fillMaxWidth().padding(top = 8.dp))
         TextButton(enabled = !downloading.stopping, onClick = { app.offlineWork.cancel(OfflineWorkKind.DOWNLOAD, downloading.key) }) {
             Text(if (downloading.stopping) { if (ar) "جارٍ الإيقاف…" else "Stopping…" } else { if (ar) "إيقاف التنزيل (قابل للاستئناف)" else "Stop download (resumable)" })
         }
     } else if (!ready) {
         val partial = pack.any { models[it]?.let { state -> state.downloaded > 0 && !state.installed } == true }
-        Button(enabled = compatible && work == null, onClick = { app.offlineModels.downloadPack(model) }, modifier = Modifier.fillMaxWidth()) {
+        Button(enabled = compatible && work == null, onClick = { app.offlineModels.downloadPack(speech) }, modifier = Modifier.fillMaxWidth()) {
             Text(if (partial) { if (ar) "استئناف تنزيل الموديلات" else "Resume model download" } else { if (ar) "تنزيل الموديلات" else "Download models" })
         }
     }
@@ -283,6 +299,26 @@ private fun OfflineModelPanel(app: Video2Application, ar: Boolean, model: Offlin
             "Saved subtitles will remain. You'll have to download the model again to use it.") },
         confirmButton = { TextButton(onClick = { app.offlineModels.remove(asset); remove = null }) { Text(if (ar) "إزالة" else "Remove") } },
         dismissButton = { TextButton(onClick = { remove = null }) { Text(if (ar) "إلغاء" else "Cancel") } }) }
+}
+
+@Composable
+private fun RetiredModelCleanup(app: Video2Application, ar: Boolean, idle: Boolean) {
+    var bytes by remember { mutableStateOf(app.offlineModels.retiredBytes()) }
+    var confirm by remember { mutableStateOf(false) }
+    if (bytes <= 0) return
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(if (ar) "ملف ترجمة قديم غير مستخدم · ${gb(bytes)}" else "Unused legacy translation file · ${gb(bytes)}",
+            modifier = Modifier.weight(1f), fontSize = 11.sp, color = V2.TextDim)
+        TextButton(enabled = idle, onClick = { confirm = true }) { Text(if (ar) "إزالة" else "Remove") }
+    }
+    if (confirm) AlertDialog(onDismissRequest = { confirm = false },
+        title = { Text(if (ar) "إزالة ملف الترجمة القديم؟" else "Remove the old translation file?") },
+        text = { Text(if (ar) "ده هيفضّي مساحة من غير ما يحذف الفيديوهات أو الترجمات المحفوظة أو موديل Q4." else
+            "This frees storage without removing videos, saved subtitles, or the Q4 model.") },
+        confirmButton = { TextButton(enabled = idle, onClick = {
+            app.offlineModels.removeRetired(); bytes = app.offlineModels.retiredBytes(); confirm = false
+        }) { Text(if (ar) "إزالة" else "Remove") } },
+        dismissButton = { TextButton(onClick = { confirm = false }) { Text(if (ar) "إلغاء" else "Cancel") } })
 }
 
 private fun gb(bytes: Long) = String.format(Locale.ROOT, "%.2f GB", bytes / 1_000_000_000.0)
