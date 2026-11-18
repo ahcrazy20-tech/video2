@@ -27,15 +27,21 @@ import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ahcrazy.video2.app
+import com.ahcrazy.video2.core.media.MAX_AUTO_RATE_WAIT_MS
 import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.MediaProblem
+import com.ahcrazy.video2.data.PublisherLinks
 import com.ahcrazy.video2.data.ResolverProblem
 import com.ahcrazy.video2.data.SmartDownloadRequest
+import com.ahcrazy.video2.data.SmartPhase
 import com.ahcrazy.video2.data.SmartResult
 import com.ahcrazy.video2.data.SmartServers
 import com.ahcrazy.video2.data.SmartStep
+import com.ahcrazy.video2.ui.components.cooldownSeconds
+import com.ahcrazy.video2.ui.components.formatCooldown
 import com.ahcrazy.video2.ui.theme.V2
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import java.io.IOException
@@ -49,35 +55,58 @@ internal fun SmartDownloadDialog(
     val app = (LocalContext.current as Activity).app()
     val queued by rememberUpdatedState(onQueued)
     val checked by rememberUpdatedState(onDirectChecked)
-    val answer = remember(request) { CompletableDeferred<Unit>() }
-    var awaitingConsent by remember(request) { mutableStateOf(false) }
-    var failure by remember(request) { mutableStateOf<SmartResult.Unavailable?>(null) }
-    var stage by remember(request) { mutableStateOf<SmartStep>(SmartStep.Direct) }
+    var attempt by remember(request) { mutableIntStateOf(0) }
+    val answer = remember(request, attempt) { CompletableDeferred<Unit>() }
+    val rejected = remember(request) { request.excludedUrls.toMutableSet() }
+    var awaitingConsent by remember(request, attempt) { mutableStateOf(false) }
+    var failure by remember(request, attempt) { mutableStateOf<SmartResult.Unavailable?>(null) }
+    var stage by remember(request, attempt) { mutableStateOf(SmartStep(SmartPhase.DIRECT)) }
+    var automaticRetry by remember(request, attempt) { mutableStateOf(false) }
+    val publisher = remember(request.video) { PublisherLinks.episodeOnAj360(request.video) }
+    val uriHandler = LocalUriHandler.current
 
-    LaunchedEffect(request) {
-        if (app.downloads.activeSmartJob(request.video) != null) { queued(); return@LaunchedEffect }
-        val result = try {
-            app.smartDownloads.find(request, preferredHeight, permitServers = {
-                if (!app.settings.smartServersAllowed.first()) {
-                    awaitingConsent = true
-                    answer.await()
-                    awaitingConsent = false
-                    app.settings.setSmartServersAllowed(true)
+    LaunchedEffect(request, preferredHeight, attempt) {
+        for (pass in 0..1) {
+            if (app.downloads.activeSmartJob(request.video) != null) { queued(); return@LaunchedEffect }
+            failure = null
+            automaticRetry = false
+            stage = SmartStep(SmartPhase.DIRECT)
+            val result = try {
+                app.smartDownloads.find(request.copy(excludedUrls = rejected.toSet()), preferredHeight, permitServers = {
+                    if (!app.settings.smartServersAllowed.first()) {
+                        if (pass > 0) false else {
+                            awaitingConsent = true
+                            answer.await()
+                            awaitingConsent = false
+                            app.settings.setSmartServersAllowed(true)
+                            true
+                        }
+                    } else true
+                }, progress = { stage = it }, onDirectChecked = { checked(it) }, onRejectedUrl = { rejected += it })
+            } catch (_: IOException) { SmartResult.Unavailable(media = MediaProblem.NETWORK, step = stage) }
+            ensureActive()
+            when (result) {
+                is SmartResult.Ready -> {
+                    app.downloads.enqueueSmart(result.candidate, request, preferredHeight.takeIf { it > 0 })
+                    queued()
+                    return@LaunchedEffect
                 }
-                true
-            }, progress = { stage = it }, onDirectChecked = { checked(it) })
-        } catch (_: IOException) { SmartResult.Unavailable(media = MediaProblem.NETWORK) }
-        ensureActive()
-        when (result) {
-            is SmartResult.Ready -> {
-                app.downloads.enqueueSmart(result.candidate, request, preferredHeight.takeIf { it > 0 })
-                queued()
+                is SmartResult.Unavailable -> {
+                    failure = result
+                    val wait = result.cooldown?.untilMs?.minus(System.currentTimeMillis()) ?: 0L
+                    // Retry one fresh lookup while this dialog is open. Don't replay a denied URL or bypass a shared quota.
+                    automaticRetry = pass == 0 && result.step?.phase != SmartPhase.DIRECT && wait in 1..MAX_AUTO_RATE_WAIT_MS
+                    if (!automaticRetry) break
+                    delay(wait)
+                }
             }
-            is SmartResult.Unavailable -> failure = result
         }
     }
 
     val failed = failure
+    val seconds = cooldownSeconds(failed?.cooldown?.untilMs)
+    val canRetry = failed != null && !failed.protected && failed.resolver != ResolverProblem.ACCESS &&
+        failed.media != MediaProblem.SIGN_IN && failed.httpStatus != 401
     AlertDialog(onDismissRequest = onClose, modifier = Modifier.testTag("smartDownload.dialog"),
         containerColor = V2.Card, titleContentColor = V2.Text, textContentColor = V2.Text,
         icon = { Icon(Icons.Filled.CloudDownload, null, tint = V2.Mint) },
@@ -92,6 +121,22 @@ internal fun SmartDownloadDialog(
                     awaitingConsent -> SmartServerDisclosure(ar)
                     failed != null -> {
                         Text(failed.text(ar), color = V2.Gold)
+                        failed.step?.let { where ->
+                            Text(where.phase.label(ar), color = V2.TextDim, style = MaterialTheme.typography.bodySmall)
+                            where.host?.let { Text(it, color = V2.Sky, style = MaterialTheme.typography.bodySmall.copy(textDirection = TextDirection.Ltr)) }
+                        }
+                        if (seconds > 0) {
+                            val time = formatCooldown(seconds, ar)
+                            Text(if (automaticRetry) {
+                                if (ar) "هنعيد المحاولة مرة واحدة بعد $time لو سيبت النافذة مفتوحة." else "One automatic retry in $time if you keep this dialog open."
+                            } else if (ar) "المحاولة متاحة بعد $time." else "You can try again in $time.", color = V2.TextDim,
+                                modifier = Modifier.testTag("smartDownload.cooldown"))
+                        }
+                        if (publisher != null) {
+                            TextButton(onClick = { onClose(); runCatching { uriHandler.openUri(publisher) } }) {
+                                Text(if (ar) "افتح الحلقة على الجزيرة 360" else "Open the episode on Al Jazeera 360")
+                            }
+                        }
                         if (!failed.protected && onManual != null && failed.resolver !in setOf(ResolverProblem.ACCESS, ResolverProblem.LIMIT) &&
                             failed.httpStatus !in setOf(401, 429)) {
                             TextButton(onClick = onManual) { Text(if (ar) "تحميل يدوي بخادمك" else "Use your own server") }
@@ -107,10 +152,13 @@ internal fun SmartDownloadDialog(
         confirmButton = {
             if (awaitingConsent) Button(onClick = { if (!answer.isCompleted) answer.complete(Unit) },
                 modifier = Modifier.testTag("smartDownload.enable")) { Text(if (ar) "فعّل وكمّل" else "Enable & continue") }
+            else if (canRetry) Button(onClick = { attempt++ }, enabled = seconds == 0L && !automaticRetry,
+                modifier = Modifier.testTag("smartDownload.retry")) { Text(if (ar) "حاول تاني" else "Try again") }
             else TextButton(onClick = onClose) { Text(if (failed == null) (if (ar) "إلغاء" else "Cancel") else (if (ar) "رجوع" else "Back")) }
         },
         dismissButton = {
             if (awaitingConsent) TextButton(onClick = onClose) { Text(if (ar) "مش دلوقتي" else "Not now") }
+            else if (canRetry) TextButton(onClick = onClose) { Text(if (ar) "إغلاق" else "Close") }
         })
 }
 
@@ -127,17 +175,23 @@ internal fun SmartServerDisclosure(ar: Boolean) {
     }
 }
 
-private fun SmartStep.text(ar: Boolean): String = when (this) {
-    SmartStep.Direct -> if (ar) "بنتحقق من المصادر المباشرة…" else "Checking direct sources…"
-    SmartStep.Measuring -> if (ar) "بنرتّب الخوادم حسب سرعة الاستجابة…" else "Ranking servers by response time…"
-    is SmartStep.Resolving -> if (ar) "بنجلب مصدر من $host…" else "Looking up a source on $host…"
-    is SmartStep.Checking -> if (ar) "بنتحقق من الوسائط قبل التحميل…" else "Verifying media before download…"
+private fun SmartStep.text(ar: Boolean): String = when (phase) {
+    SmartPhase.DIRECT -> if (ar) "بنتحقق من المصادر المباشرة…" else "Checking direct sources…"
+    SmartPhase.LOOKUP -> if (ar) "بنجلب مصدر من $host…" else "Looking up a source on $host…"
+    SmartPhase.MEDIA -> if (ar) "بنتأكد من الصورة والصوت قبل التحميل…" else "Checking video and audio before download…"
+}
+
+private fun SmartPhase.label(ar: Boolean): String = when (this) {
+    SmartPhase.DIRECT -> if (ar) "المرحلة: فحص المصدر المباشر" else "Stage: direct source check"
+    SmartPhase.LOOKUP -> if (ar) "المرحلة: جلب رابط التحميل" else "Stage: server lookup"
+    SmartPhase.MEDIA -> if (ar) "المرحلة: التحقق من الوسائط" else "Stage: media check"
 }
 
 private fun SmartResult.Unavailable.text(ar: Boolean): String {
     val detail = when {
         protected -> if (ar) "المصدر محمي أو مخصص للاشتراك، فالتحميل متوقف." else "This source is protected or restricted to subscribers."
-        httpStatus == 429 -> ResolverProblem.LIMIT.text(ar)
+        httpStatus == 429 -> if (ar) "المصدر طلب نوقف الطلبات مؤقتًا." else "The source asked us to pause requests."
+        resolver == ResolverProblem.NETWORK -> if (ar) "الاتصال بخادم التحميل ما اكتملش. اتأكد من الإنترنت وحاول تاني." else "Couldn’t reach the download server. Check your connection and try again."
         resolver != null -> resolver.text(ar)
         media != null -> media.text(ar)
         else -> if (ar) "ملقيناش ملف فيديو متاح. افتح صفحة الفيديو أو شغّله وافحص تاني." else "No downloadable video found. Open the video page or play it and scan again."

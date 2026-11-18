@@ -118,5 +118,6 @@ internal fun ContentRange.matchesResume(start: Long, expectedTotal: Long?) = thi
 
 internal class MediaDownloadException(
     message: String, val problem: MediaProblem = MediaProblem.BAD_RESPONSE,
-    val status: Int? = null, val retryDelayMillis: Long? = null
+    val status: Int? = null, val retryDelayMillis: Long? = null, val sourceHost: String? = null,
+    val retryAtMs: Long? = null
 ) : java.io.IOException(message)

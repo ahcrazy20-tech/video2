@@ -26,14 +26,24 @@ import java.net.UnknownHostException
 /** Cookies stay in WebView storage and are looked up for the actual URL on every HTTP hop. */
 internal class MediaHttp(
     externalBuilder: OkHttpClient.Builder = OkHttpClient.Builder(),
+    private val cooldowns: DownloadCooldowns = DownloadCooldowns(),
     private val cookies: (HttpUrl) -> String? = { CookieManager.getInstance().getCookie(it.toString()) }
 ) {
+    // This guard only applies to app-owned download reads, not the player's separate requests.
+    private object DownloadRead
+
+    private fun requireNoCooldown(request: Request) {
+        val owner = request.tag(DownloadAuth::class.java)?.rateLimitOwner
+        cooldowns.active(owner, request.url.host)?.let { throw it.asMediaFailure() }
+    }
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(35, TimeUnit.SECONDS)
         .dispatcher(Dispatcher().apply { maxRequestsPerHost = 8 })
         .addNetworkInterceptor { chain ->
             val incoming = chain.request()
+            if (incoming.tag(DownloadRead::class.java) != null) requireNoCooldown(incoming)
             val request = incoming.newBuilder().removeHeader("Cookie")
             val auth = incoming.tag(DownloadAuth::class.java)
             if (auth != null) {
@@ -56,13 +66,32 @@ internal class MediaHttp(
         chain.proceed(request.build())
     }.build()
 
-    private val external = externalBuilder.externalTransport().apply { interceptors().add(0, PublicMediaReads) }
+    private val external = externalBuilder.externalTransport().apply {
+        interceptors().add(0, PublicMediaReads)
+        // PublicMediaReads follows redirects explicitly. Check each target before it connects.
+        interceptors().add(1, Interceptor { chain ->
+            val request = chain.request()
+            if (request.tag(DownloadRead::class.java) != null) requireNoCooldown(request)
+            chain.proceed(request)
+        })
+    }
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
         .dispatcher(Dispatcher().apply { maxRequestsPerHost = 8 }).build()
 
     suspend fun <T> read(request: Request, consume: suspend (Response) -> T): T {
         val transport = if (request.tag(DownloadAuth::class.java)?.externalHttpsOnly == true) external else client
-        return transport.readMedia(request, consume)
+        val host = request.url.host
+        val owner = request.tag(DownloadAuth::class.java)?.rateLimitOwner
+        requireNoCooldown(request)
+        return transport.readMedia(request.newBuilder().tag(DownloadRead::class.java, DownloadRead).build()) { response ->
+            if (response.code == 429) {
+                val actual = response.request.url.host
+                val pause = cooldowns.hold(owner ?: host, actual, retryAfterMillis(response.header("Retry-After")))
+                if (owner != null && actual != host) cooldowns.hold(host, actual, null, pause.untilMs)
+                throw pause.asMediaFailure()
+            }
+            consume(response)
+        }
     }
 }
 
@@ -113,10 +142,7 @@ internal fun Response.requireMediaSuccess() {
         408, 425, 429, 500, 502, 503, 504 -> MediaProblem.TEMPORARY
         else -> MediaProblem.BAD_RESPONSE
     }
-    val delay = header("Retry-After")?.trim()?.let { raw ->
-        raw.toLongOrNull()?.coerceIn(0, 4)?.times(1000) ?: Long.MAX_VALUE
-    }
-    throw MediaDownloadException("${problem.ar} (HTTP $code)", problem, code, delay)
+    throw MediaDownloadException("${problem.ar} (HTTP $code)", problem, code, retryAfterMillis(header("Retry-After")), request.url.host)
 }
 
 /** Only retry safe reads on transient responses. Permanent access failures are never retried. */

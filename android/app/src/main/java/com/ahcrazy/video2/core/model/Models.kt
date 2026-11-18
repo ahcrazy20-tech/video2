@@ -85,7 +85,8 @@ data class DownloadAuth(
     val useBrowserCookies: Boolean = false,
     val accept: String? = null,
     val observedResource: String? = null,
-    val externalHttpsOnly: Boolean = false
+    val externalHttpsOnly: Boolean = false,
+    val rateLimitOwner: String? = null
 ) {
     companion object {
         const val CHROME_UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
@@ -124,6 +125,14 @@ enum class MediaProblem(val ar: String, val en: String, val needsNewLink: Boolea
     fun text(arabic: Boolean) = if (arabic) ar else en
 }
 
+/** Two complete progressive files offered together by a resolver — never a segment or a DASH manifest. */
+data class JoinedTracks(val audioUrl: String, val videoBytes: Long, val audioBytes: Long) {
+    internal val valid: Boolean get() = videoBytes in 1..MAX_TRACK_BYTES && audioBytes in 1..MAX_TRACK_BYTES
+    val size: Long get() = videoBytes + audioBytes
+
+    internal companion object { const val MAX_TRACK_BYTES = 1024L * 1024 * 1024 }
+}
+
 data class DetectedMedia(
     val url: String, val title: String, val kind: MediaKind, val mime: String? = null,
     val qualityLabel: String? = null, val drm: DRMKind = DRMKind.NONE, val pageUrl: String? = null,
@@ -134,7 +143,9 @@ data class DetectedMedia(
     val fromAd: Boolean = false, val probeProblem: MediaProblem? = null,
     val checkedAtMs: Long? = null, val probeHttpStatus: Int? = null,
     val publicPageUrl: String? = null,
-    val checkedVariantUrl: String? = null, val checkedAudioGroup: String? = null
+    val checkedVariantUrl: String? = null, val checkedAudioGroup: String? = null,
+    val probeRetryAtMs: Long? = null, val probeHost: String? = null,
+    val joinedTracks: JoinedTracks? = null, val resolverHost: String? = null
 ) {
     val id: String get() = url
     fun downloadChecked(now: Long = System.currentTimeMillis()): Boolean =
@@ -184,7 +195,7 @@ data class DownloadJob(
     val createdAt: Long = System.currentTimeMillis(), val destPath: String? = null,
     val preferredMaxHeight: Int? = null, val auth: DownloadAuth? = null,
     val preferredVariantUrl: String? = null, val problem: MediaProblem? = null, val httpStatus: Int? = null,
-    val preferredAudioGroup: String? = null
+    val preferredAudioGroup: String? = null, val retryAtMs: Long? = null, val rateLimitHost: String? = null
 ) {
     val canRetry: Boolean get() = media.canDownload && problem?.needsNewLink != true && state in setOf(DownloadState.PAUSED, DownloadState.FAILED)
 }

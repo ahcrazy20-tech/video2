@@ -115,7 +115,9 @@ internal fun BrowserScreen(
             (provider != null || job.problem?.needsNewLink == true) && job.httpStatus !in setOf(401, 429)) {
             shown = ""
             smartFromCapture = false
-            smart = SmartDownloadRequest(watch, job.media.title, excludedUrls = setOf(job.media.url), replaceFailedId = job.id)
+            smart = SmartDownloadRequest(watch, job.media.title,
+                excludedUrls = setOfNotNull(job.media.url, job.media.joinedTracks?.audioUrl), replaceFailedId = job.id,
+                skipJoinedTracks = job.media.joinedTracks != null)
             onConsumeRecovery()
             return@LaunchedEffect
         }

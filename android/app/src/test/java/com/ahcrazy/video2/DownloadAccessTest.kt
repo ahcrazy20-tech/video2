@@ -4,6 +4,7 @@ import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.DownloadState
 import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.model.MediaProblem
+import com.ahcrazy.video2.data.DownloadManager
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -40,6 +41,28 @@ class DownloadAccessTest {
             assertTrue(requests.all { it.path == "/authorized.mp4?sig=a%2Bb" })
             assertEquals(listOf(null, "bytes=16-", null), requests.map { it.getHeader("Range") })
             assertEquals("\"stable\"", requests[1].getHeader("If-Range"))
+        }
+    }
+
+    @Test fun transferCooldownSurvivesReloadAndDisallowsEarlyResume() = runBlocking<Unit> {
+        val app = RuntimeEnvironment.getApplication() as Video2Application
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "1800"))
+            val now = System.currentTimeMillis()
+            val job = app.downloads.enqueue(DetectedMedia(server.url("/limited.mp4").toString(), "test clip", MediaKind.MP4))
+            val failed = withTimeout(10_000) { app.downloads.jobs.first { jobs -> jobs.any { it.id == job.id && !it.state.isBusy } } }.first { it.id == job.id }
+            assertEquals(429, failed.httpStatus)
+            assertEquals(server.url("/").host, failed.rateLimitHost)
+            assertTrue(failed.retryAtMs!! >= now + 1800_000L)
+            app.downloads.resume(job.id) // Synchronizes with persistence and must not start work.
+            val reopened = DownloadManager(app, app.library)
+            val persisted = reopened.jobs.value.first { it.id == job.id }
+            assertEquals(failed.retryAtMs, persisted.retryAtMs)
+            assertEquals(failed.rateLimitHost, reopened.retryCooldown(persisted)?.host)
+            reopened.resume(job.id)
+            assertEquals(DownloadState.FAILED, reopened.jobs.value.first { it.id == job.id }.state)
+            assertEquals(1, server.requestCount)
+            assertNull(app.library.byId(job.id))
         }
     }
 

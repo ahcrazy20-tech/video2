@@ -137,7 +137,7 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
     fun noteDownloadFailure(target: String, problem: MediaProblem?, status: Int?) {
         if (problem?.needsNewLink != true) return
         val i = detected.indexOfFirst { it.url == target }
-        if (i >= 0) detected[i] = detected[i].copy(probed = true, probeProblem = problem, checkedAtMs = null, probeHttpStatus = status)
+        if (i >= 0) detected[i] = detected[i].copy(probed = true, probeProblem = problem, checkedAtMs = null, probeHttpStatus = status, probeRetryAtMs = null, probeHost = null)
     }
 
     fun rescan() { webView?.evaluateJavascript("window.__v2Scan && window.__v2Scan()", null) }
@@ -182,6 +182,8 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
             probeProblem = if (incoming.probed) incoming.probeProblem else old.probeProblem,
             checkedAtMs = if (incoming.probed) incoming.checkedAtMs else old.checkedAtMs,
             probeHttpStatus = if (incoming.probed) incoming.probeHttpStatus else old.probeHttpStatus,
+            probeRetryAtMs = if (incoming.probed) incoming.probeRetryAtMs else old.probeRetryAtMs,
+            probeHost = if (incoming.probed) incoming.probeHost else old.probeHost,
             checkedVariantUrl = if (incoming.probed) incoming.checkedVariantUrl else old.checkedVariantUrl,
             checkedAudioGroup = if (incoming.probed) incoming.checkedAudioGroup else old.checkedAudioGroup,
             publicPageUrl = incoming.publicPageUrl ?: old.publicPageUrl

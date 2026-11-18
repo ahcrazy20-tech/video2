@@ -1,5 +1,6 @@
 package com.ahcrazy.video2
 
+import com.ahcrazy.video2.core.media.DownloadCooldowns
 import com.ahcrazy.video2.core.media.MediaDownloadException
 import com.ahcrazy.video2.core.media.PublicMediaReads
 import com.ahcrazy.video2.core.media.YouTubeVideo
@@ -14,6 +15,7 @@ import com.ahcrazy.video2.data.ExternalResolver
 import com.ahcrazy.video2.data.ResolverFailure
 import com.ahcrazy.video2.data.ResolverProblem
 import com.ahcrazy.video2.data.ResolverType
+import com.ahcrazy.video2.data.SmartServers
 import kotlinx.coroutines.runBlocking
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -129,24 +131,58 @@ class ExternalResolverTest {
         assertEquals(upstream, returned(upstream).url)
     }
 
-    @Test fun publicHealthProbeDoesNotShareVideoIdOrSessionAndSurfacesRetryAfter() = runBlocking<Unit> {
+    @Test fun realLookupHonorsRetryAfterAcrossRegionsAndMakesNoStatsRequest() = runBlocking<Unit> {
         var calls = 0
+        var now = 5_000L
+        val regions = SmartServers.endpoints
         val client = OkHttpClient.Builder().addInterceptor { chain ->
             val request = chain.request()
-            assertEquals("/api/api/v1/stats", request.url.encodedPath)
-            assertNull(request.url.query)
+            assertEquals("/api/v1/videos/$id", request.url.encodedPath)
             assertEquals("GET", request.method)
+            assertEquals("true", request.url.queryParameter("local"))
+            assertTrue(request.url.queryParameter("fields")!!.split(',').contains("adaptiveFormats"))
             listOf("Cookie", "Authorization", "Referer").forEach { assertNull(request.header(it)) }
-            val status = if (calls++ == 0) 200 else 429
-            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).message("fixture").code(status)
-                .header("Retry-After", "125").body("{\"software\":{\"name\":\"invidious\"}}".toResponseBody()).build()
+            calls++
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).message("fixture").code(429)
+                .header("Retry-After", "125").body("rate limit".toResponseBody()).build()
         }.build()
-        val resolver = ExternalResolver(client)
-        resolver.pingInvidious(server)
-        val failure = runCatching { resolver.pingInvidious(server) }.exceptionOrNull() as ResolverFailure
-        assertEquals(ResolverProblem.LIMIT, failure.problem)
-        assertEquals(125_000L, failure.retryAfterMillis ?: -1L)
+        val resolver = ExternalResolver(client, DownloadCooldowns(SmartServers::cooldownGroup) { now })
+        suspend fun attempt(i: Int) = runCatching {
+            resolver.resolve(ResolverType.INVIDIOUS, regions[i], video, 0, null, null, includeSeparateTracks = true)
+        }.exceptionOrNull() as ResolverFailure
+        val first = attempt(0)
+        assertEquals(ResolverProblem.LIMIT, first.problem)
+        assertEquals(125_000L, first.retryAfterMillis ?: -1L)
+        assertEquals(130_000L, first.retryAtMs ?: -1L)
+        now += 120_000L
+        val again = attempt(1)
+        assertEquals(first.retryAtMs, again.retryAtMs)
+        assertEquals(regions[0].host, again.host)
+        assertEquals(1, calls)
+        now += 5_000L
+        attempt(0)
         assertEquals(2, calls)
+    }
+
+    @Test fun onlyACompleteSameOriginAvcAacPairIsUsedFromAdaptiveFormats() {
+        val reply = JSONObject("""{
+          "videoId":"$id", "lengthSeconds":1, "hlsUrl":"/master.m3u8",
+          "adaptiveFormats":[
+            {"url":"/video-high.mp4", "type":"video/mp4; codecs=\"avc1.64001f\"", "clen":"1000", "qualityLabel":"1080p"},
+            {"url":"/video-low.mp4?sig=a%2Bb", "type":"video/mp4; codecs=\"avc1.64001f\"", "clen":"750", "qualityLabel":"720p"},
+            {"url":"/videoplayback?range=0-10", "type":"video/mp4; codecs=\"avc1.64001f\"", "clen":"500", "qualityLabel":"720p", "bitrate":"500"},
+            {"url":"/sound.m4a", "type":"audio/mp4; codecs=\"mp4a.40.2\"", "clen":"450", "bitrate":"100"},
+            {"url":"https://foreign.example.net/sound.m4a", "type":"audio/mp4; codecs=\"mp4a.40.2\"", "clen":"450", "bitrate":"200"}
+          ]}""")
+        val resolver = ExternalResolver()
+        val items = resolver.parse(ResolverType.INVIDIOUS, server, video, reply, null, 720, includeSeparateTracks = true)
+        val pair = items.first()
+        assertEquals("https://media.example.net/video-low.mp4?sig=a%2Bb", pair.url)
+        assertEquals("https://media.example.net/sound.m4a", pair.joinedTracks!!.audioUrl)
+        assertEquals(1200L, pair.joinedTracks!!.size)
+        assertEquals(MediaKind.HLS, items.last().kind)
+        assertNull(resolver.parse(ResolverType.INVIDIOUS, server, video, reply.put("liveNow", true), null, 720,
+            includeSeparateTracks = true).single().joinedTracks)
     }
 
     @Test fun accessDenialsDoNotFanOutOrParseErrorPagesAsVideo() = runBlocking<Unit> {

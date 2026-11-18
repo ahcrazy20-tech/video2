@@ -18,16 +18,22 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ahcrazy.video2.app
+import com.ahcrazy.video2.core.media.DownloadCooldown
 import com.ahcrazy.video2.core.media.YouTubeVideo
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.model.DownloadJob
 import com.ahcrazy.video2.core.model.DownloadState
 import com.ahcrazy.video2.core.util.L10n
+import com.ahcrazy.video2.data.PublisherLinks
 import com.ahcrazy.video2.data.ResolverType
 import com.ahcrazy.video2.ui.components.GlassCard
+import com.ahcrazy.video2.ui.components.cooldownSeconds
+import com.ahcrazy.video2.ui.components.formatCooldown
 import com.ahcrazy.video2.ui.theme.V2
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -61,7 +67,7 @@ fun DownloadsScreen(ar: Boolean, onOpenSource: (DownloadJob) -> Unit, onOpenLibr
         }
         items(jobs, key = { it.id }) { job ->
             val page = httpMediaUrl(job.media.pageUrl ?: job.media.publicPageUrl ?: job.media.requestReferer)?.toString()
-            JobRow(job, ar,
+            JobRow(job, ar, cooldown = app.downloads.retryCooldown(job),
                 onPause = { app.downloads.cancel(job.id) }, onResume = { app.downloads.resume(job.id) },
                 onRemove = { app.downloads.remove(job.id) }, onOpenSource = page?.let { { onOpenSource(job) } },
                 onOpenLibrary = onOpenLibrary)
@@ -71,10 +77,14 @@ fun DownloadsScreen(ar: Boolean, onOpenSource: (DownloadJob) -> Unit, onOpenLibr
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun JobRow(job: DownloadJob, ar: Boolean, onPause: () -> Unit, onResume: () -> Unit, onRemove: () -> Unit,
+private fun JobRow(job: DownloadJob, ar: Boolean, cooldown: DownloadCooldown?, onPause: () -> Unit, onResume: () -> Unit, onRemove: () -> Unit,
                    onOpenSource: (() -> Unit)?, onOpenLibrary: () -> Unit) {
     val resolver = ResolverType.forMedia(job.media)
-    val freshSource = YouTubeVideo.fromMedia(job.media) != null && job.httpStatus !in setOf(401, 429) &&
+    val video = YouTubeVideo.fromMedia(job.media)
+    val publisher = PublisherLinks.episodeOnAj360(video)
+    val handler = LocalUriHandler.current
+    val seconds = cooldownSeconds(cooldown?.untilMs)
+    val freshSource = video != null && job.httpStatus !in setOf(401, 429) &&
         (resolver != null || job.problem?.needsNewLink == true)
     val (icon, tint) = when (job.state) {
         DownloadState.COMPLETED -> Icons.Filled.CheckCircle to V2.Mint
@@ -103,7 +113,9 @@ private fun JobRow(job: DownloadJob, ar: Boolean, onPause: () -> Unit, onResume:
                 if (job.state == DownloadState.RUNNING && !showPercent) LinearProgressIndicator(Modifier.fillMaxWidth(), color = tint)
                 else if (job.state != DownloadState.COMPLETED) LinearProgressIndicator(progress = { job.progress.toFloat().coerceIn(0f, 1f) }, Modifier.fillMaxWidth(), color = tint)
             }
-            val error = if (job.problem?.needsNewLink == true) {
+            val error = if (job.httpStatus == 429) {
+                if (ar) "المصدر وقف نقل الملف مؤقتًا (HTTP 429)." else "The source rate-limited the transfer (HTTP 429)."
+            } else if (job.problem?.needsNewLink == true) {
                 val status = job.httpStatus?.let { " (HTTP $it)" }.orEmpty()
                 job.problem.text(ar) + status
             } else if (ar) job.errorMessage ?: job.problem?.ar else job.problem?.en ?: when (job.state) {
@@ -112,9 +124,17 @@ private fun JobRow(job: DownloadJob, ar: Boolean, onPause: () -> Unit, onResume:
                 else -> null
             }
             error?.let { Text(it, color = V2.Gold, style = MaterialTheme.typography.bodySmall) }
+            if (job.httpStatus == 429) job.rateLimitHost?.let {
+                Text(it, color = V2.Sky, style = MaterialTheme.typography.bodySmall.copy(textDirection = TextDirection.Ltr))
+            }
+            if (job.canRetry && seconds > 0) {
+                val time = formatCooldown(seconds, ar)
+                Text(if (ar) "ممكن تستأنف بعد $time." else "You can resume in $time.",
+                    color = V2.TextDim, style = MaterialTheme.typography.bodySmall)
+            }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (job.state.isBusy) TextButton(onClick = onPause) { Text(if (ar) "إيقاف مؤقت" else "Pause") }
-                if (job.canRetry) TextButton(onClick = onResume) {
+                if (job.canRetry) TextButton(onClick = onResume, enabled = seconds == 0L) {
                     Text(if (job.state == DownloadState.FAILED) (if (ar) "حاول تاني" else "Try again") else (if (ar) "استئناف" else "Resume"))
                 }
                 if (onOpenSource != null && job.state == DownloadState.FAILED && job.httpStatus != 429) TextButton(onClick = onOpenSource) {
@@ -123,6 +143,9 @@ private fun JobRow(job: DownloadJob, ar: Boolean, onPause: () -> Unit, onResume:
                         job.problem?.needsNewLink == true -> if (ar) "ارجع للمصدر وافحص البدائل" else "Return to source and check alternatives"
                         else -> if (ar) "افتح صفحة المصدر" else "Open source page"
                     })
+                }
+                if (publisher != null && job.state == DownloadState.FAILED) TextButton(onClick = { runCatching { handler.openUri(publisher) } }) {
+                    Text(if (ar) "افتح الحلقة على الجزيرة 360" else "Open on Al Jazeera 360")
                 }
                 if (job.state == DownloadState.COMPLETED) TextButton(onClick = onOpenLibrary) { Text(if (ar) "افتح المكتبة" else "Open Library") }
             }

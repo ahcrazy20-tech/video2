@@ -1,6 +1,8 @@
 package com.ahcrazy.video2
 
+import com.ahcrazy.video2.core.media.DownloadCooldowns
 import com.ahcrazy.video2.core.media.MediaHttp
+import com.ahcrazy.video2.core.media.mp4TrackTypes
 import com.ahcrazy.video2.core.media.ObservedMediaRequest
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.requireMediaSuccess
@@ -8,10 +10,12 @@ import com.ahcrazy.video2.core.media.retryMediaRead
 import com.ahcrazy.video2.core.model.DRMKind
 import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.DownloadAuth
+import com.ahcrazy.video2.core.model.JoinedTracks
 import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.model.MediaProblem
 import com.ahcrazy.video2.data.MediaProbe
 import kotlinx.coroutines.runBlocking
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Response
@@ -233,6 +237,61 @@ class MediaProbeHttpTest {
             assertEquals(7, server.requestCount)
         }
     }
+
+    @Test fun verifiesBothActualMp4TrackHeadersAndDoesNotAcceptVideoAsAudio() = runBlocking<Unit> {
+        val v = fixtureBytes("fixture-picture.mp4")
+        val a = fixtureBytes("fixture-sound.m4a")
+        assertEquals(setOf("vide"), v.mp4TrackTypes())
+        assertEquals(setOf("soun"), a.mp4TrackTypes())
+        assertTrue(a.copyOf(26).mp4TrackTypes().isEmpty())
+        val requests = mutableListOf<String>()
+        var substitutePictureForAudio = false
+        val fixture = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val isVideo = request.url.encodedPath == "/picture.mp4"
+            requests += request.url.encodedPath
+            assertNull(request.header("Cookie"))
+            assertNull(request.header("Referer"))
+            assertNull(request.header("Range"))
+            val data = if (isVideo || substitutePictureForAudio) v else a
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).message("fixture").code(200)
+                .body(data.toResponseBody((if (isVideo) "video/mp4" else "audio/mp4").toMediaType())).build()
+        }
+        val probe = MediaProbe(MediaHttp(fixture) { error("no browser session") })
+        val media = DetectedMedia("https://media.example.net/picture.mp4", "sample", MediaKind.MP4,
+            joinedTracks = JoinedTracks("https://media.example.net/sound.m4a", v.size.toLong(), a.size.toLong()))
+        val valid = probe.check(media, DownloadAuth.external, automatic = true)
+        assertTrue(valid.downloadChecked())
+        assertEquals((v.size + a.size).toLong(), valid.byteSize ?: -1L)
+        substitutePictureForAudio = true
+        val wrong = probe.check(media.copy(joinedTracks = media.joinedTracks!!.copy(audioBytes = v.size.toLong())), DownloadAuth.external)
+        assertFalse(wrong.downloadChecked())
+        assertEquals(MediaProblem.NOT_MEDIA, wrong.probeProblem)
+        assertEquals(listOf("/picture.mp4", "/sound.m4a", "/picture.mp4", "/sound.m4a"), requests)
+    }
+
+    @Test fun mediaCooldownKeepsTheSourceHostAndDoesNotRetryUntilDeadline() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            var now = System.currentTimeMillis()
+            server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "175"))
+            server.enqueue(mediaReply())
+            val probe = MediaProbe(MediaHttp(cooldowns = DownloadCooldowns(now = { now })) { null })
+            val media = DetectedMedia(server.url("/file.mp4").toString(), "sample", MediaKind.MP4)
+            val limited = probe.check(media, DownloadAuth.default)
+            assertEquals(429, limited.probeHttpStatus)
+            assertEquals(server.url("/").host, limited.probeHost)
+            assertEquals(now + 175_000L, limited.probeRetryAtMs ?: -1L)
+            now += 60_000L
+            val again = probe.check(media, DownloadAuth.default)
+            assertEquals(limited.probeRetryAtMs, again.probeRetryAtMs)
+            assertEquals(1, server.requestCount)
+            now += 115_000L
+            assertTrue(probe.check(media, DownloadAuth.default).downloadChecked())
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    private fun fixtureBytes(name: String): ByteArray = checkNotNull(javaClass.getResourceAsStream("/media/$name")).use { it.readBytes() }
 
     @Test fun onlyTransientReadsAreRetried() = runBlocking<Unit> {
         MockWebServer().use { server ->

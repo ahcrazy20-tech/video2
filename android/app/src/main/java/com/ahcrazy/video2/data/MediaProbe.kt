@@ -10,6 +10,7 @@ import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.isMediaFragment
 import com.ahcrazy.video2.core.media.isExpiredPlayerLink
 import com.ahcrazy.video2.core.media.mediaValidator
+import com.ahcrazy.video2.core.media.mp4TrackTypes
 import com.ahcrazy.video2.core.media.requireMediaSuccess
 import com.ahcrazy.video2.core.media.responseMediaKind
 import com.ahcrazy.video2.core.model.DRMKind
@@ -26,6 +27,7 @@ import java.io.IOException
 import kotlin.math.abs
 
 private const val SNIFF_BYTES = 4_096L
+internal const val TRACK_HEADER_BYTES = 64 * 1024L
 private const val PLAYLIST_LIMIT = 2L * 1024 * 1024
 
 /** User-initiated metadata check. It never downloads the media or changes the source URL. */
@@ -37,33 +39,44 @@ internal class MediaProbe(private val http: MediaHttp) {
         if (url.isExpiredPlayerLink()) return media.failed(MediaProblem.EXPIRED)
         return try {
             withTimeoutOrNull(if (auth.externalHttpsOnly) 18_000 else 12_000) {
-                val known = if (media.kind == MediaKind.HLS || media.kind == MediaKind.DASH) media else sniff(media, url, auth)
+                val known = if (media.joinedTracks != null) checkJoined(media, url, auth)
+                    else if (media.kind == MediaKind.HLS || media.kind == MediaKind.DASH) media else sniff(media, url, auth)
                 if (auth.externalHttpsOnly && !known.kind.isCompleteVideo) throw notMedia()
                 when (known.kind) {
                     MediaKind.HLS -> checkHls(known, url, auth, preferredHeight, automatic)
                     MediaKind.DASH -> checkDash(known, url, auth)
                     else -> known
-                }.copy(probed = true, probeProblem = null, checkedAtMs = System.currentTimeMillis(), probeHttpStatus = null)
+                }.copy(probed = true, probeProblem = null, checkedAtMs = System.currentTimeMillis(), probeHttpStatus = null, probeRetryAtMs = null, probeHost = null)
             } ?: media.failed(MediaProblem.NETWORK)
         } catch (e: CancellationException) {
             throw e
         } catch (e: ProtectedMedia) {
-            media.copy(drm = e.drm, probed = true, probeProblem = null, checkedAtMs = null, probeHttpStatus = null)
+            media.copy(drm = e.drm, probed = true, probeProblem = null, checkedAtMs = null, probeHttpStatus = null, probeRetryAtMs = null, probeHost = null)
         } catch (e: MediaDownloadException) {
-            media.failed(e.problem, e.status)
+            media.failed(e.problem, e.status, e.retryAtMs, e.sourceHost)
         } catch (_: IOException) {
             media.failed(MediaProblem.NETWORK)
         }
     }
 
-    private suspend fun sniff(media: DetectedMedia, url: HttpUrl, auth: DownloadAuth): DetectedMedia =
+    private suspend fun checkJoined(media: DetectedMedia, video: HttpUrl, auth: DownloadAuth): DetectedMedia {
+        val tracks = media.joinedTracks ?: throw notMedia()
+        val audio = externalHttpsUrl(tracks.audioUrl)?.takeIf { !it.isMediaFragment() && !it.isExpiredPlayerLink() } ?: throw notMedia()
+        if (!auth.externalHttpsOnly || media.kind != MediaKind.MP4 || !tracks.valid || video == audio) throw notMedia()
+        sniff(media, video, auth, MediaKind.MP4, tracks.videoBytes)
+        sniff(media.copy(kind = MediaKind.M4A, mime = "audio/mp4", byteSize = tracks.audioBytes), audio, auth, MediaKind.M4A, tracks.audioBytes)
+        return media.copy(byteSize = tracks.size)
+    }
+
+    private suspend fun sniff(media: DetectedMedia, url: HttpUrl, auth: DownloadAuth,
+                              trackKind: MediaKind? = null, trackSize: Long? = null): DetectedMedia =
         // Match the initial download request. Some servers allow Range previews but refuse a full GET.
         // Read at most SNIFF_BYTES and close; neither a successful HEAD nor a Range preview can mark it ready.
         http.read(http.request(url, auth).header("Accept-Encoding", "identity").build()) { response ->
             response.requireMediaSuccess()
             if (response.request.url.isMediaFragment()) throw notMedia()
             val type = response.header("Content-Type")
-            val prefix = response.peekBody(SNIFF_BYTES).bytes()
+            val prefix = response.peekBody(if (trackKind == null) SNIFF_BYTES else TRACK_HEADER_BYTES).bytes()
             if (prefix.isEmpty()) throw notMedia()
             val range = if (response.code == 206) ContentRange.parse(response.header("Content-Range")) else null
             if (response.code == 206 && (range?.start != 0L || range.total == null)) throw MediaDownloadException("الخادم رجّع نطاقًا غير صالح.")
@@ -73,6 +86,10 @@ internal class MediaProbe(private val http: MediaHttp) {
                 throw MediaDownloadException("الخادم بيقدم جزء فقط من غير معرّف ثابت للملف.")
             }
             val size = if (response.code == 206) range?.total else response.body?.contentLength()?.takeIf { it > 0 }
+            if (trackKind != null) {
+                val handler = if (trackKind == MediaKind.M4A) "soun" else "vide"
+                if (kind != trackKind || size != trackSize || prefix.mp4TrackTypes() != setOf(handler)) throw notMedia()
+            }
             media.copy(kind = kind, mime = type ?: media.mime, byteSize = size ?: media.byteSize)
         }
 
@@ -127,8 +144,9 @@ internal class MediaProbe(private val http: MediaHttp) {
             media.copy(kind = MediaKind.DASH, byteSize = null)
         }
 
-    private fun DetectedMedia.failed(problem: MediaProblem, status: Int? = null) =
-        copy(probed = true, probeProblem = problem, checkedAtMs = null, probeHttpStatus = status, checkedVariantUrl = null, checkedAudioGroup = null)
+    private fun DetectedMedia.failed(problem: MediaProblem, status: Int? = null, retry: Long? = null, host: String? = null) =
+        copy(probed = true, probeProblem = problem, checkedAtMs = null, probeHttpStatus = status, probeRetryAtMs = retry,
+            probeHost = host, checkedVariantUrl = null, checkedAudioGroup = null)
     private fun notMedia() = MediaDownloadException(MediaProblem.NOT_MEDIA.ar, MediaProblem.NOT_MEDIA)
 }
 
