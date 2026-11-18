@@ -3,9 +3,11 @@ package com.ahcrazy.video2.data.offline
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.CancellationSignal
+import android.os.PowerManager
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -108,6 +110,27 @@ internal class OfflineModels(private val context: Context, private val work: Off
 
     fun compatible(model: OfflineModel): Boolean = Build.SUPPORTED_ABIS.firstOrNull() == "arm64-v8a" &&
         !manager.isLowRamDevice && memory().totalMem >= model.minTotalRam
+
+    // Vulkan is optional; the driver and actual native backend are checked again on load.
+    fun supportsVulkan() = Build.VERSION.SDK_INT >= 29 && Build.SUPPORTED_ABIS.firstOrNull() == "arm64-v8a" &&
+        context.packageManager.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, 0x00402000) // Vulkan 1.2
+
+    fun supportsOverlap(speech: OfflineModel, translator: OfflineModel) = supportsVulkan() &&
+        translator == OfflineModel.HYMT_LITE && speech in setOf(OfflineModel.WHISPER_MEDIUM_Q5, OfflineModel.WHISPER_TURBO) &&
+        memory().totalMem >= 8_192 * MIB && !manager.isLowRamDevice
+
+    private fun thermallyLimited() = Build.VERSION.SDK_INT >= 29 &&
+        context.getSystemService(PowerManager::class.java).currentThermalStatus >= PowerManager.THERMAL_STATUS_SEVERE
+
+    fun canUseVulkan(model: OfflineModel): Boolean {
+        val ram = memory()
+        return !thermallyLimited() && !ram.lowMemory && ram.availMem >= maxOf(model.requiredFreeRam + 512 * MIB, ram.threshold + 768 * MIB)
+    }
+
+    fun overlapHasHeadroom(): Boolean {
+        val ram = memory()
+        return !thermallyLimited() && !ram.lowMemory && ram.availMem >= maxOf(2_048 * MIB, ram.threshold + 512 * MIB)
+    }
 
     fun ready(model: OfflineModel) = file(model).let { it.isFile && it.length() == model.spec.bytes }
 

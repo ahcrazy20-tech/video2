@@ -1,6 +1,5 @@
 package com.ahcrazy.video2.ui.downloads
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -40,7 +39,7 @@ import com.ahcrazy.video2.ui.theme.V2
 fun DownloadsScreen(ar: Boolean, onOpenSource: (DownloadJob) -> Unit, onOpenLibrary: () -> Unit) {
     val app = (LocalContext.current as android.app.Activity).app()
     val jobs by app.downloads.jobs.collectAsState()
-    LazyColumn(Modifier.fillMaxSize().background(V2.Bg), contentPadding = PaddingValues(16.dp),
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             Text(if (ar) "التحميلات" else "Downloads", style = MaterialTheme.typography.headlineMedium, color = V2.Text)
@@ -87,7 +86,7 @@ private fun JobRow(job: DownloadJob, ar: Boolean, cooldown: DownloadCooldown?, o
     val (icon, tint) = when (job.state) {
         DownloadState.COMPLETED -> Icons.Filled.CheckCircle to V2.Mint
         DownloadState.PAUSED -> Icons.Filled.PauseCircle to V2.Gold
-        DownloadState.FAILED, DownloadState.BLOCKED_DRM -> Icons.Filled.ErrorOutline to V2.Accent
+        DownloadState.FAILED, DownloadState.BLOCKED_DRM -> Icons.Filled.ErrorOutline to V2.Danger
         else -> Icons.Filled.CloudDownload to V2.Sky
     }
     GlassCard(Modifier.fillMaxWidth()) {

@@ -11,8 +11,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -33,13 +31,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ahcrazy.video2.ui.theme.V2
+import com.ahcrazy.video2.ui.theme.glassSurface
 
 @Composable
-fun GlassCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    Card(modifier, shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = V2.Card)) {
-        Box(Modifier.padding(14.dp)) { content() }
-    }
+fun GlassCard(modifier: Modifier = Modifier, emphasized: Boolean = false, content: @Composable () -> Unit) {
+    Box(modifier.glassSurface(RoundedCornerShape(19.dp), emphasized).padding(14.dp)) { content() }
 }
 
 @Composable

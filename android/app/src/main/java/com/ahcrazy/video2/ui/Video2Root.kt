@@ -51,6 +51,8 @@ import com.ahcrazy.video2.ui.player.PlayerScreen
 import com.ahcrazy.video2.ui.settings.SettingsScreen
 import com.ahcrazy.video2.ui.theme.V2
 import com.ahcrazy.video2.ui.theme.Video2Theme
+import com.ahcrazy.video2.ui.theme.Video2Appearance
+import com.ahcrazy.video2.ui.theme.galaxyBackground
 import com.ahcrazy.video2.ui.translate.ConversionScreen
 import com.ahcrazy.video2.ui.translate.DubbingSheet
 import com.ahcrazy.video2.ui.translate.SubtitleReviewScreen
@@ -63,6 +65,7 @@ fun Video2Root() {
     val app = activity.app()
     val lang by app.settings.lang.collectAsState(initial = "ar")
     val ar = lang != "en"
+    val appearance by app.settings.appearance.collectAsState(initial = "galaxy")
     var tab by rememberSaveable { mutableStateOf(AppTab.BROWSER) }
     val tabState = rememberSaveableStateHolder()
     var locked by remember { mutableStateOf(app.settings.hasAppPassword()) }
@@ -79,8 +82,8 @@ fun Video2Root() {
     var showConvert by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    Video2Theme(rtl = ar) {
-        Box(Modifier.fillMaxSize().background(V2.Bg)) {
+    Video2Theme(rtl = ar, appearance = Video2Appearance.fromStored(appearance)) {
+        Box(Modifier.fillMaxSize().galaxyBackground()) {
             when {
                 locked -> LockScreen(ar, onUnlock = { locked = false })
                 playingVideo != null || playingStream != null -> PlayerScreen(

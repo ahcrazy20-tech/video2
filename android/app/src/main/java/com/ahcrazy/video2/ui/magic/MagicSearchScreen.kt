@@ -116,7 +116,7 @@ internal fun MagicSearchScreen(
     val visible = state.results.filter { state.activeSource == null || it.key == state.activeSource }
     val total = state.results.values.sumOf { it.size }
 
-    Column(Modifier.fillMaxSize().background(V2.Bg).padding(horizontal = 14.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Filled.AutoAwesome, null, tint = V2.Accent)
             Spacer(Modifier.width(8.dp))
@@ -241,7 +241,7 @@ internal fun MagicSearchScreen(
 @Composable private fun SourceChip(label: String, count: Int, active: Boolean, onClick: () -> Unit) {
     Box(Modifier.clip(RoundedCornerShape(50)).background(if (active) V2.Accent else V2.Card).clickable(onClick = onClick)
         .padding(horizontal = 10.dp, vertical = 6.dp)) {
-        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (active) Color.White else V2.TextDim)
+        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (active) V2.Bg else V2.TextDim)
     }
 }
 

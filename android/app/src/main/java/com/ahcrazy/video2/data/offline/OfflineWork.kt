@@ -66,7 +66,7 @@ internal data class OfflineWorkStatus(
     val kind: OfflineWorkKind, val key: String, val progress: Double = 0.0, val stopping: Boolean = false
 )
 
-/** One foreground slot for downloads or inference: never keep both engines or a download resident. */
+/** One foreground slot for downloads or inference: downloads never run alongside inference. */
 internal class OfflineWork(private val context: Context) {
     private data class Task(
         val ticket: Int, val signal: CancellationSignal, val body: (CancellationSignal, (Double) -> Unit) -> Unit,

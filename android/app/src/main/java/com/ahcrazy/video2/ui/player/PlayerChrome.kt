@@ -140,6 +140,7 @@ internal fun PlayerDeck(
     onCaptions: () -> Unit, onRotate: () -> Unit,
 ) {
     val fraction = if (duration > 0) (elapsed.toDouble() / duration).toFloat().coerceIn(0f, 1f) else 0f
+    val trackOutline = V2.Outline
     val timeStyle = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, textDirection = TextDirection.Ltr)
     val elapsedText = MagicDuration.format(elapsed / 1000.0)
     val durationText = if (live) (if (ar) "مباشر" else "LIVE") else if (duration > 0) MagicDuration.format(duration / 1000.0) else "–:–"
@@ -159,7 +160,7 @@ internal fun PlayerDeck(
                             track = {
                                 Canvas(Modifier.fillMaxWidth().height(4.dp)) {
                                     val y = size.height / 2f
-                                    drawLine(V2.Outline, Offset(0f, y), Offset(size.width, y), size.height, StrokeCap.Round)
+                                    drawLine(trackOutline, Offset(0f, y), Offset(size.width, y), size.height, StrokeCap.Round)
                                     if (seekable) {
                                         drawLine(V2.Sky.copy(alpha = .52f), Offset(0f, y), Offset(size.width * buffered.coerceIn(0f, 1f), y), size.height, StrokeCap.Round)
                                         drawLine(V2.Mint, Offset(0f, y), Offset(size.width * fraction, y), size.height, StrokeCap.Round)

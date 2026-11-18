@@ -36,6 +36,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +48,7 @@ import androidx.compose.ui.unit.sp
 import com.ahcrazy.video2.Video2Application
 import com.ahcrazy.video2.app
 import com.ahcrazy.video2.core.model.MediaKind
+import com.ahcrazy.video2.core.model.OfflinePreset
 import com.ahcrazy.video2.core.model.RefinerProvider
 import com.ahcrazy.video2.core.model.STTProvider
 import com.ahcrazy.video2.core.model.SavedVideo
@@ -60,6 +62,7 @@ import com.ahcrazy.video2.data.offline.OfflineIssue
 import com.ahcrazy.video2.data.offline.OfflineModel
 import com.ahcrazy.video2.data.offline.OfflineWorkKind
 import com.ahcrazy.video2.data.offline.RETIRED_TRANSLATOR_ID
+import com.ahcrazy.video2.ui.components.ChipPreview
 import com.ahcrazy.video2.ui.components.EmptyState
 import com.ahcrazy.video2.ui.components.GlassCard
 import com.ahcrazy.video2.ui.components.PickerRow
@@ -78,23 +81,26 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
     val installed by app.offlineModels.models.collectAsState()
     var showNew by remember { mutableStateOf(false) }
     var showModels by remember { mutableStateOf(false) }
+    var performanceId by rememberSaveable { mutableStateOf<String?>(null) }
     var requestedTranslator by remember { mutableStateOf(OfflineModel.HYMT_LITE) }
 
     androidx.compose.runtime.LaunchedEffect(preselected) { if (preselected != null) showNew = true }
 
-    Column(Modifier.fillMaxSize().background(V2.Bg).padding(14.dp)) {
+    Column(Modifier.fillMaxSize().padding(14.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(if (ar) "الترجمة والدبلجة" else "Translate & Dub", fontSize = 24.sp, fontWeight = FontWeight.Bold)
                 Text(if (ar) "تفريغ صوتي وترجمة للفيديوهات المحفوظة · ٣ ملفات SRT" else "Transcription and translation for saved videos · 3 SRT files", fontSize = 11.sp, color = V2.TextDim)
             }
-            FloatingActionButton(onClick = { showNew = true }, containerColor = V2.Accent, modifier = Modifier.padding(4.dp)) {
+            FloatingActionButton(onClick = { showNew = true }, containerColor = V2.Action, modifier = Modifier.padding(4.dp)) {
                 Icon(Icons.Filled.Add, null, tint = Color.White)
             }
         }
-        GlassCard(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+        GlassCard(Modifier.fillMaxWidth().padding(bottom = 12.dp), emphasized = true) {
             Column {
-                Text(if (ar) "ترجمة على الجهاز" else "On-device subtitles", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                ChipPreview(if (ar) "معالجة أوفلاين" else "OFFLINE WORKSPACE", V2.Mint)
+                Text(if (ar) "ترجمة على الجهاز" else "On-device subtitles", fontWeight = FontWeight.Bold, fontSize = 17.sp,
+                    modifier = Modifier.padding(top = 6.dp))
                 Text(if (ar) "نزّل الموديلات مرة واحدة. بعدها التفريغ والترجمة من غير إنترنت أو مفاتيح API." else
                     "Install the models once. Then transcribe and translate without internet or API keys.",
                     fontSize = 11.sp, color = V2.TextDim, modifier = Modifier.padding(top = 4.dp))
@@ -132,7 +138,7 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
                             fontSize = 11.sp, color = V2.TextDim, modifier = Modifier.padding(top = 4.dp))
                         Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(if (stopping) { if (ar) "جارٍ الإيقاف…" else "Stopping…" } else phaseText(job.phase, ar), fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                                color = if (job.phase == TranslationPhase.DONE) V2.Mint else if (job.phase == TranslationPhase.FAILED) V2.Accent else V2.Gold)
+                                color = if (job.phase == TranslationPhase.DONE) V2.Mint else if (job.phase == TranslationPhase.FAILED) V2.Danger else V2.Gold)
                             Spacer(Modifier.weight(1f))
                             Text("${(job.progress * 100).toInt()}%", fontSize = 11.sp, color = V2.TextDim)
                             if (job.cueCount > 0) Text(" · ${job.cueCount} " + if (ar) "سطر" else "lines", fontSize = 11.sp, color = V2.TextDim)
@@ -155,6 +161,7 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
                                 })
                             }
                         }
+                        if (offline && job.phase == TranslationPhase.DONE) PerformanceButton(job, ar) { performanceId = job.id }
                         Row {
                             if (job.phase == TranslationPhase.DONE) TextButton(onClick = { onReviewJob(job) }) { Text(if (ar) "مراجعة وتعديل" else "Review & edit") }
                             if (!retired && job.phase in setOf(TranslationPhase.FAILED, TranslationPhase.PAUSED, TranslationPhase.CANCELLED))
@@ -169,6 +176,7 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
         }
     }
 
+    jobs.firstOrNull { it.id == performanceId }?.let { PerformanceSheet(it, ar) { performanceId = null } }
     if (showNew) NewTranslationSheet(app, ar, videos, preselected, onDismiss = { showNew = false; onConsumePreselected() })
     if (showModels) ModalBottomSheet(onDismissRequest = { showModels = false }) {
         var speech by remember { mutableStateOf(app.offlineModels.defaultSpeech) }
@@ -207,6 +215,7 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
     var mode by remember { mutableStateOf(TranslationMode.ON_DEVICE) }
     var speech by remember { mutableStateOf(app.offlineModels.defaultSpeech) }
     var fastSpeech by remember { mutableStateOf(false) }
+    var preset by rememberSaveable { mutableStateOf(OfflinePreset.CPU) }
     var localTranslator by remember { mutableStateOf(app.offlineModels.defaultTranslator) }
     var stt by remember { mutableStateOf(STTProvider.AUTO) }
     var refiner by remember { mutableStateOf(RefinerProvider.AUTO) }
@@ -214,6 +223,10 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
     val models by app.offlineModels.models.collectAsState()
     val work by app.offlineWork.status.collectAsState()
     val offline = mode == TranslationMode.ON_DEVICE
+    val vulkan = remember(app) { app.offlineModels.supportsVulkan() }
+    val overlap = remember(app, speech, localTranslator) { app.offlineModels.supportsOverlap(speech, localTranslator) }
+    val profiles = if (overlap) OfflinePreset.entries else if (vulkan) listOf(OfflinePreset.CPU, OfflinePreset.VULKAN) else listOf(OfflinePreset.CPU)
+    val effective = preset.takeIf { it in profiles } ?: if (vulkan) OfflinePreset.VULKAN else OfflinePreset.CPU
     val video = videos.firstOrNull { it.id == videoId } ?: videos.firstOrNull()
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
@@ -237,6 +250,19 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
                             else { if (ar) "دقة أعلى" else "Higher accuracy" }
                         }) { fastSpeech = it }
                     }
+                    SectionTitle(if (ar) "مسار التشغيل والقياس" else "Execution & timing")
+                    if (vulkan) PickerRow(if (ar) "التفريغ والترجمة" else "Execution path", effective, profiles, { it.title(ar) }) { preset = it }
+                    else ChipPreview(OfflinePreset.CPU.title(ar), V2.Sky)
+                    Text(if (!vulkan) {
+                        if (ar) "Vulkan 1.2 مش متاح على الجهاز ده. التقرير هيقيس الـCPU." else "Vulkan 1.2 is unavailable. The report measures CPU."
+                    } else if (effective == OfflinePreset.CPU) {
+                        if (ar) "جرّب نفس الفيديو تاني بمسار GPU عشان تقارن التقريرين." else "Run the same clip with GPU to compare reports."
+                    } else {
+                        if (ar) "تجريبي: Whisper على Vulkan والمترجم على CPU. لو الجهاز ماقدرش، التفريغ يكمل على CPU." else
+                            "Experimental: Whisper on Vulkan, translation on CPU. Falls back to CPU if needed."
+                    }, color = V2.TextDim, fontSize = 12.sp)
+                    if (vulkan && !overlap) Text(if (ar) "التداخل متاح مع Turbo أو Medium Q5 + مترجم 1.8B وعلى جهاز برام كافية." else
+                        "Overlap requires Turbo or Medium Q5, the 1.8B translator, and sufficient device RAM.", color = V2.TextDim, fontSize = 11.sp)
                     if (manifest) Text(if (ar) "اختار ملف فيديو أو صوت محفوظ واحد، مش قائمة HLS أو DASH." else "Choose a single saved video or audio file, not an HLS or DASH playlist.",
                         color = V2.Gold, fontSize = 12.sp)
                 } else {
@@ -253,7 +279,7 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
                 val compatible = remember(app, speech, localTranslator) { pack.all(app.offlineModels::compatible) }
                 Button(onClick = {
                     if (offline) {
-                        if (app.translations.startOffline(video.id, source, target, speech, localTranslator, fastSpeech)) onDismiss()
+                        if (app.translations.startOffline(video.id, source, target, speech, localTranslator, fastSpeech, effective)) onDismiss()
                     } else {
                         app.translations.start(video.id, source, target, stt, refiner, translator)
                         onDismiss()

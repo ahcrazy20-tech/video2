@@ -36,6 +36,7 @@ import androidx.compose.runtime.saveable.SaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -46,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ahcrazy.video2.core.util.L10n
 import com.ahcrazy.video2.ui.theme.V2
+import com.ahcrazy.video2.ui.theme.glassSurface
 
 internal enum class AppTab(val label: String, val icon: ImageVector) {
     BROWSER("tab.browser", Icons.Filled.Explore),
@@ -74,7 +76,7 @@ internal fun AppTabs(
             savedState.SaveableStateProvider(selected.name) { content(selected) }
         }
         if (immersive) Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)))
-        else Column(Modifier.fillMaxWidth().background(V2.Card)
+        else Column(Modifier.fillMaxWidth().glassSurface(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
             .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))) {
             Row(Modifier.fillMaxWidth().height(64.dp).selectableGroup().padding(horizontal = 2.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -83,7 +85,7 @@ internal fun AppTabs(
                     val tint = if (active) V2.Mint else V2.TextDim
                     Column(
                         Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(12.dp))
-                            .background(if (active) V2.Mint.copy(alpha = .12f) else V2.Card).testTag(tab.label).selectable(selected = active, role = Role.Tab, onClick = { onSelect(tab) }),
+                            .background(if (active) V2.Mint.copy(alpha = .12f) else Color.Transparent).testTag(tab.label).selectable(selected = active, role = Role.Tab, onClick = { onSelect(tab) }),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {

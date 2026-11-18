@@ -2,7 +2,6 @@ package com.ahcrazy.video2.ui.settings
 
 import android.content.Intent
 import android.net.Uri
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -44,6 +43,7 @@ import com.ahcrazy.video2.ui.components.PickerRow
 import com.ahcrazy.video2.ui.components.SectionTitle
 import com.ahcrazy.video2.ui.components.qualityOptions
 import com.ahcrazy.video2.ui.theme.V2
+import com.ahcrazy.video2.ui.theme.Video2Appearance
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.IOException
@@ -57,6 +57,7 @@ fun SettingsScreen(ar: Boolean, onLangChange: (String) -> Unit, onLockNow: () ->
     var pwMsg by remember { mutableStateOf<String?>(null) }
     var hasPw by remember { mutableStateOf(app.settings.hasAppPassword()) }
     val maxHeight by app.settings.downloadMaxHeight.collectAsState(0)
+    val appearance by app.settings.appearance.collectAsState("galaxy")
     val smartServers by app.settings.smartServersAllowed.collectAsState(false)
     var confirmSmart by remember { mutableStateOf(false) }
     var smartSettingError by remember { mutableStateOf(false) }
@@ -82,8 +83,10 @@ fun SettingsScreen(ar: Boolean, onLangChange: (String) -> Unit, onLockNow: () ->
     var trPref by remember { mutableStateOf("auto") }
     var storageMsg by remember { mutableStateOf<String?>(null) }
 
-    Column(Modifier.fillMaxSize().background(V2.Bg).verticalScroll(rememberScrollState()).padding(horizontal = 14.dp)) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp)) {
         Text(if (ar) "الإعدادات" else "Settings", fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp))
+
+        AppearancePicker(ar, Video2Appearance.fromStored(appearance)) { theme -> scope.launch { app.settings.setAppearance(theme.id) } }
 
         SectionTitle("🔒 " + if (ar) "حماية التطبيق" else "App protection")
         GlassCard(Modifier.fillMaxWidth()) {

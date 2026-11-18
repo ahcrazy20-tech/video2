@@ -18,6 +18,7 @@ private val Context.dataStore by preferencesDataStore("video2_prefs")
 class AppSettings(private val ctx: Context) {
     private object K {
         val LANG = stringPreferencesKey("lang")
+        val APPEARANCE = stringPreferencesKey("ui.appearance")
         val DOWNLOAD_MAX_HEIGHT = intPreferencesKey("dl.maxHeight")
         // Scope this opt-in to the disclosed provider/regions; a changed provider needs a new opt-in.
         val SMART_SERVERS = booleanPreferencesKey("dl.smart.chocolatemoo.us-eu.v1")
@@ -35,6 +36,7 @@ class AppSettings(private val ctx: Context) {
     }
     internal suspend fun setResolverEndpoint(type: ResolverType, value: String) = ctx.dataStore.edit { it[K.resolver(type)] = value }
 
+    val appearance: Flow<String> = ctx.dataStore.data.map { it[K.APPEARANCE] ?: "galaxy" }
     val lang: Flow<String> = ctx.dataStore.data.map { it[K.LANG] ?: "ar" }
     internal val smartServersAllowed = ctx.dataStore.data.map { it[K.SMART_SERVERS] ?: false }
     internal suspend fun setSmartServersAllowed(value: Boolean) = ctx.dataStore.edit { it[K.SMART_SERVERS] = value }
@@ -46,6 +48,7 @@ class AppSettings(private val ctx: Context) {
     val adBlockFilterVideoAds: Flow<Boolean> = ctx.dataStore.data.map { (it[K.ADBLOCK_FILTER_VIDEO_ADS] ?: "true") == "true" }
     val azureRegion: Flow<String> = ctx.dataStore.data.map { it[K.AZURE_REGION] ?: "eastus" }
 
+    suspend fun setAppearance(v: String) = ctx.dataStore.edit { it[K.APPEARANCE] = v }
     suspend fun setLang(v: String) = ctx.dataStore.edit { it[K.LANG] = v }
     suspend fun setDownloadMaxHeight(v: Int) = ctx.dataStore.edit { it[K.DOWNLOAD_MAX_HEIGHT] = v }
     suspend fun setSttConcurrency(v: Int) = ctx.dataStore.edit { it[K.STT_CONCURRENCY] = v.coerceIn(1, 4) }

@@ -107,5 +107,6 @@ data class TranslationJob(
     val cueCount: Int = 0, val message: String? = null, val createdAt: Long = System.currentTimeMillis(),
     val mode: TranslationMode = TranslationMode.CLOUD, val offlineModel: String? = null, val offlineIssue: String? = null,
     val offlineSpeechModel: String? = null, val offlineFastSpeech: Boolean = false,
-    val offlineTranscriptFrom: String? = null
+    val offlineTranscriptFrom: String? = null,
+    val offlinePreset: OfflinePreset = OfflinePreset.CPU, val offlinePerformance: OfflinePerformance? = null
 )

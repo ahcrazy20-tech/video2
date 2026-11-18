@@ -8,14 +8,18 @@ internal data class SpeechSegment(val startCs: Long, val endCs: Long, val text: 
 internal data class SpeechResult(val language: String, val segments: List<SpeechSegment>)
 
 internal interface LocalSpeech : AutoCloseable {
+    val vulkan: Boolean get() = false
     fun decode(pcm: ShortArray, language: String, prompt: String, fast: Boolean, progress: WhisperProgress): SpeechResult
 }
 internal interface LocalTranslator : AutoCloseable {
+    fun setOverlapping(value: Boolean) {}
     fun translate(prompt: String, seed: Int): String?
 }
 internal interface LocalEngines {
     fun speech(model: File, signal: CancellationSignal): LocalSpeech
+    fun speechVulkan(model: File, signal: CancellationSignal): LocalSpeech = error("Vulkan backend unavailable")
     fun translator(model: File, kind: OfflineModel, signal: CancellationSignal): LocalTranslator
+    fun translatorForOverlap(model: File, kind: OfflineModel, signal: CancellationSignal): LocalTranslator = translator(model, kind, signal)
 }
 
 internal object JniEngines : LocalEngines {
@@ -30,14 +34,22 @@ internal object JniEngines : LocalEngines {
         } else WhisperJni
     }
 
-    override fun speech(model: File, signal: CancellationSignal): LocalSpeech {
-        val native = whisper
+    override fun speech(model: File, signal: CancellationSignal) = openSpeech(model, signal, whisper, threads, false)
+
+    override fun speechVulkan(model: File, signal: CancellationSignal): LocalSpeech {
+        WhisperVulkanJni.ensureLoaded()
+        // Allow CPU helpers to coexist with the single MT worker; GPU does the heavy graph.
+        return openSpeech(model, signal, WhisperVulkanJni, minOf(threads, 3), true)
+    }
+
+    private fun openSpeech(model: File, signal: CancellationSignal, native: WhisperNative, threads: Int, gpu: Boolean): LocalSpeech {
         val handle = native.create()
         try {
             signal.setOnCancelListener { native.cancel(handle) }
             signal.throwIfCanceled()
             native.load(handle, model.absolutePath.encodeToByteArray(), threads)
             return object : LocalSpeech {
+                override val vulkan = gpu
                 override fun decode(pcm: ShortArray, language: String, prompt: String,
                                     fast: Boolean, progress: WhisperProgress): SpeechResult {
                     val output = native.decode(handle, pcm, language.encodeToByteArray(), prompt.encodeToByteArray(), fast, progress)
@@ -66,15 +78,28 @@ internal object JniEngines : LocalEngines {
         } else HymtJni
     }
 
-    override fun translator(model: File, kind: OfflineModel, signal: CancellationSignal): LocalTranslator {
+    override fun translator(model: File, kind: OfflineModel, signal: CancellationSignal) = openTranslator(model, kind, signal, false)
+
+    override fun translatorForOverlap(model: File, kind: OfflineModel, signal: CancellationSignal) =
+        openTranslator(model, kind, signal, true)
+
+    private fun openTranslator(model: File, kind: OfflineModel, signal: CancellationSignal, overlap: Boolean): LocalTranslator {
         require(kind in OfflineModel.translators)
         val native = hymt
+        val full = threads
+        val shared = minOf(full, 3)
         val handle = native.create()
         try {
             signal.setOnCancelListener { native.cancel(handle) }
             signal.throwIfCanceled()
-            native.load(handle, model.absolutePath.encodeToByteArray(), threads, kind == OfflineModel.HYMT_LITE)
+            native.load(handle, model.absolutePath.encodeToByteArray(), if (overlap) shared else full, kind == OfflineModel.HYMT_LITE)
             return object : LocalTranslator {
+                private var overlapping = overlap
+                override fun setOverlapping(value: Boolean) {
+                    if (value == overlapping) return
+                    if (full != shared) native.setThreads(handle, if (value) shared else full)
+                    overlapping = value
+                }
                 override fun translate(prompt: String, seed: Int): String? =
                     native.translate(handle, prompt.encodeToByteArray(), seed)?.decodeToString()
                 override fun close() { signal.setOnCancelListener(null); native.destroy(handle) }
@@ -123,11 +148,23 @@ internal object WhisperFp16Jni : WhisperNative {
     external override fun decode(handle: Long, pcm: ShortArray, lang: ByteArray, previous: ByteArray, fast: Boolean, progress: WhisperProgress): Array<ByteArray>
 }
 
+@Keep
+internal object WhisperVulkanJni : WhisperNative {
+    private val library by lazy { System.loadLibrary("video2_whisper_vulkan") }
+    fun ensureLoaded() { library }
+    external override fun create(): Long
+    external override fun cancel(handle: Long)
+    external override fun destroy(handle: Long)
+    external override fun load(handle: Long, path: ByteArray, threads: Int)
+    external override fun decode(handle: Long, pcm: ShortArray, lang: ByteArray, previous: ByteArray, fast: Boolean, progress: WhisperProgress): Array<ByteArray>
+}
+
 internal interface HymtNative {
     fun create(): Long
     fun cancel(handle: Long)
     fun destroy(handle: Long)
     fun load(handle: Long, path: ByteArray, threads: Int, compact: Boolean)
+    fun setThreads(handle: Long, threads: Int)
     fun translate(handle: Long, prompt: ByteArray, seed: Int): ByteArray?
 }
 
@@ -140,6 +177,7 @@ internal object HymtJni : HymtNative {
     external override fun cancel(handle: Long)
     external override fun destroy(handle: Long)
     external override fun load(handle: Long, path: ByteArray, threads: Int, compact: Boolean)
+    external override fun setThreads(handle: Long, threads: Int)
     external override fun translate(handle: Long, prompt: ByteArray, seed: Int): ByteArray?
 }
 
@@ -151,5 +189,6 @@ internal object HymtDotprodJni : HymtNative {
     external override fun cancel(handle: Long)
     external override fun destroy(handle: Long)
     external override fun load(handle: Long, path: ByteArray, threads: Int, compact: Boolean)
+    external override fun setThreads(handle: Long, threads: Int)
     external override fun translate(handle: Long, prompt: ByteArray, seed: Int): ByteArray?
 }

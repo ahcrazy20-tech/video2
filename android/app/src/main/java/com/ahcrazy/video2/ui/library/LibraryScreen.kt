@@ -113,7 +113,7 @@ fun LibraryScreen(
     }
     val continueWatching = videos.filter { it.lastPositionSec > 15 }
 
-    Column(Modifier.fillMaxSize().background(V2.Bg).padding(horizontal = 14.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(if (ar) "المكتبة" else "Library", fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
             IconButton(onClick = { importer.launch(arrayOf("video/*", "audio/*")) }) { Icon(Icons.Filled.UploadFile, null, tint = V2.Mint) }
@@ -192,7 +192,7 @@ fun LibraryScreen(
 @Composable private fun FolderChip(text: String, active: Boolean, onClick: () -> Unit) {
     Box(Modifier.clip(RoundedCornerShape(50)).background(if (active) V2.Accent else V2.Card)
         .clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 7.dp)) {
-        Text(text, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (active) Color.White else V2.TextDim)
+        Text(text, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (active) V2.Bg else V2.TextDim)
     }
 }
 

@@ -69,22 +69,28 @@ private fun trimRepeatedPrefix(previous: String, current: String): String {
     return current
 }
 
-internal fun planTranslation(cues: List<SubCue>): List<List<SubCue>> {
-    val groups = mutableListOf<List<SubCue>>()
-    var current = mutableListOf<SubCue>()
-    var chars = 0
-    for (cue in cues) {
-        val last = current.lastOrNull()
-        if (last != null && (chars + cue.original.length > MAX_BATCH_CHARS || current.size >= 6 || cue.startSec - last.endSec > SCENE_GAP_SECONDS)) {
-            groups.add(current)
-            current = mutableListOf()
-            chars = 0
-        }
-        current += cue
-        chars += cue.original.length
+// Keep this partition identical for fresh, streaming, and pre-2.1 checkpoints.
+internal fun planTranslation(cues: List<SubCue>): List<List<SubCue>> = buildList {
+    var start = 0
+    while (start < cues.size) {
+        val batch = nextTranslationBatch(cues, start, final = true) ?: break
+        add(batch)
+        start += batch.size
     }
-    if (current.isNotEmpty()) groups.add(current)
-    return groups
+}
+
+internal fun nextTranslationBatch(cues: List<SubCue>, start: Int, final: Boolean): List<SubCue>? {
+    if (start >= cues.size) return null
+    var end = start + 1
+    var chars = cues[start].original.length
+    while (end < cues.size && end - start < 6) {
+        val cue = cues[end]
+        if (chars + cue.original.length > MAX_BATCH_CHARS || cue.startSec - cues[end - 1].endSec > SCENE_GAP_SECONDS) break
+        chars += cue.original.length
+        end++
+    }
+    // Appending speech must not change the batch or its before/after context (including retries).
+    return if (final || cues.size - end >= CONTEXT_LINES) cues.subList(start, end) else null
 }
 
 internal data class SubtitleContext(val before: List<String> = emptyList(), val after: List<String> = emptyList()) {
