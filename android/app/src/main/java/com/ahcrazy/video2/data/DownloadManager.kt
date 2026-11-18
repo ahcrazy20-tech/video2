@@ -18,6 +18,7 @@ import com.ahcrazy.video2.Video2Application
 import com.ahcrazy.video2.core.media.ContentRange
 import com.ahcrazy.video2.core.media.MediaDownloadException
 import com.ahcrazy.video2.core.media.MediaHttp
+import com.ahcrazy.video2.core.media.YouTubeVideo
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.isMediaFragment
 import com.ahcrazy.video2.core.media.isExpiredPlayerLink
@@ -96,6 +97,22 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
         if (job.state == DownloadState.QUEUED) {
             pump(job.id)
             startService()
+        }
+        return job
+    }
+
+    internal fun activeSmartJob(video: YouTubeVideo?) = video?.let { target ->
+        jobs.value.firstOrNull { it.state.isBusy && YouTubeVideo.fromMedia(it.media) == target }
+    }
+
+    @Synchronized internal fun enqueueSmart(candidate: SmartCandidate, request: SmartDownloadRequest, height: Int?): DownloadJob {
+        val media = candidate.media
+        // Carry a sampled HLS rendition into the real download, including a site-provided stream.
+        val job = activeSmartJob(request.video) ?: enqueue(media, candidate.auth, height, media.checkedVariantUrl)
+        if (job.state.isBusy) request.replaceFailedId?.let { id ->
+            if (_jobs.value.any { it.id == id && it.state == DownloadState.FAILED && YouTubeVideo.fromMedia(it.media) == request.video }) {
+                remove(id) // Only after a fresh, independently verified source was queued.
+            }
         }
         return job
     }
@@ -189,8 +206,8 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
         task.start()
     }
 
-    internal suspend fun probe(media: DetectedMedia, auth: DownloadAuth, preferredHeight: Int? = null): DetectedMedia =
-        mediaProbe.check(media, if (ResolverType.forMedia(media) != null) DownloadAuth.external else auth, preferredHeight)
+    internal suspend fun probe(media: DetectedMedia, auth: DownloadAuth, preferredHeight: Int? = null, automatic: Boolean = false): DetectedMedia =
+        mediaProbe.check(media, if (ResolverType.forMedia(media) != null) DownloadAuth.external else auth, preferredHeight, automatic)
 
     private suspend fun perform(job: DownloadJob, progress: (Double, Long) -> Unit): SavedVideo {
         val media = job.media
@@ -323,14 +340,8 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
                             val r = http.request(item.url, auth)
                             item.range?.let { r.header("Range", it.header).header("Accept-Encoding", "identity") }
                             retryMediaRead { http.read(r.build()) { response ->
-                                response.requireMediaSuccess()
+                                response.requireHlsAsset(item)
                                 val body = response.body ?: throw MediaDownloadException("أحد أجزاء البث فاضي.")
-                                val received = ContentRange.parse(response.header("Content-Range"))
-                                if (item.range != null && (response.code != 206 || received == null || received.start != item.range.offset || received.end != item.range.last)) {
-                                    throw MediaDownloadException("خادم HLS لم يُرسل نطاق البيانات المطلوب.")
-                                }
-                                if (item.range == null && response.code != 200) throw MediaDownloadException("الخادم أرسل جزء HLS غير مكتمل.")
-                                if (response.header("Content-Type")?.contains("text/html", true) == true) throw MediaDownloadException("أحد أجزاء HLS رجع صفحة بدل الفيديو.")
                                 val expected = if (item.key) 16L else item.range?.length ?: body.contentLength().takeIf { it >= 0 }
                                 if (copyBody(body.byteStream(), tmp, false, expected) <= 0) throw MediaDownloadException("أحد أجزاء البث فاضي.")
                             } }

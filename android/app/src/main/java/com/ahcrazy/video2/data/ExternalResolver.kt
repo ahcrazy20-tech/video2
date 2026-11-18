@@ -17,10 +17,14 @@ import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.time.Instant
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
 
 internal enum class ResolverType(val label: String, val docs: String) {
@@ -37,13 +41,16 @@ internal enum class ResolverType(val label: String, val docs: String) {
 internal enum class ResolverProblem(val ar: String, val en: String) {
     ACCESS("الخادم رفض الطلب أو محتاج إذن من مالكه. اختار خادم عندك صلاحية عليه.", "The server refused the request or requires permission from its owner."),
     LIMIT("الخادم عليه حد للطلبات. استنى شوية قبل المحاولة.", "The server rate-limited this request. Wait before trying again."),
+    PROTECTED("المصدر محمي أو محتاج شراء أو اشتراك.", "This source is protected or requires a purchase or subscription."),
     UNAVAILABLE("الخادم ما قدّمش ملف فيديو كامل متاح للرابط ده.", "The server returned no available complete video for this link."),
     UNSUPPORTED("الخادم رجّع وسائط منفصلة أو رد مش مدعوم. محتاج ملف كامل أو قائمة HLS.", "The server returned separate tracks or an unsupported response. Use a complete file or HLS playlist."),
     NETWORK("تعذر الاتصال بالخادم. راجع عنوان الـAPI والاتصال.", "Couldn’t reach the server. Check its API address and your connection.");
     fun text(arabic: Boolean) = if (arabic) ar else en
 }
 
-internal class ResolverFailure(val problem: ResolverProblem) : IOException(problem.en)
+internal class ResolverFailure(
+    val problem: ResolverProblem, val status: Int? = null, val retryAfterMillis: Long? = null,
+) : IOException(problem.en)
 
 /** One call to the selected, authorized host. No browser cookies, background fan-out, or redirects. */
 internal class ExternalResolver(
@@ -57,24 +64,42 @@ internal class ExternalResolver(
         return try {
             withTimeoutOrNull(26_000) {
                 client.readMedia(request(type, server, video, maxHeight, apiKey)) { response ->
-                    if (!response.isSuccessful) throw ResolverFailure(when (response.code) {
-                        401, 403 -> ResolverProblem.ACCESS
-                        429 -> ResolverProblem.LIMIT
-                        400, 404, 410, 422 -> ResolverProblem.UNAVAILABLE
-                        405, 415 -> ResolverProblem.UNSUPPORTED
-                        else -> ResolverProblem.NETWORK
-                    })
-                    val source = response.body?.source() ?: throw ResolverFailure(ResolverProblem.UNSUPPORTED)
-                    if (source.request(768 * 1024L + 1)) throw ResolverFailure(ResolverProblem.UNSUPPORTED)
-                    val json = try { JSONObject(source.readUtf8()) } catch (_: org.json.JSONException) {
-                        throw ResolverFailure(ResolverProblem.UNSUPPORTED)
-                    }
-                    parse(type, server, video, json, titleHint, maxHeight)
+                    parse(type, server, video, response.resolverJson(768 * 1024L), titleHint, maxHeight)
                 }
             } ?: throw ResolverFailure(ResolverProblem.NETWORK)
         } catch (e: CancellationException) { throw e }
         catch (e: ResolverFailure) { throw e }
         catch (_: IOException) { throw ResolverFailure(ResolverProblem.NETWORK) }
+    }
+
+    /** An ID-free health sample; no video resolution during discovery. */
+    suspend fun pingInvidious(server: HttpUrl) {
+        if (resolverEndpoint(server.toString()) != server) throw ResolverFailure(ResolverProblem.NETWORK)
+        val url = server.newBuilder().addPathSegments("api/v1/stats").build()
+        val request = Request.Builder().url(url).header("Accept", "application/json").build()
+        try {
+            client.readMedia(request) {
+                if (it.resolverJson(64 * 1024L).optJSONObject("software")?.optString("name") != "invidious") {
+                    throw ResolverFailure(ResolverProblem.UNSUPPORTED)
+                }
+            }
+        } catch (e: ResolverFailure) { throw e }
+        catch (_: IOException) { throw ResolverFailure(ResolverProblem.NETWORK) }
+    }
+
+    private fun Response.resolverJson(limit: Long): JSONObject {
+        if (!isSuccessful) throw ResolverFailure(when (code) {
+            401, 403 -> ResolverProblem.ACCESS
+            429 -> ResolverProblem.LIMIT
+            400, 404, 410, 422 -> ResolverProblem.UNAVAILABLE
+            405, 415 -> ResolverProblem.UNSUPPORTED
+            else -> ResolverProblem.NETWORK
+        }, code, header("Retry-After")?.let(::retryAfterMs))
+        val source = body?.source() ?: throw ResolverFailure(ResolverProblem.UNSUPPORTED)
+        if (source.request(limit + 1)) throw ResolverFailure(ResolverProblem.UNSUPPORTED)
+        return try { JSONObject(source.readUtf8()) } catch (_: org.json.JSONException) {
+            throw ResolverFailure(ResolverProblem.UNSUPPORTED)
+        }
     }
 
     internal fun request(type: ResolverType, server: HttpUrl, video: YouTubeVideo, maxHeight: Int, apiKey: String?): Request {
@@ -98,7 +123,14 @@ internal class ExternalResolver(
 
     internal fun parse(type: ResolverType, server: HttpUrl, video: YouTubeVideo, json: JSONObject, titleHint: String?, maxHeight: Int): List<DetectedMedia> {
         if (json.optBoolean("drm") || json.optBoolean("isDRM") || json.optBoolean("paid") || json.optBoolean("premium")) {
-            throw ResolverFailure(ResolverProblem.UNAVAILABLE)
+            throw ResolverFailure(ResolverProblem.PROTECTED)
+        }
+        // Some API instances express sign-in or private video refusals as a JSON error.
+        if (type != ResolverType.COBALT) {
+            val error = (json.optString("error") + " " + json.optString("message")).take(8192)
+            if (listOf("LOGIN_REQUIRED", "SignInConfirmNotBot", "sign in", "private video").any { error.contains(it, true) }) {
+                throw ResolverFailure(ResolverProblem.ACCESS)
+            }
         }
         if (json.optString("videoId").isNotEmpty() && json.optString("videoId") != video.id) throw ResolverFailure(ResolverProblem.UNAVAILABLE)
         val results = mutableListOf<DetectedMedia>()
@@ -183,3 +215,7 @@ internal class ExternalResolver(
         }
     }
 }
+
+private fun retryAfterMs(raw: String): Long? = raw.trim().toLongOrNull()?.coerceIn(0, 86_400)?.times(1000)
+    ?: runCatching { (ZonedDateTime.parse(raw.trim(), DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli() -
+        Instant.now().toEpochMilli()).coerceIn(0, 86_400_000) }.getOrNull()

@@ -2,6 +2,7 @@ package com.ahcrazy.video2.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -18,6 +19,8 @@ class AppSettings(private val ctx: Context) {
     private object K {
         val LANG = stringPreferencesKey("lang")
         val DOWNLOAD_MAX_HEIGHT = intPreferencesKey("dl.maxHeight")
+        // Scope this opt-in to the disclosed provider/regions; a changed provider needs a new opt-in.
+        val SMART_SERVERS = booleanPreferencesKey("dl.smart.chocolatemoo.us-eu.v1")
         val STT_CONCURRENCY = intPreferencesKey("stt.concurrency")
         val ADBLOCK_ENABLED = stringPreferencesKey("adblock.enabled")
         val ADBLOCK_MODE = stringPreferencesKey("adblock.mode")
@@ -33,6 +36,9 @@ class AppSettings(private val ctx: Context) {
     internal suspend fun setResolverEndpoint(type: ResolverType, value: String) = ctx.dataStore.edit { it[K.resolver(type)] = value }
 
     val lang: Flow<String> = ctx.dataStore.data.map { it[K.LANG] ?: "ar" }
+    internal val smartServersAllowed = ctx.dataStore.data.map { it[K.SMART_SERVERS] ?: false }
+    internal suspend fun setSmartServersAllowed(value: Boolean) = ctx.dataStore.edit { it[K.SMART_SERVERS] = value }
+
     val downloadMaxHeight: Flow<Int> = ctx.dataStore.data.map { it[K.DOWNLOAD_MAX_HEIGHT] ?: 0 }
     val sttConcurrency: Flow<Int> = ctx.dataStore.data.map { it[K.STT_CONCURRENCY] ?: 3 }
     val adBlockEnabled: Flow<Boolean> = ctx.dataStore.data.map { (it[K.ADBLOCK_ENABLED] ?: "true") == "true" }

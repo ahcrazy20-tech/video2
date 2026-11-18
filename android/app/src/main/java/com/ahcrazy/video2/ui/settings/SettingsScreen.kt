@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -37,6 +38,7 @@ import com.ahcrazy.video2.core.model.STTProvider
 import com.ahcrazy.video2.core.model.TranslatorProvider
 import com.ahcrazy.video2.core.util.L10n
 import com.ahcrazy.video2.data.AppSettings
+import com.ahcrazy.video2.ui.browser.SmartServerDisclosure
 import com.ahcrazy.video2.ui.components.GlassCard
 import com.ahcrazy.video2.ui.components.PickerRow
 import com.ahcrazy.video2.ui.components.SectionTitle
@@ -44,6 +46,7 @@ import com.ahcrazy.video2.ui.components.qualityOptions
 import com.ahcrazy.video2.ui.theme.V2
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.IOException
 
 @Composable
 fun SettingsScreen(ar: Boolean, onLangChange: (String) -> Unit, onLockNow: () -> Unit) {
@@ -54,6 +57,20 @@ fun SettingsScreen(ar: Boolean, onLangChange: (String) -> Unit, onLockNow: () ->
     var pwMsg by remember { mutableStateOf<String?>(null) }
     var hasPw by remember { mutableStateOf(app.settings.hasAppPassword()) }
     val maxHeight by app.settings.downloadMaxHeight.collectAsState(0)
+    val smartServers by app.settings.smartServersAllowed.collectAsState(false)
+    var confirmSmart by remember { mutableStateOf(false) }
+    var smartSettingError by remember { mutableStateOf(false) }
+    fun setSmartServers(on: Boolean) {
+        scope.launch {
+            smartSettingError = false
+            try { app.settings.setSmartServersAllowed(on) } catch (_: IOException) { smartSettingError = true }
+        }
+    }
+    if (confirmSmart) AlertDialog(onDismissRequest = { confirmSmart = false },
+        title = { Text(if (ar) "الخوادم العامة للتحميل الذكي" else "Public servers for smart download") },
+        text = { Column(Modifier.verticalScroll(rememberScrollState())) { SmartServerDisclosure(ar) } },
+        confirmButton = { TextButton(onClick = { confirmSmart = false; setSmartServers(true) }) { Text(if (ar) "فعّل" else "Enable") } },
+        dismissButton = { TextButton(onClick = { confirmSmart = false }) { Text(if (ar) "إلغاء" else "Cancel") } })
     val adOn by app.settings.adBlockEnabled.collectAsState(true)
     val adMode by app.settings.adBlockMode.collectAsState("balanced")
     val filterAds by app.settings.adBlockFilterVideoAds.collectAsState(true)
@@ -106,7 +123,14 @@ fun SettingsScreen(ar: Boolean, onLangChange: (String) -> Unit, onLockNow: () ->
                     qualityOptions(ar).map { it.first }, { h -> qualityOptions(ar).first { it.first == h }.second }) {
                     scope.launch { app.settings.setDownloadMaxHeight(it) }
                 }
-                Text(if (ar) "بتتطبق على تحميلات HLS من المتصفح والبحث السحري." else "Applies to HLS downloads from Browser & Magic Search.", fontSize = 11.sp, color = V2.TextDim)
+                Text(if (ar) "بتتطبق على التحميل الذكي وجودات HLS." else "Applies to smart downloads and HLS quality.", fontSize = 11.sp, color = V2.TextDim)
+                ToggleRow(if (ar) "السماح بخوادم التحميل الذكي" else "Allow smart download servers", smartServers) {
+                    if (it) confirmSmart = true else setSmartServers(false)
+                }
+                Text(if (ar) "الخادم بيستقبل معرّف YouTube فقط لما تطلب التحميل. التحميل المباشر شغّال حتى لو الخوادم مقفولة."
+                    else "The server receives the YouTube ID only after you request a download. Direct downloads work with servers off.",
+                    fontSize = 11.sp, color = V2.TextDim)
+                if (smartSettingError) Text(if (ar) "ما قدرناش نحفظ الإعداد. حاول تاني." else "Couldn't save the setting. Try again.", color = V2.Gold)
             }
         }
 

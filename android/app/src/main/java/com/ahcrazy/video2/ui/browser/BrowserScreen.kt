@@ -45,6 +45,9 @@ import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.DownloadJob
 import com.ahcrazy.video2.core.model.HlsVariant
 import com.ahcrazy.video2.data.ResolverType
+import com.ahcrazy.video2.data.SmartCandidate
+import com.ahcrazy.video2.data.SmartDownloadRequest
+import com.ahcrazy.video2.data.isSmartCandidate
 import com.ahcrazy.video2.ui.theme.V2
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -72,6 +75,8 @@ internal fun BrowserScreen(
     var recovering by remember { mutableStateOf(false) }
     var external by remember { mutableStateOf<ExternalVideoChoice?>(null) }
     val captureRevision = tab.captureRevision
+    var smart by remember(tab.id, captureRevision) { mutableStateOf<SmartDownloadRequest?>(null) }
+    var smartFromCapture by remember { mutableStateOf(false) }
     val fullscreen = tab.fullscreen
     var qualityFor by remember(tab.id, captureRevision) { mutableStateOf<String?>(null) }
     var checkingUrls by remember(tab.id, captureRevision) { mutableStateOf(emptyList<String>()) }
@@ -80,6 +85,22 @@ internal fun BrowserScreen(
     val extractor = remember { ctx.assets.open("extractor.js").bufferedReader().use { it.readText() } }
     val adHosts = remember { ctx.assets.open("adblock_hosts.txt").bufferedReader().useLines { lines -> lines.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet() } }
     val detected = tab.detected.filter { !filterAds || !it.fromAd }.sortedByDescending(::mediaScore)
+
+    val currentPlan = remember(tab.url, detected, tab.drm) {
+        if (tab.drm.isProtected) null else captureSmartPlan(tab.url, detected)
+    }
+
+    fun startSmart(item: DetectedMedia? = null, fromCapture: Boolean = true) {
+        if (tab.drm.isProtected || smart != null) return
+        val plan = captureSmartPlan(tab.url, detected, item) ?: return
+        focus.clearFocus()
+        shown = ""
+        qualityFor = null
+        checkingUrls = emptyList()
+        smartFromCapture = fromCapture
+        smart = SmartDownloadRequest(plan.video, item?.title ?: plan.media.firstOrNull()?.title ?: tab.title,
+            direct = plan.media.map { SmartCandidate(it, tab.auth(it)) })
+    }
 
     SideEffect { session.adBlock = adBlock }
     BackHandler(enabled = fullscreen != null || tab.canGoBack) { if (fullscreen != null) tab.exitFullscreen() else tab.goBack() }
@@ -90,9 +111,11 @@ internal fun BrowserScreen(
         val job = recoverFrom ?: return@LaunchedEffect
         val provider = ResolverType.forMedia(job.media)
         val watch = YouTubeVideo.fromMedia(job.media)
-        if (provider != null && watch != null && !job.media.drm.isProtected) {
+        if (watch != null && !job.media.drm.isProtected &&
+            (provider != null || job.problem?.needsNewLink == true) && job.httpStatus !in setOf(401, 429)) {
             shown = ""
-            external = ExternalVideoChoice(watch, job.media.title, provider)
+            smartFromCapture = false
+            smart = SmartDownloadRequest(watch, job.media.title, excludedUrls = setOf(job.media.url), replaceFailedId = job.id)
             onConsumeRecovery()
             return@LaunchedEffect
         }
@@ -204,6 +227,10 @@ internal fun BrowserScreen(
                                 Badge(containerColor = V2.Mint, contentColor = V2.Bg) { Text("${detected.size}") }
                             }
                         }
+                        if (currentPlan?.video != null) IconButton(onClick = { startSmart(fromCapture = false) },
+                            modifier = Modifier.testTag("browser.smartDownload")) {
+                            Icon(Icons.Filled.CloudDownload, if (ar) "تحميل ذكي" else "Smart download", tint = V2.Mint)
+                        }
                         IconButton(onClick = { shown = "paste" }) { Icon(Icons.Filled.ContentPaste, if (ar) "تحميل رابط مباشر" else "Direct download", tint = V2.Sky) }
                         BadgedBox(badge = { if (session.tabs.size > 1) Badge(containerColor = V2.CardSoft) { Text("${session.tabs.size}") } }) {
                             IconButton(onClick = { shown = "tabs" }) { Icon(Icons.Filled.Tab, if (ar) "التبويبات" else "Tabs") }
@@ -269,12 +296,24 @@ internal fun BrowserScreen(
             onYoutubeHelp = {
                 shown = ""; checkingUrls = emptyList()
                 session.add(); session.current.open("https://support.google.com/youtube/answer/56100")
-            }, onExternal = if (tab.drm.isProtected) null else { item ->
+            }, onSmart = if (tab.drm.isProtected) null else { item -> startSmart(item) },
+            smartPrimary = currentPlan != null,
+            onExternal = if (tab.drm.isProtected) null else { item ->
                 val selected = YouTubeVideo.forCapture(tab.url, detected, item)
                 shown = ""
                 qualityFor = null
                 checkingUrls = emptyList()
                 external = ExternalVideoChoice(selected, item?.title)
+            })
+    }
+
+    smart?.let { request ->
+        SmartDownloadDialog(ar, request, preferredHeight,
+            onClose = { smart = null; if (smartFromCapture) shown = "capture" },
+            onQueued = { smart = null; shown = ""; recovering = false; onOpenDownloads() },
+            onManual = request.video?.let { video -> { smart = null; external = ExternalVideoChoice(video, request.title) } },
+            onDirectChecked = { checked ->
+                if (tab.captureRevision == captureRevision && tab.detected.any { it.url == checked.url }) tab.ingest(checked)
             })
     }
 
@@ -391,4 +430,21 @@ private fun BrowserPanel(modifier: Modifier, content: @Composable ColumnScope.()
     Surface(shape = RoundedCornerShape(50), color = color.copy(alpha = 0.15f), contentColor = color) {
         Text(text, Modifier.padding(horizontal = 7.dp, vertical = 3.dp), style = MaterialTheme.typography.labelMedium)
     }
+}
+
+internal data class CaptureSmartPlan(val video: YouTubeVideo?, val media: List<DetectedMedia>)
+
+/** Do not pick an arbitrary search result when several unrelated players were preloaded. */
+internal fun captureSmartPlan(page: String, sources: List<DetectedMedia>, selected: DetectedMedia? = null): CaptureSmartPlan? {
+    if (selected?.let { it.fromAd || it.drm.isProtected } == true) return null
+    val media = sources.filterNot { it.fromAd }
+    val video = YouTubeVideo.forCapture(page, media, selected)
+    val matches = if (video != null) media.filter { YouTubeVideo.fromMedia(it) == video }
+        else {
+            val groups = captureGroups(media)
+            (if (selected == null) groups.singleOrNull() else groups.firstOrNull { group -> group.items.any { it.url == selected.url } })
+                ?.items.orEmpty()
+        }
+    if (matches.any { it.drm.isProtected } || video == null && matches.none { it.isSmartCandidate() }) return null
+    return CaptureSmartPlan(video, matches)
 }

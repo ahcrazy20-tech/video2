@@ -62,7 +62,8 @@ internal fun CaptureSheet(
     checking: Boolean, quality: DetectedMedia?, preferredHeight: Int, recovering: Boolean,
     onClose: () -> Unit, onScan: () -> Unit, onVerify: (String?) -> Unit,
     onPlay: (DetectedMedia) -> Unit, onDownload: (DetectedMedia, HlsVariant?, Boolean) -> Unit,
-    onQuality: (DetectedMedia?) -> Unit, onYoutubeHelp: () -> Unit, onExternal: ((DetectedMedia?) -> Unit)?
+    onQuality: (DetectedMedia?) -> Unit, onYoutubeHelp: () -> Unit, onExternal: ((DetectedMedia?) -> Unit)?,
+    onSmart: ((DetectedMedia?) -> Unit)?, smartPrimary: Boolean,
 ) {
     val host = httpMediaUrl(page)?.host
     val groups = remember(media) { captureGroups(media) }
@@ -123,6 +124,11 @@ internal fun CaptureSheet(
                     }
                 }
                 item {
+                    if (smartPrimary && onSmart != null) Button(onClick = { onSmart(null) },
+                        modifier = Modifier.fillMaxWidth().testTag("browser.capture.smart")) {
+                        Icon(Icons.Filled.CloudDownload, null, Modifier.size(19.dp)); Spacer(Modifier.width(8.dp))
+                        Text(if (ar) "تحميل ذكي" else "Smart download")
+                    }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         FilledTonalButton(onClick = onScan) {
                             Icon(Icons.Filled.Refresh, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp))
@@ -134,9 +140,8 @@ internal fun CaptureSheet(
                             }
                         }
                     }
-                    if (onExternal != null) OutlinedButton(onClick = { onExternal(null) }, modifier = Modifier.testTag("browser.capture.external")) {
-                        Icon(Icons.Filled.CloudDownload, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp))
-                        Text(if (ar) "تحميل عبر خادم خارجي" else "Download via external server")
+                    if (onExternal != null) TextButton(onClick = { onExternal(null) }, modifier = Modifier.testTag("browser.capture.external")) {
+                        Text(if (ar) "خادم خارجي (يدوي)" else "External server (manual)")
                     }
                     if (checking) {
                         LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
@@ -148,7 +153,7 @@ internal fun CaptureSheet(
                 }
                 if (groups.isEmpty()) item { CaptureMessagePanel(ar, message, onYoutubeHelp) }
                 items(groups, key = { "${it.key.first.length}:${it.key.first}${it.key.second}" }) { group ->
-                    GroupCard(ar, group, checking, onPlay, onDownload, onQuality, onVerify, onExternal)
+                    GroupCard(ar, group, checking, onPlay, onDownload, onQuality, onVerify, onSmart.takeUnless { smartPrimary })
                 }
             }
         }
@@ -171,12 +176,12 @@ internal fun CaptureMessagePanel(ar: Boolean, message: CaptureMessage, onYoutube
 private fun GroupCard(
     ar: Boolean, group: CaptureGroup, checking: Boolean, onPlay: (DetectedMedia) -> Unit,
     onDownload: (DetectedMedia, HlsVariant?, Boolean) -> Unit, onQuality: (DetectedMedia?) -> Unit, onVerify: (String?) -> Unit,
-    onExternal: ((DetectedMedia?) -> Unit)?
+    onSmart: ((DetectedMedia?) -> Unit)?
 ) {
     var expanded by rememberSaveable(group.key.first, group.key.second) { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         group.items.take(if (expanded) group.items.size else 1).forEach { m ->
-            key(m.url) { SourceCard(m, ar, checking, onPlay, onDownload, onQuality, onVerify, onExternal) }
+            key(m.url) { SourceCard(m, ar, checking, onPlay, onDownload, onQuality, onVerify, onSmart) }
         }
         if (group.items.size > 1) TextButton(onClick = { expanded = !expanded }) {
             Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, null, Modifier.size(20.dp))
@@ -191,7 +196,7 @@ private fun GroupCard(
 private fun SourceCard(
     m: DetectedMedia, ar: Boolean, checking: Boolean, onPlay: (DetectedMedia) -> Unit,
     onDownload: (DetectedMedia, HlsVariant?, Boolean) -> Unit, onQuality: (DetectedMedia?) -> Unit, onVerify: (String?) -> Unit,
-    onExternal: ((DetectedMedia?) -> Unit)?
+    onSmart: ((DetectedMedia?) -> Unit)?
 ) {
     val ready = m.downloadChecked()
     val status = when {
@@ -238,8 +243,8 @@ private fun SourceCard(
                 if (!offersDownload && !m.drm.isProtected && !ready) TextButton(enabled = !checking, onClick = { onVerify(m.url) }) {
                     Text(if (m.probeProblem != null) (if (ar) "أعد التحقق" else "Check again") else (if (ar) "تحقق" else "Check"))
                 }
-                if (onExternal != null && !m.drm.isProtected && m.probeProblem?.needsNewLink == true && YouTubeVideo.fromMedia(m) != null) {
-                    OutlinedButton(onClick = { onExternal(m) }) { Text(if (ar) "خادم خارجي" else "External server") }
+                if (onSmart != null && !m.fromAd && !m.drm.isProtected && YouTubeVideo.fromMedia(m) != null) {
+                    TextButton(onClick = { onSmart(m) }) { Text(if (ar) "تحميل ذكي" else "Smart download") }
                 }
             }
         }

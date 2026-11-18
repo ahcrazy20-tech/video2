@@ -129,6 +129,26 @@ class ExternalResolverTest {
         assertEquals(upstream, returned(upstream).url)
     }
 
+    @Test fun publicHealthProbeDoesNotShareVideoIdOrSessionAndSurfacesRetryAfter() = runBlocking<Unit> {
+        var calls = 0
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            assertEquals("/api/api/v1/stats", request.url.encodedPath)
+            assertNull(request.url.query)
+            assertEquals("GET", request.method)
+            listOf("Cookie", "Authorization", "Referer").forEach { assertNull(request.header(it)) }
+            val status = if (calls++ == 0) 200 else 429
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).message("fixture").code(status)
+                .header("Retry-After", "125").body("{\"software\":{\"name\":\"invidious\"}}".toResponseBody()).build()
+        }.build()
+        val resolver = ExternalResolver(client)
+        resolver.pingInvidious(server)
+        val failure = runCatching { resolver.pingInvidious(server) }.exceptionOrNull() as ResolverFailure
+        assertEquals(ResolverProblem.LIMIT, failure.problem)
+        assertEquals(125_000L, failure.retryAfterMillis ?: -1L)
+        assertEquals(2, calls)
+    }
+
     @Test fun accessDenialsDoNotFanOutOrParseErrorPagesAsVideo() = runBlocking<Unit> {
         var requests = 0
         val resolver = ExternalResolver(fakeHttp { requests++; 403 to "<html>denied</html>" })

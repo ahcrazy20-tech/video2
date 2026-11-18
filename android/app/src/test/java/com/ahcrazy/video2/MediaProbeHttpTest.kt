@@ -178,11 +178,41 @@ class MediaProbeHttpTest {
         assertEquals(listOf("/manifest", "/high", "/high.ts", "/low", "/low.ts"), requests)
     }
 
+    @Test fun smartHlsRequiresAnEndedWindowAndARealAudioResponse() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            val master = "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"Default\",DEFAULT=YES,URI=\"audio\"\n" +
+                "#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720,AUDIO=\"a\"\nvideo\n"
+            val vod = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\n"
+            val ended = java.util.concurrent.atomic.AtomicBoolean()
+            val audioAvailable = java.util.concurrent.atomic.AtomicBoolean()
+            server.dispatchWith { r -> when (r.path) {
+                "/master" -> MockResponse().setBody(master)
+                "/video" -> MockResponse().setBody(vod + "video.ts\n" + if (ended.get()) "#EXT-X-ENDLIST\n" else "")
+                "/audio" -> MockResponse().setBody(vod + "audio.ts\n#EXT-X-ENDLIST\n")
+                "/video.ts" -> MockResponse().setBody("video sample")
+                "/audio.ts" -> if (audioAvailable.get()) MockResponse().setBody("audio sample") else MockResponse().setResponseCode(403)
+                else -> MockResponse().setResponseCode(404)
+            } }
+            val probe = MediaProbe(MediaHttp { null })
+            val media = DetectedMedia(server.url("/master").toString(), "sample", MediaKind.HLS, durationSec = 6.0)
+            assertEquals(MediaProblem.NOT_MEDIA, probe.check(media, DownloadAuth.default, automatic = true).probeProblem)
+            assertEquals(3, server.requestCount) // A live window is rejected before downloading any segment.
+            ended.set(true)
+            assertEquals(403, probe.check(media, DownloadAuth.default, automatic = true).probeHttpStatus)
+            audioAvailable.set(true)
+            val ready = probe.check(media, DownloadAuth.default, automatic = true)
+            assertTrue(ready.downloadChecked())
+            assertEquals(server.url("/video").toString(), ready.checkedVariantUrl)
+            assertEquals(13, server.requestCount)
+        }
+    }
+
     @Test fun onlyTransientReadsAreRetried() = runBlocking<Unit> {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setResponseCode(503))
             server.enqueue(mediaReply())
             server.enqueue(MockResponse().setResponseCode(403))
+            server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "1"))
             val http = MediaHttp { null }
             suspend fun get(path: String) = retryMediaRead {
                 http.read(http.request(httpMediaUrl(server.url("/$path").toString())!!, DownloadAuth.default).build()) { response ->
@@ -194,6 +224,8 @@ class MediaProbeHttpTest {
             assertEquals(2, server.requestCount)
             assertTrue(runCatching { get("blocked") }.isFailure)
             assertEquals(3, server.requestCount)
+            assertTrue(runCatching { get("rate-limited") }.isFailure)
+            assertEquals(4, server.requestCount)
         }
     }
 

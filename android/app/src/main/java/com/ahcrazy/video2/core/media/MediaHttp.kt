@@ -124,7 +124,7 @@ internal suspend fun <T> retryMediaRead(read: suspend () -> T): T {
     repeat(2) { attempt ->
         try { return read() } catch (e: java.io.IOException) {
             val wait = when (e) {
-                is MediaDownloadException -> if (e.problem == MediaProblem.TEMPORARY) e.retryDelayMillis ?: (350L shl attempt) else null
+                is MediaDownloadException -> if (e.problem == MediaProblem.TEMPORARY && e.status != 429) e.retryDelayMillis ?: (350L shl attempt) else null
                 is SocketException, is SocketTimeoutException, is EOFException, is UnknownHostException -> 350L shl attempt
                 else -> null
             }

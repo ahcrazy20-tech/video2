@@ -63,8 +63,10 @@ import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.util.MagicDuration
 import com.ahcrazy.video2.core.util.MagicQuery
 import com.ahcrazy.video2.data.MagicResult
+import com.ahcrazy.video2.data.SmartDownloadRequest
 import com.ahcrazy.video2.ui.browser.ExternalDownloadSheet
 import com.ahcrazy.video2.ui.browser.ExternalVideoChoice
+import com.ahcrazy.video2.ui.browser.SmartDownloadDialog
 import com.ahcrazy.video2.ui.components.ChipPreview
 import com.ahcrazy.video2.ui.components.EmptyState
 import com.ahcrazy.video2.ui.components.GlassCard
@@ -92,11 +94,12 @@ internal class MagicSearchState {
 @Composable
 internal fun MagicSearchScreen(
     ar: Boolean, state: MagicSearchState, scope: CoroutineScope,
-    onPlayStream: (String, String) -> Unit, onOpenInBrowser: (String) -> Unit
+    onPlayStream: (String, String) -> Unit, onOpenInBrowser: (String) -> Unit, onOpenDownloads: () -> Unit
 ) {
     val app = (LocalContext.current as android.app.Activity).app()
     val jobs by app.downloads.jobs.collectAsState()
     var showSyntax by remember { mutableStateOf(false) }
+    var smart by remember { mutableStateOf<SmartDownloadRequest?>(null) }
     var external by remember { mutableStateOf<ExternalVideoChoice?>(null) }
     val preferredHeight by app.settings.downloadMaxHeight.collectAsState(initial = 0)
 
@@ -186,7 +189,8 @@ internal fun MagicSearchScreen(
                     val watch = YouTubeVideo.parse(r.pageUrl)
                     ResultCard(r, ar, MagicQuery.parse(state.text),
                         externalDownload = watch != null,
-                        downloadProgress = jobs.firstOrNull { it.media.pageUrl == r.pageUrl || it.media.url == r.pageUrl },
+                        downloadProgress = jobs.firstOrNull { it.media.pageUrl == r.pageUrl || it.media.url == r.pageUrl ||
+                            watch != null && YouTubeVideo.fromMedia(it.media) == watch },
                         onPlay = {
                             val direct = r.playableUrl
                             if (r.source == "archive" && direct != null) {
@@ -199,7 +203,7 @@ internal fun MagicSearchScreen(
                         },
                         onOpen = { onOpenInBrowser(r.pageUrl) },
                         onDownload = {
-                            if (watch != null) external = ExternalVideoChoice(watch, r.title)
+                            if (watch != null) smart = SmartDownloadRequest(watch, r.title)
                             else {
                                 val url = r.playableUrl ?: r.pageUrl
                                 val kind = if (url.contains(".m3u8")) MediaKind.HLS else MediaKind.infer(url, null)
@@ -211,6 +215,12 @@ internal fun MagicSearchScreen(
             }
             item { Spacer(Modifier.height(90.dp)) }
         }
+    }
+
+    smart?.let { request ->
+        val height = MagicQuery.parse(state.text).preferredHeight ?: preferredHeight
+        SmartDownloadDialog(ar, request, height, onClose = { smart = null }, onQueued = { smart = null; onOpenDownloads() },
+            onManual = { smart = null; external = ExternalVideoChoice(request.video, request.title) })
     }
 
     external?.let { choice ->
@@ -274,7 +284,7 @@ private fun ResultCard(r: MagicResult, ar: Boolean, q: MagicQuery,
                 if (externalDownload) TextButton(onClick = onDownload) {
                     Icon(Icons.Filled.CloudDownload, null, Modifier.width(17.dp), tint = V2.Mint)
                     Spacer(Modifier.width(5.dp))
-                    Text(if (ar) "تحميل عبر خادم" else "Download via server")
+                    Text(if (ar) "تحميل ذكي" else "Smart download")
                 }
                 downloadProgress?.let { j ->
                     LinearProgressIndicator(progress = { j.progress.toFloat() }, Modifier.fillMaxWidth().padding(top = 6.dp), color = V2.Mint)

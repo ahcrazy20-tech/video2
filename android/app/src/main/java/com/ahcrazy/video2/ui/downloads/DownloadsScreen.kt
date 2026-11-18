@@ -21,6 +21,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ahcrazy.video2.app
+import com.ahcrazy.video2.core.media.YouTubeVideo
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.model.DownloadJob
 import com.ahcrazy.video2.core.model.DownloadState
@@ -59,7 +60,7 @@ fun DownloadsScreen(ar: Boolean, onOpenSource: (DownloadJob) -> Unit, onOpenLibr
             }
         }
         items(jobs, key = { it.id }) { job ->
-            val page = httpMediaUrl(job.media.pageUrl ?: job.media.requestReferer)?.toString()
+            val page = httpMediaUrl(job.media.pageUrl ?: job.media.publicPageUrl ?: job.media.requestReferer)?.toString()
             JobRow(job, ar,
                 onPause = { app.downloads.cancel(job.id) }, onResume = { app.downloads.resume(job.id) },
                 onRemove = { app.downloads.remove(job.id) }, onOpenSource = page?.let { { onOpenSource(job) } },
@@ -73,6 +74,8 @@ fun DownloadsScreen(ar: Boolean, onOpenSource: (DownloadJob) -> Unit, onOpenLibr
 private fun JobRow(job: DownloadJob, ar: Boolean, onPause: () -> Unit, onResume: () -> Unit, onRemove: () -> Unit,
                    onOpenSource: (() -> Unit)?, onOpenLibrary: () -> Unit) {
     val resolver = ResolverType.forMedia(job.media)
+    val freshSource = YouTubeVideo.fromMedia(job.media) != null && job.httpStatus !in setOf(401, 429) &&
+        (resolver != null || job.problem?.needsNewLink == true)
     val (icon, tint) = when (job.state) {
         DownloadState.COMPLETED -> Icons.Filled.CheckCircle to V2.Mint
         DownloadState.PAUSED -> Icons.Filled.PauseCircle to V2.Gold
@@ -114,9 +117,9 @@ private fun JobRow(job: DownloadJob, ar: Boolean, onPause: () -> Unit, onResume:
                 if (job.canRetry) TextButton(onClick = onResume) {
                     Text(if (job.state == DownloadState.FAILED) (if (ar) "حاول تاني" else "Try again") else (if (ar) "استئناف" else "Resume"))
                 }
-                if (onOpenSource != null && job.state == DownloadState.FAILED) TextButton(onClick = onOpenSource) {
+                if (onOpenSource != null && job.state == DownloadState.FAILED && job.httpStatus != 429) TextButton(onClick = onOpenSource) {
                     Text(when {
-                        resolver != null -> if (ar) "اطلب رابط جديد من خادم" else "Get a new link from a server"
+                        freshSource -> if (ar) "ابحث عن مصدر جديد" else "Find a fresh source"
                         job.problem?.needsNewLink == true -> if (ar) "ارجع للمصدر وافحص البدائل" else "Return to source and check alternatives"
                         else -> if (ar) "افتح صفحة المصدر" else "Open source page"
                     })

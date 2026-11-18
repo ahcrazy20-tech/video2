@@ -108,7 +108,7 @@ fun Video2Root() {
                             onLockNow = { locked = true })
                         AppTab.MAGIC -> MagicSearchScreen(ar, magicSearch, scope,
                             onPlayStream = { u, t -> playingStream = BrowserStream(DetectedMedia(u, t, MediaKind.infer(u, null)), DownloadAuth.default) },
-                            onOpenInBrowser = { u -> browserUrl = u; tab = AppTab.BROWSER })
+                            onOpenInBrowser = { u -> browserUrl = u; tab = AppTab.BROWSER }, onOpenDownloads = { tab = AppTab.DOWNLOADS })
                     }
                 }
             }

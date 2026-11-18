@@ -1,5 +1,6 @@
 package com.ahcrazy.video2.data
 
+import com.ahcrazy.video2.core.media.ByteWindow
 import com.ahcrazy.video2.core.media.ContentRange
 import com.ahcrazy.video2.core.media.DASH_ROOT
 import com.ahcrazy.video2.core.media.MediaDownloadException
@@ -22,13 +23,14 @@ import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl
 import okhttp3.Response
 import java.io.IOException
+import kotlin.math.abs
 
 private const val SNIFF_BYTES = 4_096L
 private const val PLAYLIST_LIMIT = 2L * 1024 * 1024
 
 /** User-initiated metadata check. It never downloads the media or changes the source URL. */
 internal class MediaProbe(private val http: MediaHttp) {
-    suspend fun check(media: DetectedMedia, auth: DownloadAuth, preferredHeight: Int? = null): DetectedMedia {
+    suspend fun check(media: DetectedMedia, auth: DownloadAuth, preferredHeight: Int? = null, automatic: Boolean = false): DetectedMedia {
         val url = httpMediaUrl(media.url) ?: return media.failed(MediaProblem.NOT_MEDIA)
         if (media.drm.isProtected) return media
         if (media.isFragment) return media.failed(MediaProblem.NOT_MEDIA)
@@ -38,7 +40,7 @@ internal class MediaProbe(private val http: MediaHttp) {
                 val known = if (media.kind == MediaKind.HLS || media.kind == MediaKind.DASH) media else sniff(media, url, auth)
                 if (auth.externalHttpsOnly && !known.kind.isCompleteVideo) throw notMedia()
                 when (known.kind) {
-                    MediaKind.HLS -> checkHls(known, url, auth, preferredHeight)
+                    MediaKind.HLS -> checkHls(known, url, auth, preferredHeight, automatic)
                     MediaKind.DASH -> checkDash(known, url, auth)
                     else -> known
                 }.copy(probed = true, probeProblem = null, checkedAtMs = System.currentTimeMillis(), probeHttpStatus = null)
@@ -74,39 +76,43 @@ internal class MediaProbe(private val http: MediaHttp) {
             media.copy(kind = kind, mime = type ?: media.mime, byteSize = size ?: media.byteSize)
         }
 
-    private suspend fun checkHls(media: DetectedMedia, url: HttpUrl, auth: DownloadAuth, preferredHeight: Int?): DetectedMedia {
+    private suspend fun checkHls(media: DetectedMedia, url: HttpUrl, auth: DownloadAuth, preferredHeight: Int?, automatic: Boolean): DetectedMedia {
         val master = http.read(http.request(url, auth).build(), ::checkedPlaylist)
         val variants = Hls.parseMaster(master.text, master.url.toString())
             .sortedWith(compareByDescending<HlsVariant> { it.height ?: 0 }.thenByDescending { it.bandwidth })
+        val playlists = mutableMapOf<HttpUrl, Result<HlsDocument>>()
+        val samples = mutableMapOf<Pair<HttpUrl, ByteWindow?>, Result<Unit>>()
         val selection = selectHlsSource(master, preferredHeight = preferredHeight, validateSelection = { candidate ->
-            if (auth.externalHttpsOnly) {
-                // A resolver can return a good manifest whose actual media is still refused by a CDN.
-                checkHlsSample(candidate.video, auth)
-                candidate.audio?.let { checkHlsSample(it, auth) }
+            if (automatic) {
+                val video = candidate.video
+                val audio = candidate.audio
+                // Don't mislabel a live window or a short excerpt as the complete video.
+                if (!video.ended || video.duration <= 0 || audio != null &&
+                    (!audio.ended || abs(audio.duration - video.duration) > maxOf(8.0, video.duration * .03))) throw notMedia()
+                media.durationSec?.takeIf { it > 0 && it.isFinite() }?.let { expected ->
+                    if (video.duration < expected - maxOf(10.0, expected * .04)) throw notMedia()
+                }
             }
-        }) { asset -> http.read(http.request(asset, auth).build(), ::checkedPlaylist) }
+            if (auth.externalHttpsOnly || automatic) {
+                // An accessible manifest isn't enough; validate actual video and alternate audio bytes.
+                checkHlsSample(candidate.video, auth, samples)
+                candidate.audio?.let { checkHlsSample(it, auth, samples) }
+            }
+        }) { asset -> playlists.once(asset) { http.read(http.request(asset, auth).build(), ::checkedPlaylist) } }
         val chosen = selection.variant
         return media.copy(kind = MediaKind.HLS, variants = variants, byteSize = null, checkedVariantUrl = chosen?.url,
             durationSec = media.durationSec ?: selection.video.duration.takeIf { it > 0 },
             height = chosen?.height ?: media.height, width = chosen?.width ?: media.width)
     }
 
-    private suspend fun checkHlsSample(plan: HlsMediaPlan, auth: DownloadAuth) {
-        if (plan.resources.any { externalHttpsUrl(it.url.toString()) == null }) throw notMedia()
+    private suspend fun checkHlsSample(plan: HlsMediaPlan, auth: DownloadAuth,
+                                       samples: MutableMap<Pair<HttpUrl, ByteWindow?>, Result<Unit>>) {
+        if (auth.externalHttpsOnly && plan.resources.any { externalHttpsUrl(it.url.toString()) == null }) throw notMedia()
         val first = plan.resources.firstOrNull { !it.initialization && !it.key } ?: throw notMedia()
-        val request = http.request(first.url, auth)
-        first.range?.let { request.header("Range", it.header).header("Accept-Encoding", "identity") }
-        http.read(request.build()) { response ->
-            response.requireMediaSuccess()
-            val range = first.range
-            val received = ContentRange.parse(response.header("Content-Range"))
-            if (range != null && (response.code != 206 || received?.start != range.offset || received.end != range.last) ||
-                range == null && response.code != 200) throw notMedia()
-            val prefix = response.peekBody(512).bytes()
-            val type = response.header("Content-Type")?.substringBefore(';')?.trim()?.lowercase()
-            val text = prefix.toString(Charsets.UTF_8).trimStart('\uFEFF', ' ', '\t', '\r', '\n')
-            if (prefix.isEmpty() || type in setOf("text/html", "application/xhtml+xml", "application/json") ||
-                text.startsWith("<!DOCTYPE", true) || text.startsWith("<html", true) || text.startsWith('{')) throw notMedia()
+        samples.once(first.url to first.range) {
+            val request = http.request(first.url, auth)
+            first.range?.let { request.header("Range", it.header).header("Accept-Encoding", "identity") }
+            http.read(request.build()) { response -> response.requireHlsAsset(first) }
         }
     }
 
@@ -121,6 +127,31 @@ internal class MediaProbe(private val http: MediaHttp) {
     private fun DetectedMedia.failed(problem: MediaProblem, status: Int? = null) =
         copy(probed = true, probeProblem = problem, checkedAtMs = null, probeHttpStatus = status, checkedVariantUrl = null)
     private fun notMedia() = MediaDownloadException(MediaProblem.NOT_MEDIA.ar, MediaProblem.NOT_MEDIA)
+}
+
+// Rendition fallback can share the same audio track. Never repeat a denied request to that URL.
+private suspend fun <K, T> MutableMap<K, Result<T>>.once(key: K, load: suspend () -> T): T {
+    get(key)?.let { return it.getOrThrow() }
+    val result = try { Result.success(load()) } catch (e: IOException) { Result.failure(e) }
+    put(key, result)
+    return result.getOrThrow()
+}
+
+internal fun Response.requireHlsAsset(resource: HlsResource) {
+    requireMediaSuccess()
+    val range = resource.range
+    val received = ContentRange.parse(header("Content-Range"))
+    if (range != null && (code != 206 || received?.start != range.offset || received.end != range.last) ||
+        range == null && code != 200) throw MediaDownloadException(MediaProblem.NOT_MEDIA.ar, MediaProblem.NOT_MEDIA)
+    val prefix = peekBody(512).bytes()
+    val mime = header("Content-Type")?.substringBefore(';')?.trim()?.lowercase()
+    val text = prefix.toString(Charsets.UTF_8).trimStart('\uFEFF', ' ', '\t', '\r', '\n')
+    if (prefix.isEmpty() || mime in setOf("text/html", "application/xhtml+xml", "application/json") ||
+        text.startsWith("<!DOCTYPE", true) || text.startsWith("<html", true) || text.startsWith("<head", true) ||
+        text.startsWith("<body", true) || text.startsWith("<?xml", true) ||
+        (text.startsWith('{') && text.drop(1).trimStart().startsWith('"'))) {
+        throw MediaDownloadException(MediaProblem.NOT_MEDIA.ar, MediaProblem.NOT_MEDIA)
+    }
 }
 
 internal fun checkedPlaylist(response: Response): HlsDocument {

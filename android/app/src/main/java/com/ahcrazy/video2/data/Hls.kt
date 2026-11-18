@@ -11,7 +11,7 @@ import okhttp3.HttpUrl
 internal data class HlsDocument(val url: HttpUrl, val text: String)
 internal data class HlsResource(val url: HttpUrl, val name: String, val range: ByteWindow? = null,
                                 val key: Boolean = false, val initialization: Boolean = false)
-internal data class HlsMediaPlan(val text: String, val resources: List<HlsResource>, val duration: Double)
+internal data class HlsMediaPlan(val text: String, val resources: List<HlsResource>, val duration: Double, val ended: Boolean)
 internal data class HlsAudio(val attributes: Map<String, String>, val url: HttpUrl?)
 internal class ProtectedMedia(val drm: DRMKind) : java.io.IOException("بث محمي بـ DRM (${drm.titleAr}) — لن يتم التحميل.")
 
@@ -117,6 +117,7 @@ internal object Hls {
         var segmentDuration: Double? = null
         var total = 0.0
         var count = 0
+        var ended = false
         for (line in lines(doc.text).drop(1)) {
             val tag = line.substringBefore(':')
             when {
@@ -145,6 +146,7 @@ internal object Hls {
                     local += "#EXT-X-MAP:URI=\"${resource.name}\""
                 }
                 tag == "#EXT-X-BYTERANGE" -> pendingRange = line.substringAfter(':')
+                tag == "#EXT-X-ENDLIST" -> ended = true
                 tag == "#EXT-X-GAP" -> throw MediaDownloadException("بعض أجزاء بث HLS غير متاحة في المصدر.")
                 tag in copyTags -> {
                     if (tag == "#EXTINF") {
@@ -174,7 +176,7 @@ internal object Hls {
         }
         if (count == 0 || segmentDuration != null || local.none { it.startsWith("#EXT-X-TARGETDURATION:") }) invalidResource()
         local += "#EXT-X-ENDLIST"
-        return HlsMediaPlan(local.joinToString("\n", postfix = "\n"), resources, total)
+        return HlsMediaPlan(local.joinToString("\n", postfix = "\n"), resources, total, ended)
     }
 
     fun duration(text: String): Double = lines(text).filter { it.startsWith("#EXTINF:") }
@@ -230,7 +232,7 @@ internal suspend fun selectHlsSource(
             return HlsSelection(variant, video, audioTrack, audio).also { validateSelection(it) }
         } catch (e: MediaDownloadException) {
             // Permission is not guessed. Only explicitly listed alternatives are considered.
-            if (preferredVariantUrl != null || e.problem !in HLS_ALTERNATIVE_PROBLEMS) throw e
+            if (preferredVariantUrl != null || e.status == 429 || e.problem !in HLS_ALTERNATIVE_PROBLEMS) throw e
             if (firstFailure == null) firstFailure = e
         }
     }
