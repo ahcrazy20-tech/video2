@@ -2,6 +2,7 @@ package com.ahcrazy.video2
 
 import android.app.Application
 import android.media.AudioFormat
+import android.net.Uri
 import android.os.CancellationSignal
 import android.os.OperationCanceledException
 import com.ahcrazy.video2.core.model.MediaKind
@@ -27,6 +28,7 @@ import org.junit.rules.TemporaryFolder
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
@@ -177,19 +179,25 @@ class OfflineSubtitleTest {
         assertEquals(2, calls)
     }
 
-    @Test fun bothSpeechModelsUseTheSameQ4WeightsAndMediumDoesNotPullLarge() {
+    @Test fun compactPacksDoNotPullLargerModelsAndLegacyIdsStayTheSame() {
         val medium = OfflineModel.WHISPER_MEDIUM
+        val q5 = OfflineModel.WHISPER_MEDIUM_Q5
         val large = OfflineModel.WHISPER_LARGE
         val q4 = OfflineModel.HYMT_Q4
-        assertEquals(listOf(medium, q4), OfflineModel.pack(medium))
-        assertEquals(listOf(large, q4), OfflineModel.pack(large))
-        assertEquals(6_158_411_955L, OfflineModel.pack(medium).sumOf { it.spec.bytes })
-        assertTrue(medium.requiredFreeRam < large.requiredFreeRam)
+        val light = OfflineModel.HYMT_LITE
+        assertEquals(listOf(medium, q4), OfflineModel.pack(medium, q4))
+        assertEquals(listOf(large, light), OfflineModel.pack(large, light))
+        assertEquals(6_158_411_955L, OfflineModel.pack(medium, q4).sumOf { it.spec.bytes })
+        assertEquals(1_672_292_915L, OfflineModel.pack(q5, light).sumOf { it.spec.bytes })
+        assertEquals("whisper-medium-6c14d5adee5f.bin", medium.installedName)
+        assertEquals("hymt2-7b-q4-9f96256500f3.gguf", q4.installedName)
         assertEquals(medium, OfflineModel.speechForJob(medium.id))
-        assertEquals(large, OfflineModel.speechForJob(null)) // 1.7 jobs implicitly used Large-v3
+        assertEquals(q5, OfflineModel.speechForJob(q5.id))
+        assertEquals(large, OfflineModel.speechForJob(null)) // 1.7 used Large-v3
         assertNull(OfflineModel.speechForJob(q4.id))
-        assertNull(OfflineModel.speechForJob("unavailable-whisper"))
-        assertEquals(listOf(q4), OfflineModel.entries.filter { it.extension == "gguf" })
+        assertEquals(q4, OfflineModel.translatorForJob("hymt2-7b-q4"))
+        assertEquals(light, OfflineModel.translatorForJob("hymt2-1p8b-q4"))
+        assertNull(OfflineModel.translatorForJob("hymt2-7b-q6"))
     }
 
     @Test fun restartsFromSpeechAndTranslationCheckpointsAndNeverOverlapsModels() {
@@ -220,7 +228,8 @@ class OfflineSubtitleTest {
                     override fun close() { assertEquals("speech", session); session = null }
                 }
             }
-            override fun translator(model: File, signal: CancellationSignal): LocalTranslator {
+            override fun translator(model: File, kind: OfflineModel, signal: CancellationSignal): LocalTranslator {
+                assertEquals(OfflineModel.HYMT_Q4, kind)
                 assertNull(session); session = "translator"
                 return object : LocalTranslator {
                     override fun translate(prompt: String, seed: Int): String? {
@@ -309,7 +318,8 @@ class OfflineSubtitleTest {
             input
         }, object : LocalEngines {
             override fun speech(model: File, signal: CancellationSignal): LocalSpeech = error("Whisper must not load again")
-            override fun translator(model: File, signal: CancellationSignal): LocalTranslator {
+            override fun translator(model: File, kind: OfflineModel, signal: CancellationSignal): LocalTranslator {
+                assertEquals(OfflineModel.HYMT_Q4, kind)
                 sessions++
                 return object : LocalTranslator {
                     override fun close() { closed++ }
@@ -353,6 +363,80 @@ class OfflineSubtitleTest {
         gate = true
         assertEquals(done, run())
         assertEquals(2, sessions)
+    }
+
+    @Test fun fastTranslatorUsesSavedSpeechButDoesNotLoadOrReuseTheOldTranslator() {
+        val old = tmp.newFolder()
+        val fresh = tmp.newFolder()
+        val input = tmp.newFile().apply { writeText("original video") }
+        val source = SubCue(0, 5.0, 7.8, "Keep my words")
+        File(old, "offline-source.json").writeText(JSONObject().put("path", input.absolutePath).put("size", input.length())
+            .put("mtime", input.lastModified()).toString())
+        File(old, "offline-language.txt").writeText("en")
+        CueJson.write(File(old, "cues-original.json"), listOf(source))
+        val oldResult = File(old, "cues-translated-ar.json")
+        CueJson.write(oldResult, listOf(source.copy(translated = "الترجمة السابقة")))
+        val wrongWeights = OfflinePipeline.translationCheckpoint(fresh, SubLang.AR, OfflineModel.HYMT_Q4).apply { mkdir() }
+        CueJson.write(File(wrongWeights, "0.json"), CueJson.read(oldResult))
+        val pipeline = OfflinePipeline({
+            assertEquals(OfflineModel.HYMT_LITE, it)
+            input
+        }, object : LocalEngines {
+            override fun speech(model: File, signal: CancellationSignal): LocalSpeech = error("Existing transcript must be reused")
+            override fun translator(model: File, kind: OfflineModel, signal: CancellationSignal): LocalTranslator {
+                assertEquals(OfflineModel.HYMT_LITE, kind)
+                return object : LocalTranslator {
+                    override fun translate(prompt: String, seed: Int): String {
+                        assertTrue(prompt.endsWith(source.original))
+                        return "احفظ كلامي"
+                    }
+                    override fun close() = Unit
+                }
+            }
+        }) { _, _, _, _ -> error("No audio extraction") }
+        pipeline.reuseTranscript(old, fresh, input, CancellationSignal())
+        assertFalse(File(fresh, oldResult.name).exists())
+        val result = pipeline.run(fresh, input, SubLang.AUTO, SubLang.AR, OfflineModel.WHISPER_MEDIUM,
+            CancellationSignal(), translator = OfflineModel.HYMT_LITE) { _, _, _, _ -> }.single()
+        assertEquals(source.copy(translated = "احفظ كلامي"), result)
+        assertEquals("الترجمة السابقة", CueJson.read(oldResult).single().translated)
+        input.appendText(" changed")
+        assertEquals(OfflineIssue.VIDEO, assertThrows(OfflineFailure::class.java) {
+            pipeline.reuseTranscript(old, tmp.newFolder(), input, CancellationSignal())
+        }.issue)
+    }
+
+    @Test fun modelFolderAcceptsPublicLocalStorageOnly() {
+        fun tree(id: String) = Uri.parse("content://com.android.externalstorage.documents/tree/${Uri.encode(id)}")
+        assertTrue(isLocalModelFolder(tree("primary:Documents/Video2 Models")))
+        assertTrue(isLocalModelFolder(tree("2412-AABB:Models")))
+        assertFalse(isLocalModelFolder(tree("primary:Android/data/com.ahcrazy.video2")))
+        assertFalse(isLocalModelFolder(tree("primary:Documents/../Android/data")))
+        assertFalse(isLocalModelFolder(tree("primary:")))
+        assertFalse(isLocalModelFolder(Uri.parse("content://cloud.provider/tree/models")))
+    }
+
+    @Test fun offlineModelRestoreCommitsOnlyFullVerifiedFileAndKeepsPreviousCopyOnError() {
+        val payload = "official-model-fixture".encodeToByteArray()
+        val sha = MessageDigest.getInstance("SHA-256").digest(payload).joinToString("") { "%02x".format(it) }
+        val spec = PinnedModel("", payload.size.toLong(), sha)
+        val destination = File(tmp.root, "weights.bin").apply { writeText("previous bytes") }
+        val partial = File(tmp.root, "weights.bin.part").apply { writeText("previous downloaded bytes") }
+        val corrupted = payload.copyOf().apply { this[0] = 21 }
+        assertEquals(OfflineIssue.CHECKSUM, assertThrows(OfflineFailure::class.java) {
+            restoreVerifiedWeight(spec, destination, CancellationSignal(), { ByteArrayInputStream(corrupted) }) {}
+        }.issue)
+        assertEquals("previous bytes", destination.readText())
+        val cancelled = CancellationSignal().apply { cancel() }
+        assertThrows(OperationCanceledException::class.java) {
+            restoreVerifiedWeight(spec, destination, cancelled, { ByteArrayInputStream(payload) }) {}
+        }
+        assertEquals("previous bytes", destination.readText())
+        assertFalse(File(tmp.root, "weights.bin.import").exists())
+        restoreVerifiedWeight(spec, destination, CancellationSignal(), { ByteArrayInputStream(payload) }) {}
+        assertArrayEquals(payload, destination.readBytes())
+        assertEquals("previous downloaded bytes", partial.readText())
+        assertFalse(File(tmp.root, "weights.bin.import").exists())
     }
 
     @Test fun pinsModelsAndRejectsAnInvalidRangeBeforeAppending() {

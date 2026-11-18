@@ -106,5 +106,6 @@ data class TranslationJob(
     val phase: TranslationPhase = TranslationPhase.QUEUED, val progress: Double = 0.0,
     val cueCount: Int = 0, val message: String? = null, val createdAt: Long = System.currentTimeMillis(),
     val mode: TranslationMode = TranslationMode.CLOUD, val offlineModel: String? = null, val offlineIssue: String? = null,
-    val offlineSpeechModel: String? = null, val offlineFastSpeech: Boolean = false
+    val offlineSpeechModel: String? = null, val offlineFastSpeech: Boolean = false,
+    val offlineTranscriptFrom: String? = null
 )

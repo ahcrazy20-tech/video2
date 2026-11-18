@@ -5,13 +5,25 @@
 #include <memory>
 #include <vector>
 
+#if defined(__ANDROID__) && defined(__aarch64__) && !defined(VIDEO2_HYMT_DOTPROD)
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+#endif
+
+#ifdef VIDEO2_HYMT_DOTPROD
+#define HYMT_JNI(name) Java_com_ahcrazy_video2_data_offline_HymtDotprodJni_##name
+#else
 #define HYMT_JNI(name) Java_com_ahcrazy_video2_data_offline_HymtJni_##name
+#endif
 
 namespace {
 constexpr int context_size = 1536; // Do not allocate the model's training context (262K tokens).
 struct Hymt : video2::Cancellable {
     std::unique_ptr<llama_model, decltype(&llama_model_free)> model{nullptr, llama_model_free};
     std::unique_ptr<llama_context, decltype(&llama_free)> engine{nullptr, llama_free};
+    std::vector<llama_token> prefix, stops;
+    llama_token assistant = -1;
+    float top_p = 0.6f;
 };
 void quiet(ggml_log_level, const char *, void *) {}
 
@@ -23,7 +35,39 @@ std::vector<llama_token> tokenize(const llama_vocab * vocab, const std::string &
     tokens.resize(count);
     return tokens;
 }
+llama_token special(const llama_vocab * vocab, const char * text, llama_token expected) {
+    const auto t = tokenize(vocab, text, true);
+    if (t.size() != 1 || t.front() != expected) throw std::runtime_error("Unexpected Hy-MT2 chat template tokens");
+    return t.front();
+}
+
+void set_template(Hymt & s, bool compact) {
+    const auto * v = llama_model_get_vocab(s.model.get());
+    if (compact) {
+        // 1.8B uses the HunYuan Dense tokenizer and a different single-user wrapper.
+        s.prefix = {special(v, "<｜hy_begin▁of▁sentence｜>", 120000), special(v, "<｜hy_User｜>", 120006)};
+        s.assistant = special(v, "<｜hy_Assistant｜>", 120007);
+        s.stops = {special(v, "<｜hy_place▁holder▁no▁2｜>", 120020)};
+        s.top_p = 0.8f;
+    } else {
+        s.prefix = {special(v, "<|startoftext|>", 127958)};
+        s.assistant = special(v, "<|extra_0|>", 127962);
+        // The 7B GGUF declares EOS=3 (an ordinary token). Honor the publisher's generation config.
+        s.stops = {special(v, "<|eos|>", 127960), special(v, "<|extra_5|>", 127967)};
+        s.top_p = 0.6f;
+    }
+}
 } // namespace
+
+#ifndef VIDEO2_HYMT_DOTPROD
+extern "C" JNIEXPORT jboolean JNICALL HYMT_JNI(supportsDotprod)(JNIEnv *, jobject) {
+#if defined(__ANDROID__) && defined(__aarch64__)
+    return (getauxval(AT_HWCAP) & HWCAP_ASIMDDP) ? JNI_TRUE : JNI_FALSE;
+#else
+    return JNI_FALSE;
+#endif
+}
+#endif
 
 extern "C" JNIEXPORT jlong JNICALL HYMT_JNI(create)(JNIEnv * env, jobject) {
     return video2::guarded(env, [] { return reinterpret_cast<jlong>(new Hymt()); });
@@ -37,7 +81,7 @@ extern "C" JNIEXPORT void JNICALL HYMT_JNI(destroy)(JNIEnv *, jobject, jlong han
     delete reinterpret_cast<Hymt *>(handle);
 }
 
-extern "C" JNIEXPORT void JNICALL HYMT_JNI(load)(JNIEnv * env, jobject, jlong handle, jbyteArray path, jint threads) {
+extern "C" JNIEXPORT void JNICALL HYMT_JNI(load)(JNIEnv * env, jobject, jlong handle, jbyteArray path, jint threads, jboolean compact) {
     video2::guarded(env, [&] {
         auto & s = video2::session<Hymt>(handle);
         s.check();
@@ -52,6 +96,7 @@ extern "C" JNIEXPORT void JNICALL HYMT_JNI(load)(JNIEnv * env, jobject, jlong ha
         s.model.reset(llama_model_load_from_file(video2::utf8(env, path, 4096).c_str(), model));
         s.check();
         if (!s.model) throw std::runtime_error("Hy-MT2 could not load its model");
+        set_template(s, compact);
         auto p = llama_context_default_params();
         p.n_ctx = context_size;
         p.n_batch = 192;
@@ -77,16 +122,10 @@ extern "C" JNIEXPORT jbyteArray JNICALL HYMT_JNI(translate)(
         s.check();
         if (!s.engine) throw std::runtime_error("Hy-MT2 model is not loaded");
         const auto * vocab = llama_model_get_vocab(s.model.get());
-        // Exact single-user template from the pinned Tencent GGUF. Tokenize the
-        // actual subtitle as ordinary text, not as template/control tokens.
-        auto start = tokenize(vocab, "<|startoftext|>", true);
-        auto end = tokenize(vocab, "<|extra_0|>", true);
-        auto eos = tokenize(vocab, "<|eos|>", true);
-        auto extra_eos = tokenize(vocab, "<|extra_5|>", true);
-        if (start.size() != 1 || end.size() != 1 || eos.size() != 1 || extra_eos.size() != 1) throw std::runtime_error("Unexpected Hy-MT2 chat template tokens");
+        // The transcript is ordinary text, even if it happens to contain a control-token spelling.
         auto tokens = tokenize(vocab, video2::utf8(env, input, 8192), false);
-        tokens.insert(tokens.begin(), start.front());
-        tokens.push_back(end.front());
+        tokens.insert(tokens.begin(), s.prefix.begin(), s.prefix.end());
+        tokens.push_back(s.assistant);
         const int max_output = std::min(768, context_size - static_cast<int>(tokens.size()) - 1);
         // Null means the caller must retry with a smaller batch. Never return a truncated translation.
         if (max_output < 120) return nullptr;
@@ -97,7 +136,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL HYMT_JNI(translate)(
         std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> sampler(llama_sampler_chain_init(sp), llama_sampler_free);
         llama_sampler_chain_add(sampler.get(), llama_sampler_init_penalties(llama_vocab_n_tokens(vocab), 64, 1.05f, 0.0f, 0.0f));
         llama_sampler_chain_add(sampler.get(), llama_sampler_init_top_k(20));
-        llama_sampler_chain_add(sampler.get(), llama_sampler_init_top_p(0.6f, 1));
+        llama_sampler_chain_add(sampler.get(), llama_sampler_init_top_p(s.top_p, 1));
         llama_sampler_chain_add(sampler.get(), llama_sampler_init_temp(0.7f));
         llama_sampler_chain_add(sampler.get(), llama_sampler_init_dist(static_cast<uint32_t>(seed)));
 
@@ -127,9 +166,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL HYMT_JNI(translate)(
         for (int i = 0; i < max_output; ++i) {
             s.check();
             const auto token = llama_sampler_sample(sampler.get(), s.engine.get(), -1);
-            // The GGUF declares EOS=3 (an ordinary token). Use the publisher's
-            // generation_config EOS IDs, resolved from the pinned vocabulary.
-            if (token == eos.front() || token == extra_eos.front()) return video2::bytes(env, text);
+            if (std::find(s.stops.begin(), s.stops.end(), token) != s.stops.end()) return video2::bytes(env, text);
             char piece[512];
             int size = llama_token_to_piece(vocab, token, piece, sizeof(piece), 0, false);
             if (size < 0) return nullptr;

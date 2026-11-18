@@ -24,9 +24,11 @@ internal class OfflinePipeline(
 ) {
     fun run(
         dir: File, input: File, source: SubLang, target: SubLang, speechModel: OfflineModel, signal: CancellationSignal,
-        fastSpeech: Boolean = false, progress: (TranslationPhase, Double, Int, Boolean) -> Unit
+        fastSpeech: Boolean = false, translator: OfflineModel = OfflineModel.HYMT_Q4,
+        progress: (TranslationPhase, Double, Int, Boolean) -> Unit
     ): List<SubCue> {
-        require(speechModel in OfflineModel.speechModels && (!fastSpeech || speechModel == OfflineModel.WHISPER_MEDIUM))
+        require(speechModel in OfflineModel.speechModels && (!fastSpeech || speechModel.supportsFastSpeech))
+        require(translator in OfflineModel.translators)
         signal.throwIfCanceled()
         val title = stamp(input)
         val fingerprint = File(dir, "offline-source.json")
@@ -68,7 +70,23 @@ internal class OfflinePipeline(
             val saved = CueJson.read(final)
             if (matchesTranslation(cues, saved)) return saved
         }
-        return translate(dir, cues, target, signal, progress)
+        return translate(dir, cues, target, translator, signal, progress)
+    }
+
+    /** A new translation job can reuse only the original timed transcript, never previous translated text. */
+    fun reuseTranscript(from: File, to: File, input: File, signal: CancellationSignal) {
+        val original = File(from, "cues-original.json")
+        val language = File(from, "offline-language.txt")
+        val fingerprint = File(from, "offline-source.json")
+        if (listOf(original, language, fingerprint).any { !hasCheckpoint(it) }) throw OfflineFailure(OfflineIssue.NO_TRANSCRIPT)
+        val current = stamp(input)
+        if (readCheckpoint(fingerprint) != current) throw OfflineFailure(OfflineIssue.VIDEO)
+        val cues = CueJson.read(original).map { it.copy(translated = "") }
+        if (cues.isEmpty()) throw OfflineFailure(OfflineIssue.NO_TRANSCRIPT)
+        signal.throwIfCanceled()
+        atomicText(File(to, "offline-source.json"), current)
+        atomicText(File(to, "offline-language.txt"), readCheckpoint(language))
+        CueJson.write(File(to, "cues-original.json"), cues)
     }
 
     private fun stamp(file: File): String {
@@ -147,11 +165,11 @@ internal class OfflinePipeline(
     }
 
     private fun translate(
-        dir: File, cues: List<SubCue>, target: SubLang, signal: CancellationSignal,
+        dir: File, cues: List<SubCue>, target: SubLang, translator: OfflineModel, signal: CancellationSignal,
         progress: (TranslationPhase, Double, Int, Boolean) -> Unit
     ): List<SubCue> {
         val batches = planTranslation(cues)
-        val work = translationCheckpoint(dir, target).apply { mkdirs() }
+        val work = translationCheckpoint(dir, target, translator).apply { mkdirs() }
         val translated = mutableListOf<SubCue>()
         var index = 0
         while (index < batches.size) {
@@ -166,8 +184,8 @@ internal class OfflinePipeline(
         fun report() = progress(TranslationPhase.TRANSLATING, 0.62 + 0.34 * translated.size / cues.size, cues.size, true)
         report()
         if (index < batches.size) {
-            val path = modelPath(OfflineModel.HYMT_Q4)
-            val engine = stage(OfflineIssue.TRANSLATION, OfflineIssue.TRANSLATOR_MEMORY) { engines.translator(path, signal) }
+            val path = modelPath(translator)
+            val engine = stage(OfflineIssue.TRANSLATION, OfflineIssue.TRANSLATOR_MEMORY) { engines.translator(path, translator, signal) }
             engine.use { llm ->
                 val seed = Random.nextInt()
                 while (index < batches.size) {
@@ -194,8 +212,9 @@ internal class OfflinePipeline(
     }
 
     companion object {
-        // Same directory as 1.7 Q4 jobs so their finished batches are reusable.
-        fun translationCheckpoint(dir: File, target: SubLang) = File(dir, "offline-mt-${OfflineModel.HYMT_Q4.id}-${target.code}")
+        // Same directory as older 7B Q4 jobs; never mix their batches with 1.8B.
+        fun translationCheckpoint(dir: File, target: SubLang, translator: OfflineModel = OfflineModel.HYMT_Q4) =
+            File(dir, "offline-mt-${translator.id}-${target.code}")
     }
 
     private fun matchesTranslation(source: List<SubCue>, saved: List<SubCue>) =

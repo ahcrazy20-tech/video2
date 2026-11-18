@@ -15,7 +15,7 @@ internal interface LocalTranslator : AutoCloseable {
 }
 internal interface LocalEngines {
     fun speech(model: File, signal: CancellationSignal): LocalSpeech
-    fun translator(model: File, signal: CancellationSignal): LocalTranslator
+    fun translator(model: File, kind: OfflineModel, signal: CancellationSignal): LocalTranslator
 }
 
 internal object JniEngines : LocalEngines {
@@ -56,21 +56,32 @@ internal object JniEngines : LocalEngines {
         }
     }
 
-    override fun translator(model: File, signal: CancellationSignal): LocalTranslator {
+    private val hymt: HymtNative by lazy {
         HymtJni.ensureLoaded()
-        val handle = HymtJni.create()
+        if (HymtJni.supportsDotprod()) {
+            try {
+                HymtDotprodJni.ensureLoaded()
+                HymtDotprodJni
+            } catch (_: LinkageError) { HymtJni }
+        } else HymtJni
+    }
+
+    override fun translator(model: File, kind: OfflineModel, signal: CancellationSignal): LocalTranslator {
+        require(kind in OfflineModel.translators)
+        val native = hymt
+        val handle = native.create()
         try {
-            signal.setOnCancelListener { HymtJni.cancel(handle) }
+            signal.setOnCancelListener { native.cancel(handle) }
             signal.throwIfCanceled()
-            HymtJni.load(handle, model.absolutePath.encodeToByteArray(), threads)
+            native.load(handle, model.absolutePath.encodeToByteArray(), threads, kind == OfflineModel.HYMT_LITE)
             return object : LocalTranslator {
                 override fun translate(prompt: String, seed: Int): String? =
-                    HymtJni.translate(handle, prompt.encodeToByteArray(), seed)?.decodeToString()
-                override fun close() { signal.setOnCancelListener(null); HymtJni.destroy(handle) }
+                    native.translate(handle, prompt.encodeToByteArray(), seed)?.decodeToString()
+                override fun close() { signal.setOnCancelListener(null); native.destroy(handle) }
             }
         } catch (error: Throwable) {
             signal.setOnCancelListener(null)
-            HymtJni.destroy(handle)
+            native.destroy(handle)
             throw error
         }
     }
@@ -112,13 +123,33 @@ internal object WhisperFp16Jni : WhisperNative {
     external override fun decode(handle: Long, pcm: ShortArray, lang: ByteArray, previous: ByteArray, fast: Boolean, progress: WhisperProgress): Array<ByteArray>
 }
 
+internal interface HymtNative {
+    fun create(): Long
+    fun cancel(handle: Long)
+    fun destroy(handle: Long)
+    fun load(handle: Long, path: ByteArray, threads: Int, compact: Boolean)
+    fun translate(handle: Long, prompt: ByteArray, seed: Int): ByteArray?
+}
+
 @Keep
-internal object HymtJni {
+internal object HymtJni : HymtNative {
     private val library by lazy { System.loadLibrary("video2_hymt") }
     fun ensureLoaded() { library }
-    external fun create(): Long
-    external fun cancel(handle: Long)
-    external fun destroy(handle: Long)
-    external fun load(handle: Long, path: ByteArray, threads: Int)
-    external fun translate(handle: Long, input: ByteArray, seed: Int): ByteArray?
+    external fun supportsDotprod(): Boolean
+    external override fun create(): Long
+    external override fun cancel(handle: Long)
+    external override fun destroy(handle: Long)
+    external override fun load(handle: Long, path: ByteArray, threads: Int, compact: Boolean)
+    external override fun translate(handle: Long, prompt: ByteArray, seed: Int): ByteArray?
+}
+
+@Keep
+internal object HymtDotprodJni : HymtNative {
+    private val library by lazy { System.loadLibrary("video2_hymt_dotprod") }
+    fun ensureLoaded() { library }
+    external override fun create(): Long
+    external override fun cancel(handle: Long)
+    external override fun destroy(handle: Long)
+    external override fun load(handle: Long, path: ByteArray, threads: Int, compact: Boolean)
+    external override fun translate(handle: Long, prompt: ByteArray, seed: Int): ByteArray?
 }

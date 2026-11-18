@@ -78,13 +78,30 @@ class TranslationManager internal constructor(
         return job
     }
 
-    @Synchronized internal fun startOffline(videoId: String, source: SubLang, target: SubLang, speech: OfflineModel,
+    @Synchronized internal fun startOffline(videoId: String, source: SubLang, target: SubLang, speech: OfflineModel, model: OfflineModel,
                                              fastSpeech: Boolean = false): Boolean {
-        if (offlineWork.status.value != null || speech !in OfflineModel.speechModels || target == SubLang.AUTO) return false
+        if (offlineWork.status.value != null || speech !in OfflineModel.speechModels || model !in OfflineModel.translators || target == SubLang.AUTO) return false
         val video = library.byId(videoId) ?: return false
         val job = TranslationJob(UUID.randomUUID().toString(), videoId, video.title, source.code, target.code,
-            mode = TranslationMode.ON_DEVICE, offlineModel = OfflineModel.HYMT_Q4.id, offlineSpeechModel = speech.id,
-            offlineFastSpeech = fastSpeech && speech == OfflineModel.WHISPER_MEDIUM)
+            mode = TranslationMode.ON_DEVICE, offlineModel = model.id, offlineSpeechModel = speech.id,
+            offlineFastSpeech = fastSpeech && speech.supportsFastSpeech)
+        add(job)
+        startOffline(job)
+        return true
+    }
+
+    internal fun canRetranslate(job: TranslationJob): Boolean = job.mode == TranslationMode.ON_DEVICE &&
+        job.phase !in ACTIVE && job.offlineModel != OfflineModel.HYMT_LITE.id &&
+        OfflineModel.speechForJob(job.offlineSpeechModel) != null &&
+        hasCheckpoint(File(root, "${job.id}/cues-original.json"))
+
+    @Synchronized internal fun retranslateLight(id: String): Boolean {
+        val model = OfflineModel.HYMT_LITE
+        if (offlineWork.status.value != null || !offlineModels.ready(model) || !offlineModels.compatible(model)) return false
+        val previous = _jobs.value.firstOrNull { it.id == id && canRetranslate(it) } ?: return false
+        val job = previous.copy(id = UUID.randomUUID().toString(), phase = TranslationPhase.QUEUED,
+            progress = 0.0, cueCount = 0, message = null, createdAt = System.currentTimeMillis(), offlineIssue = null,
+            offlineModel = model.id, offlineTranscriptFrom = previous.id)
         add(job)
         startOffline(job)
         return true
@@ -129,8 +146,8 @@ class TranslationManager internal constructor(
         }
         val speech = OfflineModel.speechForJob(job.offlineSpeechModel)
         val target = SubLang.of(job.targetLang)
-        if (job.offlineModel != OfflineModel.HYMT_Q4.id || speech == null || target == SubLang.AUTO ||
-            (job.offlineFastSpeech && speech != OfflineModel.WHISPER_MEDIUM)) {
+        val model = OfflineModel.translatorForJob(job.offlineModel)
+        if (model == null || speech == null || target == SubLang.AUTO || (job.offlineFastSpeech && !speech.supportsFastSpeech)) {
             failOffline(job.id, OfflineIssue.NOT_SUPPORTED)
             return
         }
@@ -161,12 +178,18 @@ class TranslationManager internal constructor(
                     throw OfflineFailure(OfflineIssue.AUDIO)
                 }
                 val source = SubLang.of(job.sourceLang)
+                val original = File(dir, "cues-original.json")
+                val prior = job.offlineTranscriptFrom
+                if (prior != null && !hasCheckpoint(original)) {
+                    if (runCatching { UUID.fromString(prior).toString() }.getOrNull() != prior) throw OfflineFailure(OfflineIssue.NO_TRANSCRIPT)
+                    offline.reuseTranscript(File(root, prior), dir, input, signal)
+                }
                 // Preflight fresh jobs only. Resumes require just the runtime for unfinished work.
-                if (!hasCheckpoint(File(dir, "cues-original.json")) && !File(dir, "audio-16k.pcm").isFile &&
-                    (!offlineModels.ready(speech) || (source != target && !offlineModels.ready(OfflineModel.HYMT_Q4)))) {
+                if (!hasCheckpoint(original) && !File(dir, "audio-16k.pcm").isFile &&
+                    (!offlineModels.ready(speech) || (source != target && !offlineModels.ready(model)))) {
                     throw OfflineFailure(OfflineIssue.MISSING_MODELS)
                 }
-                val cues = offline.run(dir, input, source, target, speech, signal, job.offlineFastSpeech) { phase, progress, count, checkpoint ->
+                val cues = offline.run(dir, input, source, target, speech, signal, job.offlineFastSpeech, model) { phase, progress, count, checkpoint ->
                     if (checkpoint) { savedProgress = progress; savedCount = count }
                     // Persist the committed boundary, not partial progress from a running decoder.
                     patch(job.id, progressOnly = !checkpoint) { it.copy(phase = phase, progress = progress, cueCount = count) }
@@ -178,7 +201,7 @@ class TranslationManager internal constructor(
                 signal.throwIfCanceled()
                 exportSubtitles(job, video.localPath, cues, target)
                 patch(job.id) { it.copy(phase = TranslationPhase.DONE, progress = 1.0, cueCount = cues.size) }
-                OfflinePipeline.translationCheckpoint(dir, target).deleteRecursively()
+                OfflinePipeline.translationCheckpoint(dir, target, model).deleteRecursively()
             }
         } catch (e: OfflineFailure) { failOffline(job.id, e.issue) }
     }
@@ -364,6 +387,7 @@ class TranslationManager internal constructor(
                 put("offlineIssue", j.offlineIssue ?: JSONObject.NULL)
                 put("offlineSpeechModel", j.offlineSpeechModel ?: JSONObject.NULL)
                 put("offlineFastSpeech", j.offlineFastSpeech)
+                put("offlineTranscriptFrom", j.offlineTranscriptFrom ?: JSONObject.NULL)
             }) }
             atomicText(jobsFile, arr.toString())
         }
@@ -384,7 +408,8 @@ class TranslationManager internal constructor(
                     offlineModel = o.optString("offlineModel", "").takeIf { !o.isNull("offlineModel") && it.isNotBlank() },
                     offlineIssue = o.optString("offlineIssue", "").takeIf { !o.isNull("offlineIssue") && it.isNotBlank() },
                     offlineSpeechModel = o.optString("offlineSpeechModel", "").takeUnless { o.isNull("offlineSpeechModel") },
-                    offlineFastSpeech = o.optBoolean("offlineFastSpeech"))
+                    offlineFastSpeech = o.optBoolean("offlineFastSpeech"),
+                    offlineTranscriptFrom = o.optString("offlineTranscriptFrom").takeUnless { o.isNull("offlineTranscriptFrom") })
             }
         }
     }

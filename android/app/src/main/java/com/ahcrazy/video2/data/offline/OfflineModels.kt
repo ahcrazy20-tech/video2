@@ -2,6 +2,8 @@ package com.ahcrazy.video2.data.offline
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.CancellationSignal
 import okhttp3.OkHttpClient
@@ -20,6 +22,7 @@ private const val HF = "https://huggingface.co"
 private const val WHISPER = "$HF/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1"
 internal const val RETIRED_TRANSLATOR_ID = "hymt2-7b-q6"
 private const val RETIRED_FILE = "$RETIRED_TRANSLATOR_ID-88ef0aba5995.gguf"
+private const val HYMT_LITE_REV = "$HF/tencent/Hy-MT2-1.8B-GGUF/resolve/b27182d810fa3ceb6ed04e7c324c54e35c0d209c"
 private const val HYMT = "$HF/tencent/Hy-MT2-7B-GGUF/resolve/ab8472660ac61fac25f1af43fac2599d52a8a775"
 
 internal enum class OfflineModel(
@@ -29,28 +32,40 @@ internal enum class OfflineModel(
     WHISPER_MEDIUM("whisper-medium", "Whisper Medium · F16",
         PinnedModel("$WHISPER/ggml-medium.bin", 1_533_763_059, "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208"),
         "bin", 5_120 * MIB, 2_400 * MIB),
+    WHISPER_MEDIUM_Q5("whisper-medium-q5", "Whisper Medium · Q5_0",
+        PinnedModel("$WHISPER/ggml-medium-q5_0.bin", 539_212_467, "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f"),
+        "bin", 4_096 * MIB, 1_500 * MIB),
     WHISPER_LARGE("whisper-large-v3", "Whisper large-v3 · F16",
         PinnedModel("$WHISPER/ggml-large-v3.bin", 3_095_033_483, "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2"),
         "bin", 7_168 * MIB, 4_300 * MIB),
+    HYMT_LITE("hymt2-1p8b-q4", "Hy-MT2 1.8B · Q4_K_M",
+        PinnedModel("$HYMT_LITE_REV/Hy-MT2-1.8B-Q4_K_M.gguf", 1_133_080_448, "dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699"),
+        "gguf", 4_096 * MIB, 1_400 * MIB),
     HYMT_Q4("hymt2-7b-q4", "Hy-MT2 7B · Q4_K_M",
         PinnedModel("$HYMT/Hy-MT2-7B-Q4_K_M.gguf", 4_624_648_896, "9f96256500f3fc1ab4d64336b58f52a949a95ad7516b0c229476eef782f9f77b"),
         "gguf", 7_168 * MIB, 3_072 * MIB);
 
     val memoryIssue: OfflineIssue get() = when (this) {
-        WHISPER_MEDIUM -> OfflineIssue.MEMORY
+        WHISPER_MEDIUM, WHISPER_MEDIUM_Q5 -> OfflineIssue.MEMORY
         WHISPER_LARGE -> OfflineIssue.LARGE_MODEL_MEMORY
-        HYMT_Q4 -> OfflineIssue.TRANSLATOR_MEMORY
+        HYMT_LITE, HYMT_Q4 -> OfflineIssue.TRANSLATOR_MEMORY
     }
 
+    val installedName get() = "$id-${spec.sha256.take(12)}.$extension"
+    val publisherName get() = spec.url.substringAfterLast('/')
+    val supportsFastSpeech get() = this == WHISPER_MEDIUM || this == WHISPER_MEDIUM_Q5
+
     companion object {
-        val speechModels = listOf(WHISPER_MEDIUM, WHISPER_LARGE)
+        val speechModels = listOf(WHISPER_MEDIUM, WHISPER_MEDIUM_Q5, WHISPER_LARGE)
+        val translators = listOf(HYMT_LITE, HYMT_Q4)
+        fun translatorForJob(id: String?) = translators.firstOrNull { it.id == id }
 
         // Version 1.7 always used Large-v3, before jobs stored a speech model ID.
         fun speechForJob(id: String?): OfflineModel? = if (id == null) WHISPER_LARGE else speechModels.firstOrNull { it.id == id }
 
-        fun pack(speech: OfflineModel): List<OfflineModel> {
-            require(speech in speechModels)
-            return listOf(speech, HYMT_Q4)
+        fun pack(speech: OfflineModel, translator: OfflineModel): List<OfflineModel> {
+            require(speech in speechModels && translator in translators)
+            return listOf(speech, translator)
         }
     }
 }
@@ -76,10 +91,17 @@ internal class OfflineModels(private val context: Context, private val work: Off
     val models = _models.asStateFlow()
     private val _issue = MutableStateFlow<OfflineIssue?>(null)
     val issue = _issue.asStateFlow()
+    private val prefs = context.getSharedPreferences("video2-model-folder", Context.MODE_PRIVATE)
+    private val _folder = MutableStateFlow(prefs.getString("uri", null)?.let(Uri::parse)?.takeIf(::isLocalModelFolder))
+    val folder = _folder.asStateFlow()
+    private val _transferCount = MutableStateFlow<Int?>(null)
+    val transferCount = _transferCount.asStateFlow()
 
     // Keep existing installations usable without a new download. New users start at Medium.
     val defaultSpeech: OfflineModel
         get() = OfflineModel.speechModels.firstOrNull { ready(it) && compatible(it) } ?: OfflineModel.WHISPER_MEDIUM
+
+    val defaultTranslator: OfflineModel get() = OfflineModel.translators.firstOrNull { ready(it) && compatible(it) } ?: OfflineModel.HYMT_LITE
 
     fun compatible(model: OfflineModel): Boolean = Build.SUPPORTED_ABIS.firstOrNull() == "arm64-v8a" &&
         !manager.isLowRamDevice && memory().totalMem >= model.minTotalRam
@@ -99,14 +121,17 @@ internal class OfflineModels(private val context: Context, private val work: Off
         if (translationUnderPressure(ram.availMem, ram.threshold, ram.lowMemory)) throw OfflineFailure(OfflineIssue.TRANSLATOR_MEMORY)
     }
 
-    fun downloadPack(speech: OfflineModel) {
-        val pack = OfflineModel.pack(speech)
+    fun downloadPack(speech: OfflineModel, translator: OfflineModel) {
+        val pack = OfflineModel.pack(speech, translator)
         if (work.status.value != null) return
         _issue.value = null
+        _transferCount.value = null
+        val backup = folder.value
         if (pack.any { !compatible(it) }) { _issue.value = OfflineIssue.NOT_SUPPORTED; return }
-        val total = pack.sumOf { it.spec.bytes }
+        val bytes = pack.sumOf { it.spec.bytes }
+        val total = bytes * (if (backup == null) 1 else 2)
         try {
-            work.submit(OfflineWorkKind.DOWNLOAD, speech.id, onFinish = { error ->
+            work.submit(OfflineWorkKind.DOWNLOAD, "${speech.id}/${translator.id}", onFinish = { error ->
                 _models.value = status()
                 if (error != null && !OfflineWork.cancelled(error)) {
                     _issue.value = (error as? OfflineFailure)?.issue ?: OfflineIssue.DOWNLOAD
@@ -133,9 +158,106 @@ internal class OfflineModels(private val context: Context, private val work: Off
                     done += model.spec.bytes
                     notify(done.toDouble() / total)
                 }
+                if (backup != null) {
+                    val count = folderOperation(OfflineIssue.MODEL_BACKUP) {
+                        backUp(pack, ModelFolder(context.contentResolver, backup), signal) { notify((bytes + it).toDouble() / total) }
+                    }
+                    _transferCount.value = count
+                }
             }
         } catch (e: OfflineFailure) { _issue.value = e.issue }
     }
+
+    fun chooseFolder(uri: Uri?) {
+        if (work.status.value != null) return
+        _issue.value = null
+        _transferCount.value = null
+        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        val old = folder.value
+        if (uri != null) {
+            if (!isLocalModelFolder(uri)) { _issue.value = OfflineIssue.MODEL_FOLDER; return }
+            try { context.contentResolver.takePersistableUriPermission(uri, flags) }
+            catch (_: SecurityException) { _issue.value = OfflineIssue.MODEL_FOLDER; return }
+        }
+        prefs.edit().putString("uri", uri?.toString()).apply()
+        _folder.value = uri
+        if (old != null && old != uri) runCatching { context.contentResolver.releasePersistableUriPermission(old, flags) }
+    }
+
+    fun backUpInstalled() = transfer(OfflineWorkKind.MODEL_BACKUP, OfflineIssue.MODEL_BACKUP) { f, signal, notify ->
+        val models = OfflineModel.entries.filter(::ready)
+        val total = models.sumOf { it.spec.bytes }.coerceAtLeast(1)
+        backUp(models, f, signal) { notify(it.toDouble() / total) }
+    }
+
+    fun restoreModels() = transfer(OfflineWorkKind.MODEL_RESTORE, OfflineIssue.MODEL_RESTORE) { folder, signal, notify ->
+        val documents = folder.documents()
+        val copies = OfflineModel.entries.filter { !ready(it) }.mapNotNull { model ->
+            folder.candidate(documents, model)?.let { model to it }
+        }
+        if (copies.isEmpty()) {
+            if (OfflineModel.entries.none { folder.candidate(documents, it) != null }) throw OfflineFailure(OfflineIssue.EMPTY_MODEL_FOLDER)
+            return@transfer 0 // Everything in the selected folder was already installed.
+        }
+        val total = copies.sumOf { (model, _) -> model.spec.bytes }
+        if (root.usableSpace < total + 256 * MIB) throw OfflineFailure(OfflineIssue.STORAGE)
+        var done = 0L
+        var restored = 0
+        var corrupt = false
+        for ((model, doc) in copies) {
+            signal.throwIfCanceled()
+            try {
+                restoreVerifiedWeight(model.spec, file(model), signal, { folder.open(doc) }) { count ->
+                    notify((done + count).toDouble() / total)
+                }
+                partial(model).delete()
+                restored++
+                _models.value = status()
+            } catch (error: OfflineFailure) {
+                if (error.issue != OfflineIssue.CHECKSUM) throw error
+                corrupt = true
+            }
+            done += model.spec.bytes
+            notify(done.toDouble() / total)
+        }
+        if (corrupt) _issue.value = OfflineIssue.MODEL_RESTORE_CHECKSUM
+        restored
+    }
+
+    private fun backUp(models: List<OfflineModel>, folder: ModelFolder, signal: CancellationSignal, progress: (Long) -> Unit): Int {
+        val documents = folder.documents()
+        var done = 0L
+        for (model in models) {
+            signal.throwIfCanceled()
+            folder.save(documents, model, file(model), signal) { count -> progress(done + count) }
+            done += model.spec.bytes
+            progress(done)
+        }
+        return models.size
+    }
+
+    private fun transfer(
+        kind: OfflineWorkKind, failure: OfflineIssue,
+        action: (ModelFolder, CancellationSignal, (Double) -> Unit) -> Int
+    ) {
+        if (work.status.value != null) return
+        _issue.value = null
+        _transferCount.value = null
+        val uri = folder.value ?: return
+        try {
+            work.submit(kind, "model-folder", onFinish = { error ->
+                _models.value = status()
+                if (error != null && !OfflineWork.cancelled(error)) _issue.value = (error as? OfflineFailure)?.issue ?: failure
+            }) { signal, notify ->
+                _transferCount.value = folderOperation(failure) { action(ModelFolder(context.contentResolver, uri), signal, notify) }
+            }
+        } catch (e: OfflineFailure) { _issue.value = e.issue }
+    }
+
+    private inline fun <T> folderOperation(failure: OfflineIssue, action: () -> T): T = try { action() }
+    catch (e: SecurityException) { throw OfflineFailure(OfflineIssue.MODEL_FOLDER, e) }
+    catch (e: IOException) { throw OfflineFailure(failure, e) }
+    catch (e: IllegalArgumentException) { throw OfflineFailure(OfflineIssue.MODEL_FOLDER, e) }
 
     fun remove(model: OfflineModel) {
         if (work.status.value != null) return
@@ -156,7 +278,7 @@ internal class OfflineModels(private val context: Context, private val work: Off
 
     private fun retiredFiles() = listOf(File(root, RETIRED_FILE), File(root, "$RETIRED_FILE.part"))
     private fun memory() = ActivityManager.MemoryInfo().also(manager::getMemoryInfo)
-    private fun file(model: OfflineModel) = File(root, "${model.id}-${model.spec.sha256.take(12)}.${model.extension}")
+    private fun file(model: OfflineModel) = File(root, model.installedName)
     private fun partial(model: OfflineModel) = File(root, "${file(model).name}.part")
     private fun status() = OfflineModel.entries.associateWith {
         if (ready(it)) ModelState(it.spec.bytes, true) else ModelState(partial(it).length().coerceIn(0L, it.spec.bytes), false)

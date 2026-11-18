@@ -38,6 +38,16 @@ internal enum class OfflineIssue(val en: String, val ar: String) {
     MISSING_MODELS("Install the required models from On-device models, then resume.", "نزّل الموديلات المطلوبة من «الموديلات المحلية»، وبعدها استأنف."),
     DOWNLOAD("Model download interrupted. Retry to continue from the saved bytes.", "تنزيل الموديل اتوقف. حاول تاني عشان يكمل من المكان اللي وقف عنده."),
     CHECKSUM("The model failed verification. Download it again.", "ملف الموديل ماعدّاش فحص التحقق. نزّله تاني."),
+    MODEL_FOLDER("Select a writable folder in local device storage, outside the app's Android directory.",
+        "اختار مجلد محلي قابل للكتابة خارج مجلد Android، زي Documents/Video2 Models."),
+    MODEL_BACKUP("Could not complete the copy to the selected folder. Installed models are unchanged.",
+        "نسخ الموديلات للمجلد ما اكتملش. الموديلات المثبتة لسه موجودة."),
+    MODEL_RESTORE("Couldn't read or restore models from the selected folder.", "تعذّر استرداد الموديلات من المجلد المحدد."),
+    MODEL_RESTORE_CHECKSUM("Some model files failed verification and were not installed.", "في ملفات ما عدّتش التحقق، فما اتثبّتش."),
+    EMPTY_MODEL_FOLDER("No supported model weights in this folder. Pick the folder containing the actual model files.",
+        "مفيش ملفات موديلات معروفة في المجلد ده. اختار المجلد اللي فيه ملفات الأوزان نفسها."),
+    NO_TRANSCRIPT("The saved transcript is unavailable. The original job has not been changed.",
+        "التفريغ المحفوظ مش متاح. المهمة الأصلية زي ما هي."),
     VIDEO("The saved file is missing or changed. Start a new job with an existing file.", "الملف المحفوظ اتحذف أو اتغير. ابدأ مهمة جديدة بملف موجود."),
     AUDIO("This file doesn't have a supported local audio track. Try a saved MP4 or audio file.", "الملف مفيهوش مسار صوت محلي مدعوم. جرّب ملف MP4 أو صوت محفوظ."),
     TOO_LONG("This file exceeds the 12-hour local audio limit.", "الملف أطول من حد التفريغ المحلي: ١٢ ساعة."),
@@ -51,7 +61,7 @@ internal enum class OfflineIssue(val en: String, val ar: String) {
 }
 
 internal class OfflineFailure(val issue: OfflineIssue, cause: Throwable? = null) : Exception(issue.en, cause)
-internal enum class OfflineWorkKind { DOWNLOAD, SUBTITLES }
+internal enum class OfflineWorkKind { DOWNLOAD, MODEL_BACKUP, MODEL_RESTORE, SUBTITLES }
 internal data class OfflineWorkStatus(
     val kind: OfflineWorkKind, val key: String, val progress: Double = 0.0, val stopping: Boolean = false
 )
@@ -196,7 +206,9 @@ class OfflineWorkService : Service() {
             .setAction(CANCEL).putExtra(OfflineWork.TICKET, ticket), PendingIntent.FLAG_IMMUTABLE)
         val text = when {
             status?.stopping == true -> "Stopping…"
-            status?.kind == OfflineWorkKind.DOWNLOAD -> "Downloading offline models"
+            status?.kind == OfflineWorkKind.DOWNLOAD -> "Preparing offline models"
+            status?.kind == OfflineWorkKind.MODEL_BACKUP -> "Saving offline models to your folder"
+            status?.kind == OfflineWorkKind.MODEL_RESTORE -> "Restoring offline models from your folder"
             else -> "Generating subtitles on this device"
         }
         return Notification.Builder(this, CHANNEL).setContentTitle("Video2 · Offline").setContentText(text)

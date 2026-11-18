@@ -17,7 +17,8 @@ final class HymtJni {
     native long create();
     native void cancel(long h);
     native void destroy(long h);
-    native void load(long h, byte[] path, int threads);
+    native boolean supportsDotprod();
+    native void load(long h, byte[] path, int threads, boolean compact);
     native byte[] translate(long h, byte[] prompt, int seed);
 }
 
@@ -39,12 +40,13 @@ public final class OfflineNativeSmoke {
                 mustFail(() -> w.load(wHandle, bad, 1), "On-device work cancelled");
             } finally { w.destroy(wHandle); }
             var h = new HymtJni();
+            if (h.supportsDotprod()) throw new AssertionError("Host smoke build must use the generic translator");
             long hHandle = h.create();
             try {
-                mustFail(() -> h.load(hHandle, bad, 1), "Hy-MT2 could not load its model");
+                mustFail(() -> h.load(hHandle, bad, 1, false), "Hy-MT2 could not load its model");
                 mustFail(() -> h.translate(hHandle, new byte[0], 1), "Hy-MT2 model is not loaded");
                 h.cancel(hHandle);
-                mustFail(() -> h.load(hHandle, bad, 1), "On-device work cancelled");
+                mustFail(() -> h.load(hHandle, bad, 1, false), "On-device work cancelled");
             } finally { h.destroy(hHandle); }
             System.out.println("Both native libraries loaded; invalid-model and cancellation checks passed.");
         } finally { Files.deleteIfExists(model); }

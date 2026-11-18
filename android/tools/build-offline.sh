@@ -48,11 +48,15 @@ build() {
     tar -xzf "$archive" -C "$source" --strip-components=1
     touch "$source/.verified"
   fi
-  local fp16=OFF
-  if [[ "$variant" == whisper_fp16 ]]; then fp16=ON; fi
+  local variant_args=()
+  if [[ "$engine" == whisper ]]; then
+    variant_args+=("-DVIDEO2_WHISPER_FP16=$([[ "$variant" == whisper_fp16 ]] && echo ON || echo OFF)")
+  else
+    variant_args+=("-DVIDEO2_HYMT_DOTPROD=$([[ "$variant" == hymt_dotprod ]] && echo ON || echo OFF)")
+  fi
   "$cmake" -S "$root/native/$engine" -B "$work/$variant-build" "${args[@]}" \
     -DCMAKE_BUILD_TYPE=Release "-DVIDEO2_SOURCES=$source" "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$out" \
-    "-DVIDEO2_WHISPER_FP16=$fp16"
+    "${variant_args[@]}"
   "$cmake" --build "$work/$variant-build" --target "video2_$variant" --parallel "${VIDEO2_NATIVE_JOBS:-$jobs}"
 }
 
@@ -60,12 +64,14 @@ build() {
 whisper=(whisper whisper.cpp d1be6fde11ac6e0407606b4e42fe72d34add8037 645445da884df6dbd52b30f82d7be7c01d1767c938714e477e786b88d529e9f4)
 build "${whisper[@]}"
 if [[ "$mode" == android ]]; then build "${whisper[@]}" whisper_fp16; fi
-build hymt llama.cpp 4577932fab595eaa8b27ad71734d5de1f3c07d8c cb0058aa0d883a1f8b3704b85158776dd0c67fbd1e6922a361ec1f74d82f9381
+hymt=(hymt llama.cpp 4577932fab595eaa8b27ad71734d5de1f3c07d8c cb0058aa0d883a1f8b3704b85158776dd0c67fbd1e6922a361ec1f74d82f9381)
+build "${hymt[@]}"
+if [[ "$mode" == android ]]; then build "${hymt[@]}" hymt_dotprod; fi
 
 if [[ "$mode" == android ]]; then
   # Android 15+ devices can use 16 KiB pages; reject a misaligned engine before packaging.
   readelf="$sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
-  for so in "$out/libvideo2_whisper.so" "$out/libvideo2_whisper_fp16.so" "$out/libvideo2_hymt.so"; do
+  for so in "$out/libvideo2_whisper.so" "$out/libvideo2_whisper_fp16.so" "$out/libvideo2_hymt.so" "$out/libvideo2_hymt_dotprod.so"; do
     loads=$("$readelf" -lW "$so")
     # Pass numeric comparison to bash: awk implementations differ on coercing hexadecimal text.
     mapfile -t alignments < <(awk '$1 == "LOAD" { print $NF }' <<< "$loads")

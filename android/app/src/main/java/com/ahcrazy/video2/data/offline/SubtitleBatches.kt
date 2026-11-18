@@ -140,7 +140,7 @@ internal fun translateLines(
     if (prompt.length <= 2_000 && (lines.size == 1 || lines.none { it.contains(SUBTITLE_DELIMITER) })) {
         val result = generate(prompt, seed)?.split(SUBTITLE_DELIMITER)?.map { it.replace(WHITESPACE, " ").trim() }
         if (result?.size == lines.size && result.all {
-                it.isNotBlank() && '\uFFFD' !in it && "```" !in it && "<|" !in it &&
+                it.isNotBlank() && '\uFFFD' !in it && "```" !in it && "<|" !in it && "<｜" !in it && "<think>" !in it && "<answer>" !in it &&
                     !it.contains(BACKGROUND, ignoreCase = true) && !it.contains(SOURCE_TEXT, ignoreCase = true)
             }) return result
     }

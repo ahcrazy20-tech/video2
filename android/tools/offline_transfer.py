@@ -22,6 +22,8 @@ ROOTS = ("no_backup/offline-models", "files/Videos", "files/Thumbs", "files/Subt
          "files/Dubbing", "files/Translations", "files/library.json")
 WEIGHTS = {
     "whisper-medium-6c14d5adee5f.bin": (1_533_763_059, "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208"),
+    "whisper-medium-q5-19fea4b380c3.bin": (539_212_467, "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f"),
+    "hymt2-1p8b-q4-dc5f44fcf1fa.gguf": (1_133_080_448, "dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699"),
     "whisper-large-v3-64d182b440b9.bin": (3_095_033_483, "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2"),
     "hymt2-7b-q4-9f96256500f3.gguf": (4_624_648_896, "9f96256500f3fc1ab4d64336b58f52a949a95ad7516b0c229476eef782f9f77b"),
 }
@@ -200,7 +202,7 @@ def show_record(path, record):
     models = record["models"]
     print(f"Verified snapshot: {path} ({record['size']:,} bytes); keep {sidecar(path).name} with it.")
     print("Verified model files: " + (", ".join(models) if models else "none"))
-    if not any(n.startswith("whisper-") for n in models) or not any(n.startswith("hymt2-7b-q4-") for n in models):
+    if not any(n.startswith("whisper-") for n in models) or not any(n.startswith(("hymt2-7b-q4-", "hymt2-1p8b-q4-")) for n in models):
         print("This is not a complete offline model pack. Do not uninstall expecting every model to be restored.", file=sys.stderr)
 
 
