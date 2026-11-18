@@ -86,13 +86,14 @@
     var key = u.href;
     var previous = items.get(key);
     var old = previous ? previous.item : {};
+    var protection = typeof info.drm === 'string' && /^(NONE|FAIRPLAY|WIDEVINE|PLAYREADY|ENCRYPTED_HLS|UNKNOWN_PROTECTED)$/.test(info.drm) ? info.drm : '';
     var item = {
       url: key, method: method, mime: type || old.mime || '',
       duration: Number(info.duration) > 0 && Number.isFinite(Number(info.duration)) ? Number(info.duration) : old.duration || 0,
       height: Number(info.height) || old.height || 0, width: Number(info.width) || old.width || 0,
       label: String(info.qualityLabel || old.label || '').slice(0, 40), name: String(info.title || old.name || '').slice(0, 512),
       completeTrack: !!info.completeTrack || !!old.completeTrack,
-      ad: !!info.ad || !!old.ad, drm: info.drm || old.drm || 'NONE'
+      ad: !!info.ad || !!old.ad, drm: protection || old.drm || 'NONE'
     };
     if (/^html5/.test(old.method || '') && !/^html5/.test(method)) item.method = old.method;
     if (old.drm && old.drm !== 'NONE') item.drm = old.drm;
@@ -142,8 +143,8 @@
     // signatureCipher/cipher, track-only formats and SABR endpoints are not download links.
     if (Array.isArray(sd.formats)) sd.formats.slice(0, 30).forEach(function (f) {
       if (!f || !f.url || f.videoOnly || f.audioOnly || (f.drmFamilies && f.drmFamilies.length)) return;
-      emit(f.url, method, f.mimeType, { title: details.title, duration: details.lengthSeconds,
-        height: f.height, width: f.width, qualityLabel: f.qualityLabel, completeTrack: true }, doc, /^video\//i.test(f.mimeType || ''));
+      emit(f.url, /^player-/.test(method) ? method : 'player-payload', f.mimeType, { title: details.title, duration: details.lengthSeconds,
+        height: f.height, width: f.width, qualityLabel: f.qualityLabel, completeTrack: true }, doc, Number(f.height) > 0 || /^video\//i.test(f.mimeType || ''));
     });
     var info = { title: details.title, duration: details.lengthSeconds };
     emit(sd.hlsManifestUrl, method, 'application/vnd.apple.mpegurl', info, doc, true);

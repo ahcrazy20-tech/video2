@@ -10,49 +10,57 @@ import com.ahcrazy.video2.core.model.DownloadAuth
 import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.model.MediaProblem
 import com.ahcrazy.video2.data.MediaProbe
-import com.sun.net.httpserver.HttpExchange
-import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.runBlocking
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
+import okio.Buffer
 import org.junit.Assert.*
 import org.junit.Test
-import java.net.InetSocketAddress
-import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.TimeUnit
 
 class MediaProbeHttpTest {
     private val sample = byteArrayOf(0, 0, 0, 24) + "ftypisom00000000".toByteArray()
 
     @Test fun signedUrlUsesSessionAndFallsBackWhenRangeIsDenied() = runBlocking<Unit> {
-        val seen = CopyOnWriteArrayList<List<String?>>()
-        server({ app ->
-            app.createContext("/media") { e ->
-                seen.add(listOf(e.requestMethod, e.requestURI.rawQuery, e.requestHeaders.getFirst("Cookie"),
-                    e.requestHeaders.getFirst("Referer"), e.requestHeaders.getFirst("User-Agent")))
-                if (e.requestHeaders.getFirst("Range") != null) e.reply(416)
-                else e.reply(200, "application/octet-stream", sample)
-            }
-        }) { base ->
-            val remote = "$base/media?sig=a%2Bb&token=%2F"
-            val auth = DownloadAuth("Video2 test UA", "$base/watch?id=12", useBrowserCookies = true)
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(416))
+            server.enqueue(mediaReply())
+            val remote = server.url("/media?sig=a%2Bb&token=%2F").toString()
+            val referer = server.url("/watch?id=12").toString()
+            val auth = DownloadAuth("Video2 test UA", referer, useBrowserCookies = true)
             val result = MediaProbe(MediaHttp { "session=owned-media" }).check(DetectedMedia(remote, "sample", MediaKind.OTHER), auth)
             assertTrue(result.probed)
             assertNull(result.probeProblem)
             assertEquals(MediaKind.MP4, result.kind)
             assertEquals(sample.size.toLong(), result.byteSize)
             assertEquals(remote, result.url)
-            assertEquals(List(2) { listOf("GET", "sig=a%2Bb&token=%2F", "session=owned-media", "$base/watch?id=12", "Video2 test UA") }, seen)
+            for (range in listOf("bytes=0-4095", null)) {
+                val seen = server.nextRequest()
+                assertEquals("GET", seen.method)
+                assertEquals("/media?sig=a%2Bb&token=%2F", seen.path)
+                assertEquals(range, seen.getHeader("Range"))
+                assertEquals("session=owned-media", seen.getHeader("Cookie"))
+                assertEquals(referer, seen.getHeader("Referer"))
+                assertEquals("Video2 test UA", seen.getHeader("User-Agent"))
+            }
         }
     }
 
-    @Test fun accessAndExpiredAndHtmlAreDifferentFromPlayableMedia() = runBlocking<Unit> {
-        server({ app ->
-            app.createContext("/denied.mp4") { it.reply(403) }
-            app.createContext("/expired.mp4") { it.reply(410) }
-            app.createContext("/login.mp4") { it.reply(200, "application/octet-stream", "<html>Sign in</html>".toByteArray()) }
-        }) { base ->
+    @Test fun accessExpiryAndHtmlAreDifferentFromPlayableMedia() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.dispatchWith { r ->
+                when (r.path) {
+                    "/denied.mp4" -> MockResponse().setResponseCode(403)
+                    "/expired.mp4" -> MockResponse().setResponseCode(410)
+                    "/login.mp4" -> MockResponse().setHeader("Content-Type", "application/octet-stream").setBody("<html>Sign in</html>")
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
             val probe = MediaProbe(MediaHttp { null })
             for ((path, reason) in listOf("denied" to MediaProblem.ACCESS, "expired" to MediaProblem.EXPIRED, "login" to MediaProblem.NOT_MEDIA)) {
-                val checked = probe.check(DetectedMedia("$base/$path.mp4", "sample", MediaKind.MP4), DownloadAuth.default)
+                val checked = probe.check(DetectedMedia(server.url("/$path.mp4").toString(), "sample", MediaKind.MP4), DownloadAuth.default)
                 assertEquals(reason, checked.probeProblem)
                 assertFalse(checked.canDownload)
                 assertFalse(checked.canPlay)
@@ -61,63 +69,47 @@ class MediaProbeHttpTest {
     }
 
     @Test fun checksVariantAndItsAudioButNeverFetchesProtectedKeys() = runBlocking<Unit> {
-        val seen = CopyOnWriteArrayList<String>()
-        server({ app ->
-            app.createContext("/") { e ->
-                val path = e.requestURI.path
-                seen.add(path)
-                val text = when (path) {
+        MockWebServer().use { server ->
+            server.dispatchWith { r ->
+                val text = when (r.path) {
                     "/master" -> "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"Default\",DEFAULT=YES,URI=\"audio\"\n" +
                         "#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720,AUDIO=\"a\"\nvideo\n"
                     "/video" -> "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nsegment.ts\n#EXT-X-ENDLIST\n"
                     "/audio" -> "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,KEYFORMAT=\"com.apple.streamingkeydelivery\",URI=\"/license\"\n"
                     else -> "unexpected request"
                 }
-                e.reply(200, "text/plain", text.toByteArray())
+                MockResponse().setHeader("Content-Type", "text/plain").setBody(text)
             }
-        }) { base ->
-            val checked = MediaProbe(MediaHttp { null }).check(DetectedMedia("$base/master", "sample", MediaKind.HLS), DownloadAuth.default)
+            val checked = MediaProbe(MediaHttp { null }).check(DetectedMedia(server.url("/master").toString(), "sample", MediaKind.HLS), DownloadAuth.default)
             assertEquals(DRMKind.FAIRPLAY, checked.drm)
             assertFalse(checked.canDownload)
-            assertEquals(listOf("/master", "/video", "/audio"), seen)
+            assertEquals(3, server.requestCount)
+            assertEquals(listOf("/master", "/video", "/audio"), List(3) { server.nextRequest().path })
         }
     }
 
     @Test fun onlyTransientReadsAreRetried() = runBlocking<Unit> {
-        val temporary = AtomicInteger()
-        val blocked = AtomicInteger()
-        server({ app ->
-            app.createContext("/temporary") { e -> if (temporary.incrementAndGet() == 1) e.reply(503) else e.reply(200, "video/mp4", sample) }
-            app.createContext("/blocked") { e -> blocked.incrementAndGet(); e.reply(403) }
-        }) { base ->
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(503))
+            server.enqueue(mediaReply())
+            server.enqueue(MockResponse().setResponseCode(403))
             val http = MediaHttp { null }
             suspend fun get(path: String) = retryMediaRead {
-                http.read(http.request(httpMediaUrl("$base/$path")!!, DownloadAuth.default).build()) { response ->
+                http.read(http.request(httpMediaUrl(server.url("/$path").toString())!!, DownloadAuth.default).build()) { response ->
                     response.requireMediaSuccess()
                     response.body!!.bytes()
                 }
             }
             assertArrayEquals(sample, get("temporary"))
-            assertEquals(2, temporary.get())
+            assertEquals(2, server.requestCount)
             assertTrue(runCatching { get("blocked") }.isFailure)
-            assertEquals(1, blocked.get())
+            assertEquals(3, server.requestCount)
         }
     }
 
-    private suspend fun server(configure: (HttpServer) -> Unit, use: suspend (String) -> Unit) {
-        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        try {
-            configure(server)
-            server.start()
-            use("http://127.0.0.1:${server.address.port}")
-        } finally { server.stop(0) }
-    }
-
-    private fun HttpExchange.reply(code: Int, mime: String? = null, bytes: ByteArray = byteArrayOf()) {
-        use { e ->
-            if (mime != null) e.responseHeaders.set("Content-Type", mime)
-            e.sendResponseHeaders(code, if (bytes.isEmpty()) -1 else bytes.size.toLong())
-            if (bytes.isNotEmpty()) e.responseBody.write(bytes)
-        }
+    private fun mediaReply() = MockResponse().setHeader("Content-Type", "application/octet-stream").setBody(Buffer().write(sample))
+    private fun MockWebServer.nextRequest() = checkNotNull(takeRequest(2, TimeUnit.SECONDS))
+    private fun MockWebServer.dispatchWith(f: (RecordedRequest) -> MockResponse) {
+        dispatcher = object : Dispatcher() { override fun dispatch(request: RecordedRequest) = f(request) }
     }
 }
