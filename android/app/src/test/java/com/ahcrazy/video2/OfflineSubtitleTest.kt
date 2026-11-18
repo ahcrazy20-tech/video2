@@ -5,7 +5,10 @@ import android.media.AudioFormat
 import android.net.Uri
 import android.os.CancellationSignal
 import android.os.OperationCanceledException
+import com.ahcrazy.video2.core.model.GpuFallback
 import com.ahcrazy.video2.core.model.MediaKind
+import com.ahcrazy.video2.core.model.OfflinePerformance
+import com.ahcrazy.video2.core.model.OfflinePreset
 import com.ahcrazy.video2.core.model.SavedVideo
 import com.ahcrazy.video2.core.model.SubCue
 import com.ahcrazy.video2.core.model.SubLang
@@ -510,7 +513,7 @@ class OfflineSubtitleTest {
             [{"id":"offline","videoId":"test-video","videoTitle":"Title","mode":"ON_DEVICE","offlineModel":"removed","phase":"TRANSCRIBING"},
              {"id":"future","videoId":"test-video","videoTitle":"Title","mode":"FUTURE_MODE","phase":"SAVING"},
              {"id":"retired","videoId":"test-video","videoTitle":"Title","mode":"ON_DEVICE","offlineModel":"hymt2-7b-q6","phase":"PAUSED"},
-             {"id":"medium","videoId":"test-video","videoTitle":"Title","mode":"ON_DEVICE","offlineModel":"hymt2-7b-q4","offlineSpeechModel":"whisper-medium","offlineFastSpeech":true,"phase":"DONE"},
+             {"id":"medium","videoId":"test-video","videoTitle":"Title","mode":"ON_DEVICE","offlineModel":"hymt2-7b-q4","offlineSpeechModel":"whisper-medium","offlineFastSpeech":true,"phase":"DONE","offlinePreset":"VULKAN","offlinePerformance":{"elapsed":7000,"cpuSpeech":4100,"translate":2200,"cpuWindows":1,"generationCalls":2,"firstBatch":5300,"gpuFallback":"HEADROOM"}},
              {"id":"legacy","videoId":"test-video","videoTitle":"Title","phase":"DONE"}]
         """.trimIndent())
         val manager = TranslationManager(app, library, AppSettings(app), models, work)
@@ -526,6 +529,11 @@ class OfflineSubtitleTest {
         assertEquals(OfflineModel.WHISPER_MEDIUM.id, reloaded.jobs.value[3].offlineSpeechModel)
         assertEquals(OfflineModel.HYMT_Q4.id, reloaded.jobs.value[3].offlineModel)
         assertTrue(reloaded.jobs.value[3].offlineFastSpeech)
+        assertEquals(OfflinePreset.VULKAN, reloaded.jobs.value[3].offlinePreset)
+        assertEquals(OfflinePerformance(elapsedMs = 7000, speechCpuMs = 4100, translateMs = 2200,
+            cpuWindows = 1, generationCalls = 2, firstBatchMs = 5300, gpuFallback = GpuFallback.HEADROOM), reloaded.jobs.value[3].offlinePerformance)
+        assertEquals(OfflinePreset.CPU, reloaded.jobs.value[2].offlinePreset)
+        assertNull(reloaded.jobs.value[2].offlinePerformance)
         assertFalse(reloaded.jobs.value[2].offlineFastSpeech)
         assertNull(work.status.value)
         assertTrue(library.attachSubtitles(video.id, video.localPath, mapOf("orig" to "/local.srt"), "ar"))

@@ -159,7 +159,7 @@ GPU يتطلب Android 10+ وARM64 وVulkan 1.2 وتعريف متوافق. مج�
 
 ## إزاي تبنيه
 ### من Android Studio
-1. ثبّت JDK 17، وAndroid SDK 34، و`ndk;27.3.13750724`، و`cmake;3.31.5` من SDK Manager. البناء على Linux (أو WSL) ينزّل مصدر المحركين المثبّت بالإصدار ويتحقق منه قبل البناء.
+1. ثبّت JDK 17، وAndroid SDK 34، و`ndk;27.3.13750724`، و`cmake;3.31.5` من SDK Manager. البناء على Linux (أو WSL) ينزّل مصادر المحركات والرؤوس المثبّتة بالإصدار ويتحقق منها. بناء مكتبة Vulkan الاختيارية يحتاج `glslc` على المضيف (من `shader-tools` في الـNDK أو من `PATH`)، بالإضافة لمترجم C++ للمضيف. مكتبات CPU تفضل على API 26؛ مكتبة Vulkan وحدها مرتبطة بـAPI 29 ومش بتتحمّل على الإصدارات الأقدم.
 2. افتح مجلد `android/` كمشروع → انتظر Gradle Sync → Run على جهاز ARM64-v8a (Android 8+). الـAPK الحالي لا يستهدف محاكي x86.
 3. لو الـ Gradle Wrapper التنفيذي غير موجود: من Android Studio اختار **File → Sync** وهو هيولّده، أو شغّل مرة `gradle wrapper --gradle-version 8.7` من داخل المجلد.
 
@@ -175,6 +175,8 @@ GPU يتطلب Android 10+ وARM64 وVulkan 1.2 وتعريف متوافق. مج�
 | المكتبة والمجلدات والاستيراد | `ui/library/LibraryScreen.kt` + `data/LibraryStore.kt` |
 | المشغّل (ترجمة/دبلجة/PiP/لقطة/نوم/بحث ترجمة) | `ui/player/PlayerScreen.kt` |
 | الترجمة المحلية (Whisper→Hy‑MT2→SRT) والسحابية | `data/TranslationManager.kt` + `data/offline/` + `core/net/ProviderClients.kt` |
+| مقارنة CPU / Vulkan والتداخل | `data/offline/OfflinePipeline.kt` + `OfflineStats.kt` + `ui/translate/PerformancePanel.kt` |
+| ثيمات Galaxy Glass | `ui/theme/Theme.kt` + `ui/settings/AppearancePicker.kt` |
 | مراجعة وتعديل الترجمة | `ui/translate/TranslateScreen.kt` (`SubtitleReviewScreen`) |
 | الدبلجة | `ui/translate/ExtraScreens.kt` (`DubbingSheet`) |
 | تحويل HLS→MP4 محليًا | `ui/translate/ExtraScreens.kt` (`ConversionScreen`) |
