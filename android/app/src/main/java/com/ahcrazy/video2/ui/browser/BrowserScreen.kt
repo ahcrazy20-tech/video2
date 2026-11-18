@@ -41,6 +41,7 @@ import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.isYouTubePage
 import com.ahcrazy.video2.core.media.manifestKind
 import com.ahcrazy.video2.core.model.DetectedMedia
+import com.ahcrazy.video2.core.model.DownloadJob
 import com.ahcrazy.video2.core.model.HlsVariant
 import com.ahcrazy.video2.ui.theme.V2
 import kotlinx.coroutines.async
@@ -53,7 +54,8 @@ import kotlinx.coroutines.sync.withPermit
 @Composable
 internal fun BrowserScreen(
     ar: Boolean, session: BrowserSession, openUrl: String?, onConsumeOpenUrl: () -> Unit,
-    onPlayStream: (BrowserStream) -> Unit, onOpenDownloads: () -> Unit = {}
+    onPlayStream: (BrowserStream) -> Unit, onOpenDownloads: () -> Unit = {},
+    recoverFrom: DownloadJob? = null, onConsumeRecovery: () -> Unit = {}
 ) {
     val ctx = LocalContext.current
     val app = (ctx as android.app.Activity).app()
@@ -64,7 +66,8 @@ internal fun BrowserScreen(
     val filterAds by app.settings.adBlockFilterVideoAds.collectAsState(initial = true)
     val adBlock by app.settings.adBlockEnabled.collectAsState(initial = true)
     val preferredHeight by app.settings.downloadMaxHeight.collectAsState(initial = 0)
-    var shown by remember(tab.id) { mutableStateOf("") }
+    var shown by remember { mutableStateOf("") }
+    var recovering by remember { mutableStateOf(false) }
     val captureRevision = tab.captureRevision
     val fullscreen = tab.fullscreen
     var qualityFor by remember(tab.id, captureRevision) { mutableStateOf<String?>(null) }
@@ -80,13 +83,28 @@ internal fun BrowserScreen(
     LaunchedEffect(openUrl) {
         if (!openUrl.isNullOrBlank()) { session.current.open(openUrl); onConsumeOpenUrl() }
     }
+    LaunchedEffect(recoverFrom) {
+        val job = recoverFrom ?: return@LaunchedEffect
+        val page = job.media.pageUrl ?: job.media.requestReferer
+        val sourceTab = page?.let(session::reopenSource)
+        if (sourceTab != null) {
+            // A manually selected HLS variant failing does not make the parent master unavailable.
+            if (job.preferredVariantUrl == null) sourceTab.noteDownloadFailure(job.media.url, job.problem, job.httpStatus)
+            if (sourceTab.detected.isNotEmpty()) {
+                recovering = true
+                shown = "capture"
+                sourceTab.rescan()
+            }
+        }
+        onConsumeRecovery()
+    }
     LaunchedEffect(tab.id, captureRevision, shown, checkingUrls) {
         if (shown != "capture" || checkingUrls.isEmpty()) return@LaunchedEffect
         val slots = Semaphore(3)
         tab.detected.filter { !it.drm.isProtected && it.url in checkingUrls }.map { candidate ->
             async {
                 slots.withPermit {
-                    val result = app.downloads.probe(candidate, tab.auth(candidate))
+                    val result = app.downloads.probe(candidate, tab.auth(candidate), preferredHeight.takeIf { it > 0 })
                     if (tab.captureRevision == captureRevision && tab.detected.any { it.url == candidate.url }) tab.ingest(result)
                 }
             }
@@ -96,8 +114,8 @@ internal fun BrowserScreen(
 
     fun verify(url: String?) {
         if (checkingUrls.isNotEmpty()) return
-        checkingUrls = if (url != null) listOf(url) else detected.filterNot { it.drm.isProtected }
-            .sortedBy { it.probed && it.probeProblem == null }.take(6).map { it.url }
+        checkingUrls = if (url != null) listOf(url) else detected.filterNot { it.drm.isProtected || it.probeProblem?.needsNewLink == true }
+            .sortedBy { it.downloadChecked() }.take(6).map { it.url }
     }
 
     fun queued() {
@@ -110,11 +128,13 @@ internal fun BrowserScreen(
     fun download(item: DetectedMedia, variant: HlsVariant? = null, auto: Boolean = false) {
         val current = tab.detected.firstOrNull { it.url == item.url } ?: return
         if (!current.canDownload) return
+        if (!current.downloadChecked()) { verify(current.url); return }
         val maxHeight = variant?.height ?: preferredHeight.takeIf { it > 0 && !auto }
         val job = app.downloads.enqueue(current, tab.auth(current), maxHeight, variant?.url)
         shown = ""
         qualityFor = null
         checkingUrls = emptyList()
+        recovering = false
         if (job.state.isBusy) queued()
     }
 
@@ -163,7 +183,7 @@ internal fun BrowserScreen(
                         }
                     }
                     Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 5.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        FilledTonalButton(onClick = { focus.clearFocus(); shown = "capture"; tab.rescan() },
+                        FilledTonalButton(onClick = { focus.clearFocus(); recovering = false; shown = "capture"; tab.rescan() },
                             modifier = Modifier.weight(1f).testTag("browser.capture"), contentPadding = PaddingValues(horizontal = 12.dp),
                             colors = ButtonDefaults.filledTonalButtonColors(containerColor = V2.Mint.copy(alpha = .14f), contentColor = V2.Mint)) {
                             Icon(Icons.Filled.Radar, null, Modifier.size(19.dp)); Spacer(Modifier.width(6.dp))
@@ -215,7 +235,7 @@ internal fun BrowserScreen(
                         }
                         Row(Modifier.align(Alignment.TopEnd).padding(8.dp).clip(RoundedCornerShape(16.dp))
                             .background(Color.Black.copy(alpha = .70f))) {
-                            IconButton(onClick = { shown = "capture"; tab.rescan() }) { Icon(Icons.Filled.Radar, if (ar) "الالتقاط" else "Capture", tint = V2.Mint) }
+                            IconButton(onClick = { recovering = false; shown = "capture"; tab.rescan() }) { Icon(Icons.Filled.Radar, if (ar) "الالتقاط" else "Capture", tint = V2.Mint) }
                             IconButton(onClick = tab::exitFullscreen) { Icon(Icons.Filled.FullscreenExit, if (ar) "خروج من ملء العرض" else "Exit full screen", tint = Color.White) }
                         }
                     }
@@ -228,12 +248,12 @@ internal fun BrowserScreen(
     if (shown == "capture") {
         val quality = detected.firstOrNull { it.url == qualityFor }
         CaptureSheet(ar, tab.url, detected, captureMessage(ar, tab.url, tab.playbackHint, tab.drm.isProtected, tab.detected.size - detected.size),
-            checkingUrls.isNotEmpty(), quality, preferredHeight,
-            onClose = { shown = ""; qualityFor = null; checkingUrls = emptyList() },
+            checkingUrls.isNotEmpty(), quality, preferredHeight, recovering = recovering,
+            onClose = { shown = ""; recovering = false; qualityFor = null; checkingUrls = emptyList() },
             onScan = tab::rescan, onVerify = ::verify, onPlay = ::play, onDownload = ::download,
             onQuality = {
                 qualityFor = it?.url
-                if (it != null && (!it.probed || it.probeProblem != null)) verify(it.url)
+                if (it != null && !it.downloadChecked()) verify(it.url)
             },
             onYoutubeHelp = {
                 shown = ""; checkingUrls = emptyList()
@@ -283,7 +303,7 @@ internal fun BrowserScreen(
                     } else {
                         val maxHeight = preferredHeight.takeIf { it > 0 }
                         val job = if (captured != null) app.downloads.enqueue(captured.copy(title = pasteTitle.ifBlank { captured.title }), tab.auth(captured), maxHeight)
-                            else app.downloads.enqueueManual(target.toString(), pasteTitle, tab.url.ifBlank { null }, tab.auth(), maxHeight)
+                            else app.downloads.enqueueManual(target.toString(), pasteTitle, tab.url.ifBlank { null }, tab.auth(targetUrl = target.toString()), maxHeight)
                         pasteUrl = ""; pasteTitle = ""; shown = ""
                         if (job.state.isBusy) queued() else onOpenDownloads()
                     }

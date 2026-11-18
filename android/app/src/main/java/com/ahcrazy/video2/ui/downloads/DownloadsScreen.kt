@@ -30,13 +30,13 @@ import com.ahcrazy.video2.ui.theme.V2
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun DownloadsScreen(ar: Boolean, onOpenSource: (String) -> Unit, onOpenLibrary: () -> Unit) {
+fun DownloadsScreen(ar: Boolean, onOpenSource: (DownloadJob) -> Unit, onOpenLibrary: () -> Unit) {
     val app = (LocalContext.current as android.app.Activity).app()
     val jobs by app.downloads.jobs.collectAsState()
     LazyColumn(Modifier.fillMaxSize().background(V2.Bg), contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
-            Text(if (ar) "التحميلات" else "Downloads", style = MaterialTheme.typography.headlineMedium)
+            Text(if (ar) "التحميلات" else "Downloads", style = MaterialTheme.typography.headlineMedium, color = V2.Text)
             Text(if (ar) "تابع التقدم وكمل التحميلات المتوقفة من هنا." else "Track progress and resume paused downloads here.",
                 color = V2.TextDim)
         }
@@ -61,7 +61,7 @@ fun DownloadsScreen(ar: Boolean, onOpenSource: (String) -> Unit, onOpenLibrary: 
             val page = httpMediaUrl(job.media.pageUrl ?: job.media.requestReferer)?.toString()
             JobRow(job, ar,
                 onPause = { app.downloads.cancel(job.id) }, onResume = { app.downloads.resume(job.id) },
-                onRemove = { app.downloads.remove(job.id) }, onOpenSource = page?.let { { onOpenSource(it) } },
+                onRemove = { app.downloads.remove(job.id) }, onOpenSource = page?.let { { onOpenSource(job) } },
                 onOpenLibrary = onOpenLibrary)
         }
     }
@@ -97,7 +97,10 @@ private fun JobRow(job: DownloadJob, ar: Boolean, onPause: () -> Unit, onResume:
                 if (job.state == DownloadState.RUNNING && !showPercent) LinearProgressIndicator(Modifier.fillMaxWidth(), color = tint)
                 else if (job.state != DownloadState.COMPLETED) LinearProgressIndicator(progress = { job.progress.toFloat().coerceIn(0f, 1f) }, Modifier.fillMaxWidth(), color = tint)
             }
-            val error = if (ar) job.errorMessage ?: job.problem?.ar else job.problem?.en ?: when (job.state) {
+            val error = if (job.problem?.needsNewLink == true) {
+                val status = job.httpStatus?.let { " (HTTP $it)" }.orEmpty()
+                job.problem.text(ar) + status
+            } else if (ar) job.errorMessage ?: job.problem?.ar else job.problem?.en ?: when (job.state) {
                 DownloadState.BLOCKED_DRM -> "This source is protected and can’t be downloaded."
                 DownloadState.FAILED -> "The download didn’t finish. Check the source or try again."
                 else -> null
@@ -109,7 +112,8 @@ private fun JobRow(job: DownloadJob, ar: Boolean, onPause: () -> Unit, onResume:
                     Text(if (job.state == DownloadState.FAILED) (if (ar) "حاول تاني" else "Try again") else (if (ar) "استئناف" else "Resume"))
                 }
                 if (onOpenSource != null && job.state == DownloadState.FAILED) TextButton(onClick = onOpenSource) {
-                    Text(if (ar) "افتح صفحة المصدر" else "Open source page")
+                    Text(if (job.problem?.needsNewLink == true) (if (ar) "ارجع للمصدر وافحص البدائل" else "Return to source and check alternatives")
+                        else (if (ar) "افتح صفحة المصدر" else "Open source page"))
                 }
                 if (job.state == DownloadState.COMPLETED) TextButton(onClick = onOpenLibrary) { Text(if (ar) "افتح المكتبة" else "Open Library") }
             }

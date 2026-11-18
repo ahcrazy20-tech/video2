@@ -58,14 +58,15 @@ internal fun captureGroups(sources: List<DetectedMedia>): List<CaptureGroup> = s
 @Composable
 internal fun CaptureSheet(
     ar: Boolean, page: String, media: List<DetectedMedia>, message: CaptureMessage,
-    checking: Boolean, quality: DetectedMedia?, preferredHeight: Int,
+    checking: Boolean, quality: DetectedMedia?, preferredHeight: Int, recovering: Boolean,
     onClose: () -> Unit, onScan: () -> Unit, onVerify: (String?) -> Unit,
     onPlay: (DetectedMedia) -> Unit, onDownload: (DetectedMedia, HlsVariant?, Boolean) -> Unit,
     onQuality: (DetectedMedia?) -> Unit, onYoutubeHelp: () -> Unit
 ) {
     val host = httpMediaUrl(page)?.host
     val groups = remember(media) { captureGroups(media) }
-    val checked = media.count { it.probed && it.probeProblem == null && !it.drm.isProtected }
+    val checked = media.count { it.downloadChecked() && !it.drm.isProtected }
+    val canCheckAlternatives = media.any { !it.drm.isProtected && it.probeProblem?.needsNewLink != true }
     ModalBottomSheet(onDismissRequest = onClose, containerColor = V2.Card, contentColor = V2.Text) {
         LazyColumn(
             Modifier.fillMaxWidth().fillMaxHeight(.83f).testTag("capture.sheet"),
@@ -93,7 +94,7 @@ internal fun CaptureSheet(
                     TextButton(onClick = { onQuality(null) }) { Text(if (ar) "رجوع للمصادر" else "Back to sources") }
                 }
                 if (checking) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
-                else if (!quality.canDownload || quality.probeProblem != null) item {
+                else if (!quality.canDownload || !quality.downloadChecked()) item {
                     Text(quality.probeProblem?.text(ar) ?: if (ar) "البث مش متاح للحفظ." else "This stream can’t be saved.", color = V2.Gold)
                     if (!quality.drm.isProtected) TextButton(onClick = { onVerify(quality.url) }) { Text(if (ar) "أعد التحقق" else "Check again") }
                 } else {
@@ -113,14 +114,23 @@ internal fun CaptureSheet(
                     }
                 }
             } else {
+                if (recovering) item {
+                    Surface(shape = RoundedCornerShape(14.dp), color = V2.CardSoft) {
+                        Text(if (ar) "رجعت لصفحة المصدر. افحص بديل متاح، أو اقفل القائمة وشغّل الفيديو لو محتاج رابط جديد."
+                            else "Back on the source page. Check another available source, or close this sheet and play the video for a fresh link.",
+                            Modifier.padding(12.dp), color = V2.TextDim)
+                    }
+                }
                 item {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         FilledTonalButton(onClick = onScan) {
                             Icon(Icons.Filled.Refresh, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp))
                             Text(if (ar) "فحص الصفحة" else "Scan page")
                         }
-                        if (media.any { !it.drm.isProtected }) {
-                            TextButton(onClick = { onVerify(null) }, enabled = !checking) { Text(if (ar) "تحقق من الروابط" else "Check links") }
+                        if (canCheckAlternatives) {
+                            TextButton(onClick = { onVerify(null) }, enabled = !checking) {
+                                Text(if (recovering) (if (ar) "فحص بدائل" else "Check alternatives") else (if (ar) "تحقق من الروابط" else "Check links"))
+                            }
                         }
                     }
                     if (checking) {
@@ -176,11 +186,13 @@ private fun SourceCard(
     m: DetectedMedia, ar: Boolean, checking: Boolean, onPlay: (DetectedMedia) -> Unit,
     onDownload: (DetectedMedia, HlsVariant?, Boolean) -> Unit, onQuality: (DetectedMedia?) -> Unit, onVerify: (String?) -> Unit
 ) {
+    val ready = m.downloadChecked()
     val status = when {
         m.drm.isProtected -> (if (ar) "محمي بـ DRM" else "DRM protected") to V2.Accent
         m.probeProblem != null -> (if (ar) "تعذّر التحقق" else "Check failed") to V2.Gold
         m.kind == MediaKind.DASH -> (if (ar) "تشغيل فقط" else "Playback only") to V2.Gold
-        m.probed -> (if (ar) "اتحققنا من المصدر" else "Source checked") to V2.Mint
+        m.extractionMethod == "webview-download" -> (if (ar) "رابط تنزيل من الموقع" else "Download offered by the site") to V2.Mint
+        ready -> (if (ar) "اتحققنا من المصدر" else "Source checked") to V2.Mint
         else -> (if (ar) "مصدر مكتشف" else "Source detected") to V2.Sky
     }
     Surface(shape = RoundedCornerShape(18.dp), color = V2.CardSoft) {
@@ -195,16 +207,31 @@ private fun SourceCard(
             }
             Text(httpMediaUrl(m.url)?.host.orEmpty(), color = V2.TextDim, style = MaterialTheme.typography.bodySmall.copy(textDirection = TextDirection.Ltr),
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            m.probeProblem?.let { Text(it.text(ar), color = V2.Gold, style = MaterialTheme.typography.bodySmall) }
+            m.probeProblem?.let { problem ->
+                val statusCode = m.probeHttpStatus?.let { " (HTTP $it)" }.orEmpty()
+                Text(problem.text(ar) + statusCode, color = V2.Gold, style = MaterialTheme.typography.bodySmall)
+            }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (m.canDownload && m.kind != MediaKind.OTHER) Button(onClick = { if (m.kind == MediaKind.HLS) onQuality(m) else onDownload(m, null, false) }) {
-                    Icon(Icons.Filled.Download, null, Modifier.size(16.dp)); Spacer(Modifier.width(5.dp))
-                    Text(if (m.kind == MediaKind.HLS) (if (ar) "تحميل وجودة" else "Download / quality") else (if (ar) "تحميل" else "Download"))
+                val offersDownload = m.canDownload && m.kind != MediaKind.OTHER
+                if (offersDownload) Button(enabled = !checking, onClick = {
+                    when {
+                        m.kind == MediaKind.HLS -> onQuality(m)
+                        ready -> onDownload(m, null, false)
+                        else -> onVerify(m.url)
+                    }
+                }) {
+                    Icon(if (ready) Icons.Filled.Download else Icons.Filled.Refresh, null, Modifier.size(16.dp)); Spacer(Modifier.width(5.dp))
+                    Text(when {
+                        m.kind == MediaKind.HLS -> if (ar) "تحميل وجودة" else "Download / quality"
+                        ready -> if (ar) "تحميل" else "Download"
+                        else -> if (ar) "تحقق للتحميل" else "Check for download"
+                    })
                 }
                 if (m.canPlay) OutlinedButton(onClick = { onPlay(m) }) { Text(if (ar) "تشغيل" else "Play") }
-                if (!m.drm.isProtected && (!m.probed || m.probeProblem != null)) TextButton(enabled = !checking, onClick = { onVerify(m.url) }) {
-                    Text(if (ar) "تحقق" else "Check")
+                if (!offersDownload && !m.drm.isProtected && !ready) TextButton(enabled = !checking, onClick = { onVerify(m.url) }) {
+                    Text(if (m.probeProblem != null) (if (ar) "أعد التحقق" else "Check again") else (if (ar) "تحقق" else "Check"))
                 }
+
             }
         }
     }

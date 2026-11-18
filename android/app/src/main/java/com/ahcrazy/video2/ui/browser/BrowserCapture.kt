@@ -24,6 +24,10 @@ import androidx.compose.runtime.setValue
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.ahcrazy.video2.core.media.httpMediaUrl
+import com.ahcrazy.video2.core.media.MediaRequestContexts
+import com.ahcrazy.video2.core.media.ObservedMediaRequest
+import com.ahcrazy.video2.core.media.pageReferer
+import com.ahcrazy.video2.core.media.safeHeader
 import com.ahcrazy.video2.core.media.isMediaFragment
 import com.ahcrazy.video2.core.media.isPlayerTrackDelivery
 import com.ahcrazy.video2.core.media.isVideoAd
@@ -32,12 +36,12 @@ import com.ahcrazy.video2.core.model.DRMKind
 import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.DownloadAuth
 import com.ahcrazy.video2.core.model.MediaKind
+import com.ahcrazy.video2.core.model.MediaProblem
 import okhttp3.HttpUrl
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 internal class BrowserSession {
     val tabs = mutableStateListOf(BrowserTab())
@@ -46,6 +50,14 @@ internal class BrowserSession {
     @Volatile var adBlock = true
 
     fun add() { BrowserTab().also { tabs.add(it); currentId = it.id } }
+
+    /** Keep the actual watch page and its session when returning from an unavailable download. */
+    fun reopenSource(page: String): BrowserTab? {
+        val target = httpMediaUrl(page) ?: return null
+        val retained = current.takeIf { httpMediaUrl(it.url) == target } ?: tabs.firstOrNull { httpMediaUrl(it.url) == target }
+        if (retained != null) { currentId = retained.id; return retained }
+        return current.takeIf { it.open(target.toString()) }
+    }
     fun close(tab: BrowserTab) {
         tabs.remove(tab)
         if (tabs.isEmpty()) add() else if (currentId == tab.id) currentId = tabs.first().id
@@ -85,8 +97,10 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
     private val main = Handler(Looper.getMainLooper())
     private val framesWithDrm = mutableSetOf<String>()
     private val urlsWithDrm = mutableMapOf<String, DRMKind>()
-    private val nativeRequests = ConcurrentHashMap.newKeySet<String>()
+    private val requestContexts = MediaRequestContexts()
+    private val downloadUserAgents = mutableMapOf<HttpUrl, String>()
     @Volatile private var pageEpoch = 0
+    @Volatile private var lastTrackSignalEpoch = -1
     private var destroyed = false
 
     fun open(raw: String): Boolean {
@@ -112,12 +126,18 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
         disposeWebView()
     }
 
-    fun auth(media: DetectedMedia? = null) = DownloadAuth(
-        userAgent = webView?.settings?.userAgentString ?: DownloadAuth.CHROME_UA,
-        referer = media?.requestReferer ?: url.ifBlank { null },
-        origin = media?.requestOrigin,
-        useBrowserCookies = true
-    )
+    fun auth(media: DetectedMedia? = null, targetUrl: String? = media?.url): DownloadAuth {
+        val target = httpMediaUrl(targetUrl)
+        val ua = target?.let(downloadUserAgents::get) ?: webView?.settings?.userAgentString ?: DownloadAuth.CHROME_UA
+        if (target != null) requestContexts.get(target)?.let { return it.authFor(target, ua) }
+        return DownloadAuth(ua, referer = pageReferer(httpMediaUrl(media?.requestReferer ?: url), target), useBrowserCookies = true)
+    }
+
+    fun noteDownloadFailure(target: String, problem: MediaProblem?, status: Int?) {
+        if (problem?.needsNewLink != true) return
+        val i = detected.indexOfFirst { it.url == target }
+        if (i >= 0) detected[i] = detected[i].copy(probed = true, probeProblem = problem, checkedAtMs = null, probeHttpStatus = status)
+    }
 
     fun rescan() { webView?.evaluateJavascript("window.__v2Scan && window.__v2Scan()", null) }
 
@@ -147,14 +167,20 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
                 (incoming.extractionMethod.startsWith("html5") && !old.extractionMethod.startsWith("player-") && !old.extractionMethod.startsWith("html5")) } ?: old.title,
             kind = incoming.kind.takeIf { it != MediaKind.OTHER && (incoming.mime != null || old.kind == MediaKind.OTHER || incoming.probed) } ?: old.kind,
             mime = incoming.mime ?: old.mime, drm = protection,
-            extractionMethod = incoming.extractionMethod.takeIf { it.startsWith("html5") || it.startsWith("player-") } ?: old.extractionMethod,
+            extractionMethod = when {
+                incoming.extractionMethod == "webview-download" -> incoming.extractionMethod
+                old.extractionMethod == "webview-download" -> old.extractionMethod
+                incoming.extractionMethod.startsWith("html5") || incoming.extractionMethod.startsWith("player-") -> incoming.extractionMethod
+                else -> old.extractionMethod
+            },
             qualityLabel = incoming.qualityLabel ?: old.qualityLabel,
             durationSec = incoming.durationSec ?: old.durationSec, width = incoming.width ?: old.width, height = incoming.height ?: old.height,
             byteSize = incoming.byteSize ?: old.byteSize, variants = incoming.variants.ifEmpty { old.variants }, probed = old.probed || incoming.probed,
             requestReferer = incoming.requestReferer?.takeIf { old.requestReferer == null || (incoming.extractionMethod == "webview-request") } ?: old.requestReferer,
-            requestOrigin = incoming.requestOrigin ?: old.requestOrigin,
             fromAd = old.fromAd || incoming.fromAd,
-            probeProblem = if (incoming.probed) incoming.probeProblem else old.probeProblem
+            probeProblem = if (incoming.probed) incoming.probeProblem else old.probeProblem,
+            checkedAtMs = if (incoming.probed) incoming.checkedAtMs else old.checkedAtMs,
+            probeHttpStatus = if (incoming.probed) incoming.probeHttpStatus else old.probeHttpStatus
         )
         if (old == next) return
         if (oldIndex >= 0) detected[oldIndex] = next else {
@@ -175,7 +201,8 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
         playbackHint = null
         framesWithDrm.clear()
         urlsWithDrm.clear()
-        nativeRequests.clear()
+        requestContexts.reset(pageEpoch)
+        downloadUserAgents.clear()
     }
 
     private fun startPage(target: String) {
@@ -319,34 +346,40 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
                 val adHost = generateSequence(target.host) { h -> h.substringAfter('.', "").ifEmpty { null } }.any { it in adHosts }
                 if (session.adBlock && adHost && !request.isForMainFrame) return WebResourceResponse("text/plain", "utf-8", byteArrayOf().inputStream())
                 if (request.method != "GET") return null
+                val epoch = pageEpoch
                 val track = target.isPlayerTrackDelivery()
-                if (target.isMediaFragment() && !track) return null
+                if (target.isMediaFragment()) {
+                    if (track && !adHost && lastTrackSignalEpoch != epoch) {
+                        lastTrackSignalEpoch = epoch
+                        main.post { if (view === webView && epoch == pageEpoch) notePlayback(PlaybackHint.SEGMENTED) }
+                    }
+                    return null
+                }
                 val header = request.requestHeaders
                 val accept = header.header("Accept")?.substringBefore(',')?.takeIf { it.startsWith("video/") || it.startsWith("audio/") }
                 val kind = MediaKind.infer(target.toString(), accept)
-                if (!track && (kind == MediaKind.OTHER || kind == MediaKind.TS)) return null
-                val ref = httpMediaUrl(header.header("Referer"))
-                val origin = httpMediaUrl(header.header("Origin"))
-                val epoch = pageEpoch
-                if (nativeRequests.size < 450 && nativeRequests.add("$epoch|$target|${ref.orEmptyString()}")) {
-                    main.post {
-                        if (view === webView && epoch == pageEpoch) {
-                            if (track && detected.none { it.url == target.toString() }) {
-                                if (!adHost) notePlayback(PlaybackHint.SEGMENTED)
-                            } else candidate(target, kind, accept, "webview-request", ref, origin, ad = adHost)
-                        }
+                // Extensionless assets can be identified by the JS response MIME *after* this callback.
+                // Don't fill the bounded map with static page furniture.
+                if (!track && kind == MediaKind.OTHER && target.pathSegments.last().substringAfterLast('.', "").lowercase() in STATIC_EXTENSIONS) return null
+                val observed = ObservedMediaRequest.from(header)
+                if (requestContexts.remember(epoch, target, observed) && (track || (kind != MediaKind.OTHER && kind != MediaKind.TS))) main.post {
+                    if (view === webView && epoch == pageEpoch) {
+                        if (track && detected.none { it.url == target.toString() }) {
+                            if (!adHost) notePlayback(PlaybackHint.SEGMENTED)
+                        } else candidate(target, kind, accept, "webview-request", httpMediaUrl(observed.referer), ad = adHost)
                     }
                 }
                 return null // Do not proxy or execute a second request.
             }
         }
-        view.setDownloadListener { target, _, disposition, mime, length ->
+        view.setDownloadListener { target, ua, disposition, mime, length ->
             if (view !== webView) return@setDownloadListener
             val remote = httpMediaUrl(target) ?: return@setDownloadListener
             val filename = disposition?.let { android.webkit.URLUtil.guessFileName(target, it, mime) }
             val kind = MediaKind.infer(target, mime).takeIf { it != MediaKind.OTHER } ?: MediaKind.infer(filename.orEmpty(), mime)
             if (kind == MediaKind.OTHER || kind == MediaKind.TS) return@setDownloadListener
-            candidate(remote, kind, mime, "webview-download", httpMediaUrl(view.url), null, label = filename, size = length.takeIf { it > 0 })
+            if (downloadUserAgents.size < 50) ua.safeHeader(512)?.let { downloadUserAgents[remote] = it }
+            candidate(remote, kind, mime, "webview-download", httpMediaUrl(view.url), label = filename, size = length.takeIf { it > 0 })
         }
         if (!bridge) main.postDelayed(object : Runnable {
             override fun run() {
@@ -414,15 +447,15 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
             drm = protection, pageUrl = current.toString(), extractionMethod = method,
             durationSec = item.optDouble("duration").takeIf { it.isFinite() && it > 0 },
             width = item.optInt("width").takeIf { it in 1..16384 }, height = item.optInt("height").takeIf { it in 1..16384 },
-            requestReferer = frame.toString(), requestOrigin = origin.origin(), fromAd = item.optBoolean("ad") || target.isVideoAd()
+            requestReferer = frame.toString(), fromAd = item.optBoolean("ad") || target.isVideoAd()
         ))
     }
 
-    private fun candidate(target: HttpUrl, kind: MediaKind, mime: String?, method: String, ref: HttpUrl?, origin: HttpUrl?, ad: Boolean = false, label: String? = null, size: Long? = null) {
+    private fun candidate(target: HttpUrl, kind: MediaKind, mime: String?, method: String, ref: HttpUrl?, ad: Boolean = false, label: String? = null, size: Long? = null) {
         if (httpMediaUrl(url) == null) return
         ingest(DetectedMedia(target.toString(), label?.take(250)?.ifBlank { titleFor(target) } ?: titleFor(target), kind,
             mime = mime, pageUrl = url, extractionMethod = method, byteSize = size,
-            requestReferer = ref?.toString(), requestOrigin = origin?.origin(), fromAd = ad || target.isVideoAd()))
+            requestReferer = ref?.toString(), fromAd = ad || target.isVideoAd()))
     }
 
     private fun titleFor(url: HttpUrl) = title.takeUnless { it == "تبويب جديد" || it.isBlank() }
@@ -453,7 +486,6 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
     }
 
     private fun Map<String, String>.header(name: String) = entries.firstOrNull { it.key.equals(name, true) }?.value
-    private fun HttpUrl?.orEmptyString() = this?.toString().orEmpty()
 }
 
 /** Explicit URLs are validated; a search term or bare host becomes a safe HTTP(S) target. */
@@ -472,3 +504,5 @@ internal fun mediaScore(item: DetectedMedia): Int =
         minOf((item.height ?: 0) / 32, 40) + (if (item.drm.isProtected) -100 else 0) + (if (item.fromAd) -100 else 0)
 
 internal data class BrowserStream(val media: DetectedMedia, val auth: DownloadAuth)
+
+private val STATIC_EXTENSIONS = setOf("css", "js", "mjs", "svg", "png", "jpg", "jpeg", "webp", "gif", "ico", "woff", "woff2", "ttf", "html")

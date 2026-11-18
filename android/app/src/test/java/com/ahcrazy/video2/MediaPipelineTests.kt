@@ -5,6 +5,10 @@ import com.ahcrazy.video2.core.media.MediaDownloadException
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.isPlayerTrackDelivery
 import com.ahcrazy.video2.core.media.matchesResume
+import com.ahcrazy.video2.core.media.MediaRequestContexts
+import com.ahcrazy.video2.core.media.ObservedMediaRequest
+import com.ahcrazy.video2.core.media.isExpiredPlayerLink
+import com.ahcrazy.video2.core.media.pageReferer
 import com.ahcrazy.video2.core.model.DRMKind
 import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.DownloadAuth
@@ -68,12 +72,46 @@ class MediaPipelineTests {
         }
     }
 
-    @Test fun originsKeepPortAndNeverIncludeCredentialsOrCookies() {
-        val headers = DownloadAuth("test", "https://example.net:9443/embed?id=2#fragment", useBrowserCookies = true).headers()
-        assertEquals("https://example.net:9443/embed?id=2", headers["Referer"])
-        assertEquals("https://example.net:9443", headers["Origin"])
-        assertFalse(headers.containsKey("Cookie"))
-        assertFalse(DownloadAuth("test", "https://user:pw@example.net/").headers().containsKey("Referer"))
+    @Test fun requestHeadersMatchOnlyTheResourceObservedInThisNavigation() {
+        val ref = "https://example.net:9443/embed?id=2"
+        val asset = httpMediaUrl("https://cdn.example/get?sig=b%2Ba")!!
+        val redirect = httpMediaUrl("https://other.example/file")!!
+        val observed = ObservedMediaRequest.from(mapOf("referer" to ref, "Origin" to "https://example.net:9443",
+            "User-Agent" to "WebView test", "Accept" to "video/mp4", "Cookie" to "never copy", "Authorization" to "never copy"))
+        val cache = MediaRequestContexts(limit = 2)
+        cache.reset(7)
+        assertTrue(cache.remember(7, asset, observed))
+        assertFalse(cache.remember(7, asset, observed))
+        assertNull(cache.get(httpMediaUrl("https://cdn.example/get?sig=b%2Bb")!!))
+        val auth = cache.get(asset)!!.authFor(asset, "fallback")
+        val headers = auth.headersFor(asset, asset)
+        assertEquals(mapOf("User-Agent" to "WebView test", "Referer" to ref, "Origin" to "https://example.net:9443", "Accept" to "video/mp4"), headers)
+        assertEquals(mapOf("User-Agent" to "WebView test", "Referer" to "https://example.net:9443/"), auth.headersFor(redirect, asset))
+        assertEquals(mapOf("User-Agent" to "WebView test"), auth.headersFor(httpMediaUrl("http://other.example/file")!!, asset))
+        cache.reset(8)
+        assertFalse(cache.remember(7, asset, observed))
+        assertNull(cache.get(asset))
+    }
+
+    @Test fun fallbackReferrerNeverInventsAnOriginOrLeaksACrossSiteQuery() {
+        val page = httpMediaUrl("https://example.net:9443/embed?session=secret")!!
+        val media = httpMediaUrl("https://cdn.example/s.mp4")!!
+        val ref = pageReferer(page, media)
+        assertEquals("https://example.net:9443/", ref)
+        val headers = DownloadAuth("test", ref, useBrowserCookies = true).headersFor(media, media)
+        assertFalse(headers.containsKey("Origin"))
+        assertFalse(DownloadAuth("test", "https://user:pw@example.net/").headersFor(media, media).containsKey("Referer"))
+        val untrusted = ObservedMediaRequest.from(mapOf("User-Agent" to "text\r\nCookie: bogus", "Accept" to " "))
+        assertNull(untrusted.userAgent)
+        assertNull(untrusted.accept)
+    }
+
+    @Test fun knownSignedExpiryDoesNotRewriteTheLink() {
+        val expired = httpMediaUrl("https://cdn.googlevideo.com/videoplayback?expire=1700000000&sig=a%2Bb")!!
+        assertTrue(expired.isExpiredPlayerLink(nowEpochSeconds = 1700000001))
+        assertFalse(expired.isExpiredPlayerLink(nowEpochSeconds = 1699999999))
+        assertEquals("expire=1700000000&sig=a%2Bb", expired.encodedQuery)
+        assertFalse(httpMediaUrl("https://other.example/media?expire=1700000000")!!.isExpiredPlayerLink(nowEpochSeconds = 1700000001))
     }
 
     @Test fun rangeValidationUnderstandsPartialContent() {

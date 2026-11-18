@@ -33,24 +33,22 @@ internal class MediaHttp(private val cookies: (HttpUrl) -> String? = { CookieMan
             val request = incoming.newBuilder().removeHeader("Cookie")
             val auth = incoming.tag(DownloadAuth::class.java)
             if (auth != null) {
-                val referer = httpMediaUrl(auth.referer)
+                request.removeHeader("Origin").removeHeader("Referer").removeHeader("Accept")
                 val original = chain.call().request().url
-                val downgrade = !incoming.url.isHttps && (referer?.isHttps == true || original.isHttps)
-                if (downgrade) request.removeHeader("Referer").removeHeader("Origin")
-                else if (incoming.url.origin() != original.origin() && referer != null) request.header("Referer", referer.origin() + "/")
+                val downgrade = !incoming.url.isHttps && (original.isHttps || httpMediaUrl(auth.referer)?.isHttps == true)
+                auth.headersFor(incoming.url, original).forEach { (name, value) -> request.header(name, value) }
                 if (auth.useBrowserCookies && !downgrade) {
-                    cookies(incoming.url)?.takeIf { it.isNotBlank() }?.let { request.header("Cookie", it) }
+                    cookies(incoming.url)?.safeHeader(32_768)?.let { request.header("Cookie", it) }
                 }
             }
             chain.proceed(request.build())
         }.build()
 
     fun request(url: HttpUrl, auth: DownloadAuth): Request.Builder = Request.Builder().url(url)
-        .tag(DownloadAuth::class.java, auth).also { b -> auth.headers().forEach { (k,v) -> b.header(k, v) } }
+        .tag(DownloadAuth::class.java, auth)
 
     fun playerClient(auth: DownloadAuth): OkHttpClient = client.newBuilder().addInterceptor { chain ->
         val request = chain.request().newBuilder().tag(DownloadAuth::class.java, auth)
-        auth.headers().forEach { (k, v) -> request.header(k, v) }
         chain.proceed(request.build())
     }.build()
 
@@ -72,7 +70,8 @@ internal class MediaHttp(private val cookies: (HttpUrl) -> String? = { CookieMan
 internal fun Response.requireMediaSuccess() {
     if (isSuccessful) return
     val problem = when (code) {
-        401, 403 -> MediaProblem.ACCESS
+        401 -> MediaProblem.SIGN_IN
+        403 -> MediaProblem.ACCESS
         404, 410 -> MediaProblem.EXPIRED
         408, 425, 429, 500, 502, 503, 504 -> MediaProblem.TEMPORARY
         else -> MediaProblem.BAD_RESPONSE
@@ -98,3 +97,9 @@ internal suspend fun <T> retryMediaRead(read: suspend () -> T): T {
     }
     return read()
 }
+
+/** A single plain GET is allowed when the optional byte-range form is refused. */
+internal fun rangeNotAccepted(code: Int): Boolean = code in setOf(400, 403, 405, 412, 416, 501)
+
+internal fun Response.mediaValidator(): String? = header("ETag")?.takeUnless { it.startsWith("W/", true) || it.isBlank() }
+    ?: header("Last-Modified")?.takeIf { it.isNotBlank() }

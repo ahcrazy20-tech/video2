@@ -5,6 +5,7 @@ import com.ahcrazy.video2.core.media.MediaDownloadException
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.model.DRMKind
 import com.ahcrazy.video2.core.model.HlsVariant
+import com.ahcrazy.video2.core.model.MediaProblem
 import okhttp3.HttpUrl
 
 internal data class HlsDocument(val url: HttpUrl, val text: String)
@@ -196,3 +197,47 @@ internal object Hls {
 
     private fun invalidResource(): Nothing = throw MediaDownloadException("قائمة HLS ناقصة أو فيها مصدر غير صالح للحفظ.")
 }
+
+internal data class HlsSelection(
+    val variant: HlsVariant?, val video: HlsMediaPlan, val audioTrack: HlsAudio?, val audio: HlsMediaPlan?
+)
+
+/** Auto can try other renditions the same playlist offers. A user's explicit choice is never changed. */
+internal suspend fun selectHlsSource(
+    master: HlsDocument,
+    preferredVariantUrl: String? = null,
+    preferredHeight: Int? = null,
+    load: suspend (HttpUrl) -> HlsDocument
+): HlsSelection {
+    Hls.validate(master.text)
+    val variants = Hls.parseMaster(master.text, master.url.toString())
+    if (Hls.isMaster(master.text) && variants.isEmpty()) throw MediaDownloadException("مفيش جودة صالحة في قائمة HLS.")
+    val selected = if (preferredVariantUrl != null) variants.firstOrNull { it.url == preferredVariantUrl }
+        ?: throw MediaDownloadException("الجودة المختارة مبقتش موجودة. اختارها تاني من صفحة المصدر.", MediaProblem.EXPIRED)
+    else Hls.pickVariant(variants, preferredHeight)
+    if (selected == null) return HlsSelection(null, Hls.plan(master, "video"), null, null)
+    val ordering = if (preferredVariantUrl != null) listOf(selected) else listOf(selected) + variants
+        .filter { it.url != selected.url && (selected.height == null || (it.height ?: 0) <= selected.height) }
+        .sortedWith(compareByDescending<HlsVariant> { it.height ?: 0 }.thenByDescending { it.bandwidth }).take(2)
+    var firstFailure: MediaDownloadException? = null
+    for (variant in ordering) {
+        try {
+            val video = Hls.plan(load(httpMediaUrl(variant.url)!!), "video")
+            val audioTrack = Hls.selectAudio(master, variant)
+            val audio = audioTrack?.url?.let { Hls.plan(load(it), "audio") }
+            return HlsSelection(variant, video, audioTrack, audio)
+        } catch (e: MediaDownloadException) {
+            // Permission is not guessed. Only explicitly listed alternatives are considered.
+            if (preferredVariantUrl != null || e.problem !in HLS_ALTERNATIVE_PROBLEMS) throw e
+            if (firstFailure == null) firstFailure = e
+        }
+    }
+    throw checkNotNull(firstFailure)
+}
+
+private val HLS_ALTERNATIVE_PROBLEMS = setOf(
+    MediaProblem.ACCESS,
+    MediaProblem.EXPIRED,
+    MediaProblem.NOT_MEDIA,
+    MediaProblem.TEMPORARY
+)

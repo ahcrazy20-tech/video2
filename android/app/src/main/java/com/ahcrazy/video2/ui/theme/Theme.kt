@@ -1,5 +1,6 @@
 package com.ahcrazy.video2.ui.theme
 
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -48,7 +49,10 @@ private val Type = Typography(
 
 @Composable
 fun Video2Theme(rtl: Boolean = true, content: @Composable () -> Unit) {
-    CompositionLocalProvider(LocalLayoutDirection provides if (rtl) LayoutDirection.Rtl else LayoutDirection.Ltr) {
+    CompositionLocalProvider(
+        LocalLayoutDirection provides (if (rtl) LayoutDirection.Rtl else LayoutDirection.Ltr),
+        LocalContentColor provides V2.Text
+    ) {
         MaterialTheme(colorScheme = Scheme, typography = Type, content = content)
     }
 }

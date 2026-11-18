@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import com.ahcrazy.video2.app
 import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.DownloadAuth
+import com.ahcrazy.video2.core.model.DownloadJob
 import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.model.SavedVideo
 import com.ahcrazy.video2.core.model.TranslationJob
@@ -71,6 +72,7 @@ fun Video2Root() {
     val magicSearch = remember { MagicSearchState() }
     DisposableEffect(browser) { onDispose { browser.destroy() } }
     var browserUrl by remember { mutableStateOf<String?>(null) }
+    var browserRecovery by remember { mutableStateOf<DownloadJob?>(null) }
     var translatePreselect by remember { mutableStateOf<SavedVideo?>(null) }
     var reviewJob by remember { mutableStateOf<TranslationJob?>(null) }
     var dubTarget by remember { mutableStateOf<SavedVideo?>(null) }
@@ -90,7 +92,7 @@ fun Video2Root() {
                 else -> AppTabs(tab, lang, tabState, onSelect = { tab = it }, immersive = tab == AppTab.BROWSER && browser.current.fullscreen != null) { active ->
                     when (active) {
                         AppTab.BROWSER -> BrowserScreen(ar, browser, browserUrl, { browserUrl = null }, onPlayStream = { playingStream = it },
-                            onOpenDownloads = { tab = AppTab.DOWNLOADS })
+                            onOpenDownloads = { tab = AppTab.DOWNLOADS }, recoverFrom = browserRecovery, onConsumeRecovery = { browserRecovery = null })
                         AppTab.LIBRARY -> LibraryScreen(ar,
                             onPlay = { playingVideo = it },
                             onTranslate = { translatePreselect = it; tab = AppTab.TRANSLATE },
@@ -100,7 +102,7 @@ fun Video2Root() {
                             onDub = { dubTarget = it },
                             onConvert = { showConvert = true })
                         AppTab.TRANSLATE -> TranslateScreen(ar, translatePreselect, { translatePreselect = null }, onReviewJob = { reviewJob = it })
-                        AppTab.DOWNLOADS -> DownloadsScreen(ar, onOpenSource = { url -> browserUrl = url; tab = AppTab.BROWSER },
+                        AppTab.DOWNLOADS -> DownloadsScreen(ar, onOpenSource = { job -> browserRecovery = job; tab = AppTab.BROWSER },
                             onOpenLibrary = { tab = AppTab.LIBRARY })
                         AppTab.SETTINGS -> SettingsScreen(ar, onLangChange = { code -> scope.launch { app.settings.setLang(code) } },
                             onLockNow = { locked = true })

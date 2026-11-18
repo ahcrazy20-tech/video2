@@ -6,6 +6,8 @@ import com.ahcrazy.video2.core.media.MediaDownloadException
 import com.ahcrazy.video2.core.media.MediaHttp
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.isMediaFragment
+import com.ahcrazy.video2.core.media.isExpiredPlayerLink
+import com.ahcrazy.video2.core.media.mediaValidator
 import com.ahcrazy.video2.core.media.requireMediaSuccess
 import com.ahcrazy.video2.core.media.responseMediaKind
 import com.ahcrazy.video2.core.model.DRMKind
@@ -25,68 +27,62 @@ private const val PLAYLIST_LIMIT = 2L * 1024 * 1024
 
 /** User-initiated metadata check. It never downloads the media or changes the source URL. */
 internal class MediaProbe(private val http: MediaHttp) {
-    suspend fun check(media: DetectedMedia, auth: DownloadAuth): DetectedMedia {
+    suspend fun check(media: DetectedMedia, auth: DownloadAuth, preferredHeight: Int? = null): DetectedMedia {
         val url = httpMediaUrl(media.url) ?: return media.failed(MediaProblem.NOT_MEDIA)
         if (media.drm.isProtected) return media
         if (media.isFragment) return media.failed(MediaProblem.NOT_MEDIA)
+        if (url.isExpiredPlayerLink()) return media.failed(MediaProblem.EXPIRED)
         return try {
             withTimeoutOrNull(12_000) {
                 val known = if (media.kind == MediaKind.HLS || media.kind == MediaKind.DASH) media else sniff(media, url, auth)
                 when (known.kind) {
-                    MediaKind.HLS -> checkHls(known, url, auth)
+                    MediaKind.HLS -> checkHls(known, url, auth, preferredHeight)
                     MediaKind.DASH -> checkDash(known, url, auth)
                     else -> known
-                }.copy(probed = true, probeProblem = null)
+                }.copy(probed = true, probeProblem = null, checkedAtMs = System.currentTimeMillis(), probeHttpStatus = null)
             } ?: media.failed(MediaProblem.NETWORK)
         } catch (e: CancellationException) {
             throw e
         } catch (e: ProtectedMedia) {
-            media.copy(drm = e.drm, probed = true, probeProblem = null)
+            media.copy(drm = e.drm, probed = true, probeProblem = null, checkedAtMs = null, probeHttpStatus = null)
         } catch (e: MediaDownloadException) {
-            media.failed(e.problem)
+            media.failed(e.problem, e.status)
         } catch (_: IOException) {
             media.failed(MediaProblem.NETWORK)
         }
     }
 
-    private suspend fun sniff(media: DetectedMedia, url: HttpUrl, auth: DownloadAuth): DetectedMedia {
-        for (useRange in listOf(true, false)) {
-            val request = http.request(url, auth).header("Accept-Encoding", "identity")
-            if (useRange) request.header("Range", "bytes=0-${SNIFF_BYTES - 1}")
-            val check = http.read(request.build()) { response ->
-                // A CDN can disallow HEAD or Range even though an ordinary GET works.
-                if (useRange && response.code in setOf(400, 403, 405, 416, 501)) return@read null
-                response.requireMediaSuccess()
-                if (response.request.url.isMediaFragment()) throw notMedia()
-                val type = response.header("Content-Type")
-                val prefix = response.peekBody(SNIFF_BYTES).bytes()
-                if (prefix.isEmpty()) throw notMedia()
-                val range = if (response.code == 206) ContentRange.parse(response.header("Content-Range")) else null
-                if (response.code == 206 && range?.start != 0L) throw MediaDownloadException("الخادم رجّع نطاقًا غير صالح.")
-                val kind = responseMediaKind(response.request.url.toString(), type, prefix, media.kind, requireEvidence = true)
-                if (kind.isLikelyFragment) throw notMedia()
-                val size = if (response.code == 206) range?.total else response.body?.contentLength()?.takeIf { it > 0 }
-                media.copy(kind = kind, mime = type ?: media.mime, byteSize = size ?: media.byteSize)
+    private suspend fun sniff(media: DetectedMedia, url: HttpUrl, auth: DownloadAuth): DetectedMedia =
+        // Match the initial download request. Some servers allow Range previews but refuse a full GET.
+        // Read at most SNIFF_BYTES and close; neither a successful HEAD nor a Range preview can mark it ready.
+        http.read(http.request(url, auth).header("Accept-Encoding", "identity").build()) { response ->
+            response.requireMediaSuccess()
+            if (response.request.url.isMediaFragment()) throw notMedia()
+            val type = response.header("Content-Type")
+            val prefix = response.peekBody(SNIFF_BYTES).bytes()
+            if (prefix.isEmpty()) throw notMedia()
+            val range = if (response.code == 206) ContentRange.parse(response.header("Content-Range")) else null
+            if (response.code == 206 && (range?.start != 0L || range.total == null)) throw MediaDownloadException("الخادم رجّع نطاقًا غير صالح.")
+            val kind = responseMediaKind(response.request.url.toString(), type, prefix, media.kind, requireEvidence = true)
+            if (kind.isLikelyFragment) throw notMedia()
+            if (kind != MediaKind.HLS && kind != MediaKind.DASH && range != null && range.length != range.total && response.mediaValidator() == null) {
+                throw MediaDownloadException("الخادم بيقدم جزء فقط من غير معرّف ثابت للملف.")
             }
-            if (check != null) return check
+            val size = if (response.code == 206) range?.total else response.body?.contentLength()?.takeIf { it > 0 }
+            media.copy(kind = kind, mime = type ?: media.mime, byteSize = size ?: media.byteSize)
         }
-        throw notMedia()
-    }
 
-    private suspend fun checkHls(media: DetectedMedia, url: HttpUrl, auth: DownloadAuth): DetectedMedia {
+    private suspend fun checkHls(media: DetectedMedia, url: HttpUrl, auth: DownloadAuth, preferredHeight: Int?): DetectedMedia {
         val master = http.read(http.request(url, auth).build(), ::checkedPlaylist)
         val variants = Hls.parseMaster(master.text, master.url.toString())
             .sortedWith(compareByDescending<HlsVariant> { it.height ?: 0 }.thenByDescending { it.bandwidth })
-        val top = variants.firstOrNull()
-        if (top == null && Hls.isMaster(master.text)) throw MediaDownloadException("مفيش جودة صالحة في قائمة HLS.")
-        val sample = if (top == null) master else http.read(http.request(httpMediaUrl(top.url)!!, auth).build(), ::checkedPlaylist)
-        val plan = Hls.plan(sample, "video")
-        top?.let { Hls.selectAudio(master, it) }?.url?.let { audio ->
-            Hls.plan(http.read(http.request(audio, auth).build(), ::checkedPlaylist), "audio")
+        val selection = selectHlsSource(master, preferredHeight = preferredHeight) { asset ->
+            http.read(http.request(asset, auth).build(), ::checkedPlaylist)
         }
+        val chosen = selection.variant
         return media.copy(kind = MediaKind.HLS, variants = variants, byteSize = null,
-            durationSec = media.durationSec ?: plan.duration.takeIf { it > 0 },
-            height = media.height ?: top?.height, width = media.width ?: top?.width)
+            durationSec = media.durationSec ?: selection.video.duration.takeIf { it > 0 },
+            height = chosen?.height ?: media.height, width = chosen?.width ?: media.width)
     }
 
     private suspend fun checkDash(media: DetectedMedia, url: HttpUrl, auth: DownloadAuth): DetectedMedia =
@@ -97,7 +93,8 @@ internal class MediaProbe(private val http: MediaHttp) {
             media.copy(kind = MediaKind.DASH, byteSize = null)
         }
 
-    private fun DetectedMedia.failed(problem: MediaProblem) = copy(probed = true, probeProblem = problem)
+    private fun DetectedMedia.failed(problem: MediaProblem, status: Int? = null) =
+        copy(probed = true, probeProblem = problem, checkedAtMs = null, probeHttpStatus = status)
     private fun notMedia() = MediaDownloadException(MediaProblem.NOT_MEDIA.ar, MediaProblem.NOT_MEDIA)
 }
 

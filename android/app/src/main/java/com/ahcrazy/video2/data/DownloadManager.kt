@@ -20,7 +20,10 @@ import com.ahcrazy.video2.core.media.MediaDownloadException
 import com.ahcrazy.video2.core.media.MediaHttp
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.isMediaFragment
+import com.ahcrazy.video2.core.media.isExpiredPlayerLink
+import com.ahcrazy.video2.core.media.rangeNotAccepted
 import com.ahcrazy.video2.core.media.matchesResume
+import com.ahcrazy.video2.core.media.mediaValidator
 import com.ahcrazy.video2.core.media.retryMediaRead
 import com.ahcrazy.video2.core.media.requireMediaSuccess
 import com.ahcrazy.video2.core.media.responseMediaKind
@@ -48,7 +51,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import okhttp3.HttpUrl
-import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -79,7 +81,7 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
         val job = DownloadJob(media = media, auth = auth, preferredMaxHeight = maxHeight, preferredVariantUrl = variantUrl).let {
             when {
                 media.drm.isProtected -> it.copy(state = DownloadState.BLOCKED_DRM, errorMessage = ProtectedMedia(media.drm).message)
-                !media.canDownload -> it.copy(state = DownloadState.FAILED, errorMessage = media.probeProblem?.ar ?: unsupported(media).message, problem = media.probeProblem)
+                !media.canDownload -> it.copy(state = DownloadState.FAILED, errorMessage = media.probeProblem?.ar ?: unsupported(media).message, problem = media.probeProblem, httpStatus = media.probeHttpStatus)
                 else -> it
             }
         }
@@ -107,7 +109,7 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
     @Synchronized fun resume(id: String) {
         val job = _jobs.value.firstOrNull { it.id == id } ?: return
         if (!job.canRetry) return
-        patch(id) { it.copy(state = DownloadState.QUEUED, errorMessage = null, problem = null) }
+        patch(id) { it.copy(state = DownloadState.QUEUED, errorMessage = null, problem = null, httpStatus = null) }
         pump(id)
         startService()
     }
@@ -163,7 +165,7 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
                     else {
                         val problem = (e as? MediaDownloadException)?.problem ?: if (e is IOException) MediaProblem.NETWORK else MediaProblem.BAD_RESPONSE
                         val detail = if (e is MediaDownloadException) e.message else problem.ar
-                        it.copy(state = DownloadState.FAILED, errorMessage = detail, problem = problem)
+                        it.copy(state = DownloadState.FAILED, errorMessage = detail, problem = problem, httpStatus = (e as? MediaDownloadException)?.status)
                     } }
                 }
             }
@@ -181,13 +183,14 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
         task.start()
     }
 
-    internal suspend fun probe(media: DetectedMedia, auth: DownloadAuth): DetectedMedia = mediaProbe.check(media, auth)
+    internal suspend fun probe(media: DetectedMedia, auth: DownloadAuth, preferredHeight: Int? = null): DetectedMedia = mediaProbe.check(media, auth, preferredHeight)
 
     private suspend fun perform(job: DownloadJob, progress: (Double, Long) -> Unit): SavedVideo {
         val media = job.media
         if (media.drm.isProtected) throw ProtectedMedia(media.drm)
         if (!media.canDownload) throw unsupported(media)
         val url = httpMediaUrl(media.url) ?: throw unsupported(media)
+        if (url.isExpiredPlayerLink()) throw MediaDownloadException(MediaProblem.EXPIRED.ar, MediaProblem.EXPIRED)
         val auth = job.auth ?: DownloadAuth.default.copy(referer = media.requestReferer ?: media.pageUrl)
         val work = workDir(job.id).apply { mkdirs() }
         if (media.kind == MediaKind.HLS) return downloadHls(job, playlist(url, auth), auth, work, progress)
@@ -209,22 +212,23 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
         val part = File(work, "file.part")
         val metadata = File(work, "resume.json")
         var restarted = false
+        var forcePlain = false
         repeat(128) {
             val resume = runCatching { JSONObject(metadata.readText()) }.getOrNull()
             val validator = resume?.text("validator")
             val savedKind = resume?.text("kind")?.let { runCatching { MediaKind.valueOf(it) }.getOrNull() }
-            val from = part.length().takeIf { validator != null && savedKind != null } ?: 0L
+            val from = part.length().takeIf { !forcePlain && validator != null && savedKind != null } ?: 0L
             val request = http.request(url, auth).header("Accept-Encoding", "identity")
             if (from > 0) request.header("Range", "bytes=$from-").header("If-Range", validator!!)
             val result = http.read(request.build()) { response ->
-                if (response.code == 416 && from > 0) return@read DirectResult.Restart
+                if (from > 0 && rangeNotAccepted(response.code) && !restarted) return@read DirectResult.Restart
                 response.requireMediaSuccess()
                 if (response.request.url.isMediaFragment()) throw MediaDownloadException(MediaProblem.NOT_MEDIA.ar, MediaProblem.NOT_MEDIA)
                 val range = if (response.code == 206) ContentRange.parse(response.header("Content-Range")) else null
                 val append = from > 0 && response.code == 206
                 val expectedTotal = resume?.optLong("total")?.takeIf { it > 0 }
                 if (append && (range?.matchesResume(from, expectedTotal) != true || resume?.text("url") != response.request.url.toString() ||
-                        (response.validator() != null && response.validator() != validator))) return@read DirectResult.Restart
+                        (response.mediaValidator() != null && response.mediaValidator() != validator))) return@read DirectResult.Restart
                 if (response.code == 206 && !append && range?.matchesResume(0, null) != true) {
                     throw MediaDownloadException("الخادم أرسل جزءًا غير صالح من الملف.")
                 }
@@ -241,7 +245,7 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
                 if (!append) {
                     part.outputStream().close()
                     metadata.delete()
-                    response.validator()?.let { v ->
+                    response.mediaValidator()?.let { v ->
                         metadata.writeText(JSONObject().put("kind", kind.name).put("validator", v).put("url", response.request.url.toString())
                             .put("total", total).toString())
                     }
@@ -257,12 +261,15 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
                 } else DirectResult.FileReady(part, kind)
             }
             when (result) {
-                DirectResult.More -> currentCoroutineContext().ensureActive() // Capped 206; request the next range, never concatenate an unvalidated reply.
+                DirectResult.More -> {
+                    forcePlain = false
+                    currentCoroutineContext().ensureActive()
+                }
                 DirectResult.Restart -> {
                     if (restarted) throw MediaDownloadException("تعذّر استئناف الملف من الخادم.")
-                    if (part.exists() && !part.delete()) throw MediaDownloadException("تعذّر إعادة تجهيز الملف.")
-                    metadata.delete()
+                    // Keep any part until the plain GET is accepted. Don't delete it on a real denial.
                     restarted = true
+                    forcePlain = true
                 }
                 else -> return result
             }
@@ -270,22 +277,12 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
         throw MediaDownloadException("الخادم قسّم الملف إلى عدد كبير جدًا من الأجزاء.")
     }
 
-    private fun Response.validator(): String? = header("ETag")?.takeUnless { it.startsWith("W/", true) || it.isBlank() }
-        ?: header("Last-Modified")?.takeIf { it.isNotBlank() }
-
     private suspend fun playlist(url: HttpUrl, auth: DownloadAuth): HlsDocument = retryMediaRead {
         http.read(http.request(url, auth).build(), ::checkedPlaylist)
     }
 
     private suspend fun downloadHls(job: DownloadJob, master: HlsDocument, auth: DownloadAuth, work: File, progress: (Double, Long) -> Unit): SavedVideo {
-        val variants = Hls.parseMaster(master.text, master.url.toString())
-        if (Hls.isMaster(master.text) && variants.isEmpty()) throw MediaDownloadException("مفيش جودة صالحة في قائمة HLS.")
-        val variant = if (job.preferredVariantUrl != null) variants.firstOrNull { it.url == job.preferredVariantUrl }
-            ?: throw MediaDownloadException("الجودة المختارة مبقتش موجودة. اختارها تاني من صفحة المصدر.", MediaProblem.EXPIRED)
-            else Hls.pickVariant(variants, job.preferredMaxHeight)
-        val video = Hls.plan(variant?.let { playlist(httpMediaUrl(it.url)!!, auth) } ?: master, "video")
-        val audioTrack = variant?.let { Hls.selectAudio(master, it) }
-        val audio = audioTrack?.url?.let { Hls.plan(playlist(it, auth), "audio") }
+        val (variant, video, audioTrack, audio) = selectHlsSource(master, job.preferredVariantUrl, job.preferredMaxHeight) { playlist(it, auth) }
         val resources = video.resources + audio?.resources.orEmpty()
         val localMaster = if (audio != null && audioTrack != null && variant != null) Hls.localMaster(variant, audioTrack) else video.text
         val folder = File(work, "hls")
@@ -429,7 +426,8 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
                 list.put(JSONObject().apply {
                     put("id", j.id); put("state", j.state.name); put("progress", j.progress)
                     put("bytesWritten", j.bytesWritten); put("createdAt", j.createdAt)
-                    put("errorMessage", j.errorMessage); put("problem", j.problem?.name); put("preferredMaxHeight", j.preferredMaxHeight)
+                    put("errorMessage", j.errorMessage); put("problem", j.problem?.name); put("httpStatus", j.httpStatus)
+                    put("preferredMaxHeight", j.preferredMaxHeight)
                     put("preferredVariantUrl", j.preferredVariantUrl); put("destPath", j.destPath)
                     put("media", JSONObject().apply {
                         put("url", j.media.url); put("title", j.media.title); put("kind", j.media.kind.name)
@@ -438,7 +436,8 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
                     })
                     // Auth configuration only. Session cookies are never serialized into this file.
                     j.auth?.let { put("auth", JSONObject().put("ua", it.userAgent).put("referer", it.referer)
-                        .put("origin", it.origin).put("browser", it.useBrowserCookies)) }
+                        .put("origin", it.origin).put("browser", it.useBrowserCookies).put("accept", it.accept)
+                        .put("observed", it.observedResource == j.media.url)) }
                 })
             }
             val out = jobsFile.startWrite()
@@ -460,12 +459,17 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
                         progress = j.optDouble("progress", 0.0), bytesWritten = j.optLong("bytesWritten"),
                         createdAt = j.optLong("createdAt"), errorMessage = j.text("errorMessage"), destPath = j.text("destPath"),
                         problem = j.text("problem")?.let { runCatching { MediaProblem.valueOf(it) }.getOrNull() },
+                        httpStatus = j.optInt("httpStatus").takeIf { it in 100..599 },
                         preferredMaxHeight = j.optInt("preferredMaxHeight").takeIf { it > 0 }, preferredVariantUrl = j.text("preferredVariantUrl"),
                         media = DetectedMedia(m.getString("url"), m.getString("title"), MediaKind.valueOf(m.getString("kind")),
                             pageUrl = m.text("pageUrl"), extractionMethod = m.optString("method", "manual"),
                             drm = runCatching { DRMKind.valueOf(m.optString("drm")) }.getOrDefault(DRMKind.NONE),
                             durationSec = m.optDouble("duration").takeIf { it.isFinite() && it > 0 }),
-                        auth = j.optJSONObject("auth")?.let { DownloadAuth(it.optString("ua", DownloadAuth.CHROME_UA), it.text("referer"), it.text("origin"), it.optBoolean("browser")) }
+                        auth = j.optJSONObject("auth")?.let { auth ->
+                            val observed = auth.optBoolean("observed")
+                            DownloadAuth(auth.optString("ua", DownloadAuth.CHROME_UA), auth.text("referer"), auth.text("origin"),
+                                auth.optBoolean("browser"), auth.text("accept"), m.getString("url").takeIf { observed })
+                        }
                     )
                 }.getOrNull()
             }

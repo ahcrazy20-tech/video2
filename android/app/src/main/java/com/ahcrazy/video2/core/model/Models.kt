@@ -4,6 +4,8 @@ import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.isMediaFragment
 import com.ahcrazy.video2.core.media.origin
 import com.ahcrazy.video2.core.media.manifestKind
+import com.ahcrazy.video2.core.media.safeHeader
+import okhttp3.HttpUrl
 import java.util.UUID
 
 /** Faithful Android port of iOS Models.swift (MediaKind / DRMKind / media / jobs). */
@@ -80,23 +82,35 @@ data class DownloadAuth(
     val userAgent: String,
     val referer: String? = null,
     val origin: String? = null,
-    val useBrowserCookies: Boolean = false
+    val useBrowserCookies: Boolean = false,
+    val accept: String? = null,
+    val observedResource: String? = null
 ) {
     companion object {
         const val CHROME_UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
         val default = DownloadAuth(CHROME_UA)
     }
 
-    fun headers(): Map<String, String> = buildMap {
-        put("User-Agent", userAgent)
-        httpMediaUrl(referer)?.let { put("Referer", it.toString()) }
-        httpMediaUrl(origin ?: referer)?.let { put("Origin", it.origin()) }
+    internal fun headersFor(target: HttpUrl, initial: HttpUrl): Map<String, String> = buildMap {
+        put("User-Agent", userAgent.safeHeader(512) ?: CHROME_UA)
+        val ref = httpMediaUrl(referer)
+        if (!target.isHttps && (ref?.isHttps == true || initial.isHttps)) return@buildMap
+        val recorded = httpMediaUrl(observedResource)
+        val crossOrigin = target.origin() != initial.origin() || (recorded != null && target.origin() != recorded.origin())
+        ref?.let { put("Referer", if (crossOrigin) it.origin() + "/" else it.toString()) }
+        if (!crossOrigin && recorded != null) {
+            if (origin == "null") put("Origin", "null")
+            else httpMediaUrl(origin)?.let { put("Origin", it.origin()) }
+            if (target == recorded) accept.safeHeader(1024)?.let { put("Accept", it) }
+        }
     }
 }
 
 enum class MediaProblem(val ar: String, val en: String, val needsNewLink: Boolean = false) {
-    ACCESS("المصدر رفض الوصول. شغّل الفيديو أو سجّل الدخول في الصفحة والتقط رابط جديد.",
-        "The source refused access. Play or sign in on the page, then capture a fresh link.", true),
+    ACCESS("الموقع رفض طلب التحميل للرابط ده. تشغيل الفيديو مش معناه إن الموقع أتاح حفظه. افتح المصدر لفحص الروابط المتاحة.",
+        "The site refused to download this link. Playback does not imply download access. Reopen the source to check available links.", true),
+    SIGN_IN("المصدر طلب تسجيل دخول. افتح نفس الصفحة وسجّل الدخول لو عندك صلاحية.",
+        "The source requests sign-in. Reopen the page and sign in if you have access.", true),
     EXPIRED("الرابط انتهى أو الملف اتشال. افتح صفحة المصدر والتقط رابط جديد.",
         "The link expired or the file is gone. Reopen the source page for a fresh link.", true),
     NOT_MEDIA("ده رابط صفحة أو جزء بث، مش ملف وسائط كامل.", "This is a page or a stream fragment, not a complete media source.", true),
@@ -113,10 +127,13 @@ data class DetectedMedia(
     val extractionMethod: String = "html5", val durationSec: Double? = null, val byteSize: Long? = null,
     val width: Int? = null, val height: Int? = null, val probed: Boolean = false,
     val variants: List<HlsVariant> = emptyList(),
-    val requestReferer: String? = null, val requestOrigin: String? = null,
-    val fromAd: Boolean = false, val probeProblem: MediaProblem? = null
+    val requestReferer: String? = null,
+    val fromAd: Boolean = false, val probeProblem: MediaProblem? = null,
+    val checkedAtMs: Long? = null, val probeHttpStatus: Int? = null
 ) {
     val id: String get() = url
+    fun downloadChecked(now: Long = System.currentTimeMillis()): Boolean =
+        probeProblem == null && (extractionMethod == "webview-download" || checkedAtMs?.let { now - it in 0..90_000 } == true)
     val canPlay: Boolean get() = kind.exoSupported && !drm.isProtected && !isFragment && probeProblem?.needsNewLink != true
     val canDownload: Boolean get() = probeProblem?.needsNewLink != true && !drm.isProtected && !isFragment && kind != MediaKind.DASH && httpMediaUrl(url) != null
     val isFragment: Boolean get() = kind.isLikelyFragment || httpMediaUrl(url)?.isMediaFragment() == true
@@ -161,7 +178,7 @@ data class DownloadJob(
     val bytesWritten: Long = 0L, val errorMessage: String? = null,
     val createdAt: Long = System.currentTimeMillis(), val destPath: String? = null,
     val preferredMaxHeight: Int? = null, val auth: DownloadAuth? = null,
-    val preferredVariantUrl: String? = null, val problem: MediaProblem? = null
+    val preferredVariantUrl: String? = null, val problem: MediaProblem? = null, val httpStatus: Int? = null
 ) {
     val canRetry: Boolean get() = media.canDownload && problem?.needsNewLink != true && state in setOf(DownloadState.PAUSED, DownloadState.FAILED)
 }

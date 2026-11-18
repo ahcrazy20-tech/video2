@@ -28,6 +28,14 @@ internal fun HttpUrl.manifestKind(): MediaKind? {
     }
 }
 
+/** Google Video's explicit Unix expiry can be diagnosed without altering the signed URL. */
+internal fun HttpUrl.isExpiredPlayerLink(nowEpochSeconds: Long = System.currentTimeMillis() / 1000): Boolean {
+    if (host != "googlevideo.com" && !host.endsWith(".googlevideo.com")) return false
+    val pathExpiry = pathSegments.indexOf("expire").takeIf { it >= 0 }?.let { pathSegments.getOrNull(it + 1) }
+    val expires = (queryParameter("expire") ?: pathExpiry)?.toLongOrNull() ?: return false
+    return expires in 946684800..nowEpochSeconds
+}
+
 internal fun HttpUrl.isMediaFragment(): Boolean {
     val leaf = pathSegments.last().lowercase()
     return leaf.substringAfterLast('.', "") in setOf("ts", "m4s", "cmfv", "cmfa", "vtt", "srt") ||

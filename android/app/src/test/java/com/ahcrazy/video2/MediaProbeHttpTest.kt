@@ -1,6 +1,7 @@
 package com.ahcrazy.video2
 
 import com.ahcrazy.video2.core.media.MediaHttp
+import com.ahcrazy.video2.core.media.ObservedMediaRequest
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.requireMediaSuccess
 import com.ahcrazy.video2.core.media.retryMediaRead
@@ -23,29 +24,67 @@ import java.util.concurrent.TimeUnit
 class MediaProbeHttpTest {
     private val sample = byteArrayOf(0, 0, 0, 24) + "ftypisom00000000".toByteArray()
 
-    @Test fun signedUrlUsesSessionAndFallsBackWhenRangeIsDenied() = runBlocking<Unit> {
+    @Test fun signedUrlUsesObservedHeadersAndDoesNotInventOrigin() = runBlocking<Unit> {
         MockWebServer().use { server ->
-            server.enqueue(MockResponse().setResponseCode(416))
-            server.enqueue(mediaReply())
-            val remote = server.url("/media?sig=a%2Bb&token=%2F").toString()
+            val remote = server.url("/media?sig=a%2Bb&token=%2F")
             val referer = server.url("/watch?id=12").toString()
-            val auth = DownloadAuth("Video2 test UA", referer, useBrowserCookies = true)
-            val result = MediaProbe(MediaHttp { "session=owned-media" }).check(DetectedMedia(remote, "sample", MediaKind.OTHER), auth)
+            server.dispatchWith { r ->
+                if (r.getHeader("Origin") != null || r.getHeader("Referer") != referer || r.getHeader("Cookie") != "session=owned-media")
+                    MockResponse().setResponseCode(403) else mediaReply()
+            }
+            val auth = ObservedMediaRequest.from(mapOf("Referer" to referer, "User-Agent" to "Video2 test UA", "Accept" to "video/mp4"))
+                .authFor(remote, "fallback")
+            val result = MediaProbe(MediaHttp { "session=owned-media" }).check(DetectedMedia(remote.toString(), "sample", MediaKind.OTHER), auth)
             assertTrue(result.probed)
+            assertTrue(result.downloadChecked())
             assertNull(result.probeProblem)
             assertEquals(MediaKind.MP4, result.kind)
             assertEquals(sample.size.toLong(), result.byteSize)
-            assertEquals(remote, result.url)
-            for (range in listOf("bytes=0-4095", null)) {
-                val seen = server.nextRequest()
-                assertEquals("GET", seen.method)
-                assertEquals("/media?sig=a%2Bb&token=%2F", seen.path)
-                assertEquals(range, seen.getHeader("Range"))
-                assertEquals("session=owned-media", seen.getHeader("Cookie"))
-                assertEquals(referer, seen.getHeader("Referer"))
-                assertEquals("Video2 test UA", seen.getHeader("User-Agent"))
-            }
+            assertEquals(remote.toString(), result.url)
+            val seen = server.nextRequest()
+            assertEquals("GET", seen.method)
+            assertEquals("/media?sig=a%2Bb&token=%2F", seen.path)
+            assertNull(seen.getHeader("Range"))
+            assertEquals("Video2 test UA", seen.getHeader("User-Agent"))
+            assertEquals("video/mp4", seen.getHeader("Accept"))
         }
+    }
+
+    @Test fun previewAccessCannotMarkAForbiddenFullGetAsDownloadable() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.dispatchWith { r -> if (r.getHeader("Range") != null) mediaReply() else MockResponse().setResponseCode(403) }
+            val checked = MediaProbe(MediaHttp { null }).check(DetectedMedia(server.url("/video.mp4").toString(), "sample", MediaKind.MP4), DownloadAuth.default)
+            assertEquals(MediaProblem.ACCESS, checked.probeProblem)
+            assertEquals(403, checked.probeHttpStatus)
+            assertFalse(checked.downloadChecked())
+            assertFalse(checked.canDownload)
+            assertEquals(1, server.requestCount)
+        }
+    }
+
+    @Test fun redirectUsesItsOwnCookiesAndDoesNotForwardCapturedOriginOrAccept() = runBlocking<Unit> {
+        MockWebServer().use { source -> MockWebServer().use { destination ->
+            val url = source.url("/redirect")
+            val ref = "https://watch.example/player?opaque=private"
+            val auth = ObservedMediaRequest.from(mapOf("Referer" to ref, "Origin" to "https://watch.example", "Accept" to "video/mp4"))
+                .authFor(url, "WebView test")
+            source.enqueue(MockResponse().setResponseCode(302).setHeader("Location", destination.url("/video").toString()))
+            destination.enqueue(mediaReply())
+            // Use HTTP fixture origins, with an HTTP referrer, to exercise a redirect rather than the HTTPS downgrade guard.
+            val requested = auth.copy(referer = "http://watch.example/player?opaque=private", origin = "http://watch.example")
+            val probe = MediaProbe(MediaHttp { if (it == url) "session=first" else "session=destination" })
+            val result = probe.check(DetectedMedia(url.toString(), "sample", MediaKind.OTHER), requested)
+            assertNull(result.probeProblem)
+            val first = source.nextRequest()
+            assertEquals("session=first", first.getHeader("Cookie"))
+            assertEquals("http://watch.example", first.getHeader("Origin"))
+            assertEquals("video/mp4", first.getHeader("Accept"))
+            val redirected = destination.nextRequest()
+            assertEquals("session=destination", redirected.getHeader("Cookie"))
+            assertEquals("http://watch.example/", redirected.getHeader("Referer"))
+            assertNull(redirected.getHeader("Origin"))
+            assertNull(redirected.getHeader("Accept"))
+        } }
     }
 
     @Test fun accessExpiryAndHtmlAreDifferentFromPlayableMedia() = runBlocking<Unit> {
@@ -53,13 +92,14 @@ class MediaProbeHttpTest {
             server.dispatchWith { r ->
                 when (r.path) {
                     "/denied.mp4" -> MockResponse().setResponseCode(403)
+                    "/sign-in.mp4" -> MockResponse().setResponseCode(401)
                     "/expired.mp4" -> MockResponse().setResponseCode(410)
                     "/login.mp4" -> MockResponse().setHeader("Content-Type", "application/octet-stream").setBody("<html>Sign in</html>")
                     else -> MockResponse().setResponseCode(404)
                 }
             }
             val probe = MediaProbe(MediaHttp { null })
-            for ((path, reason) in listOf("denied" to MediaProblem.ACCESS, "expired" to MediaProblem.EXPIRED, "login" to MediaProblem.NOT_MEDIA)) {
+            for ((path, reason) in listOf("denied" to MediaProblem.ACCESS, "sign-in" to MediaProblem.SIGN_IN, "expired" to MediaProblem.EXPIRED, "login" to MediaProblem.NOT_MEDIA)) {
                 val checked = probe.check(DetectedMedia(server.url("/$path.mp4").toString(), "sample", MediaKind.MP4), DownloadAuth.default)
                 assertEquals(reason, checked.probeProblem)
                 assertFalse(checked.canDownload)
@@ -85,6 +125,25 @@ class MediaProbeHttpTest {
             assertFalse(checked.canDownload)
             assertEquals(3, server.requestCount)
             assertEquals(listOf("/master", "/video", "/audio"), List(3) { server.nextRequest().path })
+        }
+    }
+
+    @Test fun automaticHlsCheckUsesOnlyAnAvailableRenditionFromTheSamePlaylist() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            val master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1920x1080\nhigh?sig=test\n" +
+                "#EXT-X-STREAM-INF:BANDWIDTH=700000,RESOLUTION=640x360\nlow?sig=test\n"
+            val variant = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nsegment.ts\n#EXT-X-ENDLIST\n"
+            server.dispatchWith { r -> when (r.path) {
+                "/master" -> MockResponse().setBody(master)
+                "/high?sig=test" -> MockResponse().setResponseCode(403)
+                "/low?sig=test" -> MockResponse().setBody(variant)
+                else -> MockResponse().setResponseCode(404)
+            } }
+            val checked = MediaProbe(MediaHttp { null }).check(DetectedMedia(server.url("/master").toString(), "sample", MediaKind.HLS), DownloadAuth.default)
+            assertNull(checked.probeProblem)
+            assertEquals(360, checked.height)
+            assertEquals(listOf("/master", "/high?sig=test", "/low?sig=test"), List(3) { server.nextRequest().path })
+            assertEquals(3, server.requestCount)
         }
     }
 
