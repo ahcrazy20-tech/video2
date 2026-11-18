@@ -118,6 +118,17 @@ class ExternalResolverTest {
         assertEquals("https://media.example.net/videoplayback?sig=a%2Bb", found.url)
     }
 
+    @Test fun invidiousAsksItsOwnHlsApiToProxyAStreamWithoutRewritingAnUpstreamUrl() {
+        val resolver = ExternalResolver()
+        fun returned(raw: String) = resolver.parse(ResolverType.INVIDIOUS, server, video,
+            JSONObject().put("videoId", id).put("formatStreams", org.json.JSONArray()).put("hlsUrl", raw), null, 720).single()
+        val proxy = returned("https://media.example.net/api/manifest/hls_variant/episode/index.m3u8?sig=a%2Bb")
+        assertEquals(MediaKind.HLS, proxy.kind)
+        assertEquals("https://media.example.net/api/manifest/hls_variant/episode/index.m3u8?sig=a%2Bb&local=true", proxy.url)
+        val upstream = "https://www.youtube.com/api/manifest/hls_playlist/index.m3u8?sig=orig"
+        assertEquals(upstream, returned(upstream).url)
+    }
+
     @Test fun accessDenialsDoNotFanOutOrParseErrorPagesAsVideo() = runBlocking<Unit> {
         var requests = 0
         val resolver = ExternalResolver(fakeHttp { requests++; 403 to "<html>denied</html>" })

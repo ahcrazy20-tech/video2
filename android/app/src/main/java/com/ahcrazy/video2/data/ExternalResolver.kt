@@ -145,7 +145,7 @@ internal class ExternalResolver(
                     add(source, kind, label.ifBlank { null }, height, size = entry.optLong("contentLength").takeIf { it > 0 })
                 }
                 val hls = if (type == ResolverType.PIPED) json.optString("hls") else json.optString("hlsUrl")
-                mediaUrl(hls, server)?.let { add(it, MediaKind.HLS, "HLS") }
+                hlsUrl(type, hls, server)?.let { add(it, MediaKind.HLS, "HLS") }
             }
         }
         if (results.isEmpty()) throw ResolverFailure(ResolverProblem.UNAVAILABLE)
@@ -159,6 +159,18 @@ internal class ExternalResolver(
     private fun mediaUrl(raw: String, server: HttpUrl): String? =
         if (raw.startsWith('/') && !raw.startsWith("//")) server.resolve(raw)?.takeIf { it.origin() == server.origin() }?.toString()
         else externalHttpsUrl(raw)?.toString()
+
+    private fun hlsUrl(type: ResolverType, raw: String, server: HttpUrl): String? {
+        val url = externalHttpsUrl(mediaUrl(raw, server)) ?: return null
+        val ownManifest = url.origin() == server.origin() && url.pathSegments.windowed(3).any { path ->
+            path[0] == "api" && path[1] == "manifest" && path[2] in setOf("hls_variant", "hls_playlist")
+        }
+        // Invidious's video API proxies complete file URLs with local=true, but its HLS route
+        // needs the flag independently to publish proxied video, audio and segment links.
+        // Apply it only to the selected Invidious server's API, never to upstream media URLs.
+        return if (type == ResolverType.INVIDIOUS && ownManifest) url.newBuilder().setQueryParameter("local", "true").build().toString()
+        else url.toString()
+    }
 
     private fun entries(data: JSONArray?) = if (data == null) emptyList() else (0 until minOf(data.length(), 48)).mapNotNull(data::optJSONObject)
     private fun streamKind(url: String, mime: String, container: String): MediaKind {
