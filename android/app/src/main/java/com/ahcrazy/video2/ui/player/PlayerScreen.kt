@@ -1,89 +1,56 @@
 package com.ahcrazy.video2.ui.player
 
-import android.app.Activity
+import android.app.PictureInPictureParams
 import android.content.pm.ActivityInfo
-import android.media.MediaMetadataRetriever
-import android.provider.MediaStore
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.net.Uri
+import android.os.Build
+import android.os.SystemClock
+import android.util.Rational
+import android.view.accessibility.AccessibilityManager
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.ClosedCaption
-import androidx.compose.material.icons.filled.FastForward
-import androidx.compose.material.icons.filled.FastRewind
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PhotoCamera
-import androidx.compose.material.icons.filled.PictureInPictureAlt
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Repeat
-import androidx.compose.material.icons.filled.ScreenRotation
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Timer
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.app.PictureInPictureModeChangedInfo
+import androidx.core.util.Consumer
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.ahcrazy.video2.app
-import com.ahcrazy.video2.core.model.SavedVideo
 import com.ahcrazy.video2.core.model.DownloadAuth
 import com.ahcrazy.video2.core.model.MediaKind
+import com.ahcrazy.video2.core.model.SavedVideo
 import com.ahcrazy.video2.core.model.SubCue
-import com.ahcrazy.video2.core.util.MagicDuration
 import com.ahcrazy.video2.core.util.SrtCodec
 import com.ahcrazy.video2.ui.theme.V2
 import kotlinx.coroutines.Dispatchers
@@ -91,284 +58,327 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.abs
 
-enum class SubMode(val ar: String, val en: String) {
-    OFF("إيقاف", "Off"), ORIGINAL("الأصلي", "Original"), TRANSLATED("المترجم", "Translated"), BILINGUAL("ثنائي", "Bilingual")
-}
+private enum class Panel { TOOLS, SPEED, CAPTIONS, SEARCH, SLEEP }
 
-/**
- * Offline + streaming player — port of OfflinePlayerView/MagicPlayerView on Media3 ExoPlayer.
- * ExoPlayer advantage over iOS AVPlayer: MP4/HLS/DASH/WebM/MKV all play natively.
- */
-@OptIn(ExperimentalMaterial3Api::class)
+private data class Playback(
+    val playing: Boolean, val active: Boolean, val buffering: Boolean, val ended: Boolean, val seekable: Boolean,
+    val live: Boolean, val duration: Long, val error: Int?, val height: Int,
+)
+
+private fun Player.playback() = Playback(isPlaying, playWhenReady && playbackState != Player.STATE_ENDED && playerError == null,
+    playbackState == Player.STATE_BUFFERING, playbackState == Player.STATE_ENDED, isCurrentMediaItemSeekable,
+    isCurrentMediaItemLive, duration.coerceAtLeast(0L), playerError?.errorCode, videoSize.height)
+
+private fun rateLabel(rate: Float) = "${rate.toString().removeSuffix(".0")}×"
+
 @Composable
 fun PlayerScreen(
     video: SavedVideo?, streamUrl: String?, streamTitle: String?, ar: Boolean,
-    streamKind: MediaKind? = null, streamAuth: DownloadAuth? = null, onBack: () -> Unit
+    streamKind: MediaKind? = null, streamAuth: DownloadAuth? = null, onBack: () -> Unit,
 ) {
-    val ctx = LocalContext.current
-    val activity = ctx as Activity
+    val activity = LocalContext.current as ComponentActivity
+    val ctx = activity.applicationContext
     val app = activity.app()
     val scope = rememberCoroutineScope()
-    val uri = video?.localPath?.let { android.net.Uri.fromFile(File(it)) } ?: streamUrl?.let { android.net.Uri.parse(it) }
-    val title = video?.title ?: streamTitle ?: "فيديو"
-
-    val player = remember(uri, streamAuth, streamKind) {
-        val builder = ExoPlayer.Builder(ctx)
-        if (streamUrl != null && streamAuth != null) {
-            val network = OkHttpDataSource.Factory(app.downloads.http.playerClient(streamAuth))
-            builder.setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(ctx, network)))
-        }
-        builder.build().apply {
+    val uri = remember(video?.localPath, streamUrl) { video?.let { Uri.fromFile(File(it.localPath)) } ?: streamUrl?.let(Uri::parse) }
+    val kind = video?.kind ?: streamKind
+    val title = video?.title ?: streamTitle ?: if (ar) "فيديو" else "Video"
+    val player = remember(uri, streamAuth, kind) {
+        ExoPlayer.Builder(ctx).apply {
+            if (video == null && streamAuth != null) {
+                val network = OkHttpDataSource.Factory(app.downloads.http.playerClient(streamAuth))
+                setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(ctx, network)))
+            }
+            setAudioAttributes(AudioAttributes.DEFAULT, true)
+            setHandleAudioBecomingNoisy(true)
+        }.build().apply {
             if (uri != null) {
-                val mime = when (streamKind ?: video?.kind) {
+                val mime = when (kind) {
                     MediaKind.HLS -> MimeTypes.APPLICATION_M3U8
                     MediaKind.DASH -> MimeTypes.APPLICATION_MPD
                     else -> null
                 }
                 setMediaItem(MediaItem.Builder().setUri(uri).setMimeType(mime).build())
-                if (video != null && video.lastPositionSec > 5) seekTo((video.lastPositionSec * 1000).toLong())
-                prepare(); playWhenReady = true
+                if (video != null && video.lastPositionSec > 5) seekTo((video.lastPositionSec * 1_000).toLong())
+                prepare()
+                playWhenReady = true
             }
         }
     }
-    var playing by remember { mutableStateOf(true) }
-    var position by remember { mutableLongStateOf(0L) }
-    var duration by remember { mutableLongStateOf(0L) }
-    var rate by remember { mutableFloatStateOf(1f) }
-    var muted by remember { mutableStateOf(false) }
-    var locked by remember { mutableStateOf(false) }
-    var loop by remember { mutableStateOf(false) }
-    var subMode by remember { mutableStateOf(SubMode.BILINGUAL) }
-    var subSize by remember { mutableStateOf(18) }
-    var showSpeed by remember { mutableStateOf(false) }
-    var showSubs by remember { mutableStateOf(false) }
-    var showSleep by remember { mutableStateOf(false) }
-    var showSearch by remember { mutableStateOf(false) }
-    var showMore by remember { mutableStateOf(false) }
-    var toast by remember { mutableStateOf<String?>(null) }
+    var playback by remember(player) { mutableStateOf(player.playback()) }
+    var position by remember(player) { mutableLongStateOf(player.currentPosition) }
+    var buffered by remember(player) { mutableLongStateOf(player.bufferedPosition) }
+    var rate by remember(player) { mutableFloatStateOf(1f) }
+    var muted by remember(player) { mutableStateOf(false) }
+    var loop by remember(player) { mutableStateOf(false) }
+    var zoomed by remember(player) { mutableStateOf(false) }
+    var locked by remember(player) { mutableStateOf(false) }
+    var visible by remember(player) { mutableStateOf(true) }
+    var activityTick by remember(player) { mutableIntStateOf(0) }
+    var scrub by remember(player) { mutableStateOf<Float?>(null) }
+    var panel by remember(player) { mutableStateOf<Panel?>(null) }
+    var deadline by remember(player) { mutableLongStateOf(0L) }
+    var notice by remember(player) { mutableStateOf<String?>(null) }
+    var pip by remember(activity) { mutableStateOf(activity.isInPictureInPictureMode) }
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val canPip = remember(ctx) { ctx.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE) }
+    val touchExploration = ctx.getSystemService(AccessibilityManager::class.java)?.isTouchExplorationEnabled == true
 
-    val cues = remember(video?.id, video?.subtitleFiles) {
-        val orig = video?.subtitleFiles?.get("orig")?.let { SrtCodec.parse(File(it)) } ?: emptyList()
-        val tran = video?.subtitleFiles?.get("target")?.let { SrtCodec.parse(File(it)) } ?: emptyList()
-        orig.mapIndexed { i, c -> c.copy(translated = tran.getOrNull(i)?.original ?: c.translated) }
-            .ifEmpty { tran }
-    }
-    // Dubbed audio side-player (synced, original muted)
-    val dubPlayer = remember(video?.dubbedAudioPath) {
-        video?.dubbedAudioPath?.let { path ->
-            ExoPlayer.Builder(ctx).build().apply { setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(File(path)))); prepare() }
+    val cues by produceState(emptyList<SubCue>(), video?.subtitleFiles) {
+        value = withContext(Dispatchers.IO) {
+            fun read(key: String) = video?.subtitleFiles?.get(key)?.let { runCatching { SrtCodec.parse(File(it)) }.getOrNull() }.orEmpty()
+            val original = read("orig")
+            val translation = read("target")
+            if (original.isEmpty()) translation.map { it.copy(original = "", translated = it.original) }
+            else original.mapIndexed { i, cue -> cue.copy(translated = translation.getOrNull(i)?.original ?: cue.translated) }
         }
     }
-    var dubOn by remember { mutableStateOf(video?.hasDubbedAudio == true) }
-
-    LaunchedEffect(player) {
-        while (true) {
-            position = player.currentPosition; duration = player.duration.coerceAtLeast(0)
-            playing = player.isPlaying
-            // Drift-correct dubbed audio
-            if (dubOn && dubPlayer != null) {
-                val drift = kotlin.math.abs(dubPlayer.currentPosition - player.currentPosition)
-                if (drift > 350) dubPlayer.seekTo(player.currentPosition)
-                if (player.isPlaying && !dubPlayer.isPlaying) dubPlayer.play()
-                if (!player.isPlaying && dubPlayer.isPlaying) dubPlayer.pause()
-                player.volume = 0f
-            } else player.volume = if (muted) 0f else 1f
-            delay(300)
-        }
+    val captionModes = remember(cues) {
+        val original = cues.any { it.original.isNotBlank() }
+        val translated = cues.any { it.translated.isNotBlank() }
+        listOfNotNull(SubMode.OFF, SubMode.ORIGINAL.takeIf { original }, SubMode.TRANSLATED.takeIf { translated }, SubMode.BILINGUAL.takeIf { original && translated })
     }
-    DisposableEffect(player) {
+    var chosenMode by remember(player) { mutableStateOf<SubMode?>(null) }
+    val subMode = chosenMode?.takeIf { it in captionModes } ?: captionModes.last()
+    var subSize by remember(player) { mutableIntStateOf(18) }
+    val dubPath = remember(video?.dubbedAudioPath) { video?.dubbedAudioPath?.takeIf { File(it).isFile } }
+    val dub = remember(dubPath) {
+        dubPath?.let { path -> ExoPlayer.Builder(ctx).build().apply { setMediaItem(MediaItem.fromUri(Uri.fromFile(File(path)))); prepare() } }
+    }
+    var dubOn by remember(player, dub) { mutableStateOf(dub != null) }
+    val canDub = dub != null
+
+    DisposableEffect(activity) {
+        val previousOrientation = activity.requestedOrientation
+        val callback = Consumer<PictureInPictureModeChangedInfo> { info -> pip = info.isInPictureInPictureMode }
+        activity.addOnPictureInPictureModeChangedListener(callback)
         onDispose {
-            if (video != null) app.library.updatePosition(video, position / 1000.0, duration / 1000.0)
-            player.release(); dubPlayer?.release()
-            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            activity.removeOnPictureInPictureModeChangedListener(callback)
+            if (activity.requestedOrientation != previousOrientation) activity.requestedOrientation = previousOrientation
         }
     }
-
-    val nowSec = position / 1000.0
-    val currentOrig = SrtCodec.cueAt(cues, nowSec, translated = false)
-    val currentTran = SrtCodec.cueAt(cues, nowSec, translated = true)
-
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        AndroidView(factory = { PlayerView(it).apply { this.player = player; useController = false } },
-            modifier = Modifier.fillMaxSize())
-
-        // Subtitle overlay
-        if (subMode != SubMode.OFF && cues.isNotEmpty()) {
-            Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 118.dp, start = 22.dp, end = 22.dp),
-                horizontalAlignment = Alignment.CenterHorizontally) {
-                if (subMode == SubMode.ORIGINAL || subMode == SubMode.BILINGUAL) currentOrig?.let {
-                    SubtitleLine(it, subSize, Color.White)
-                }
-                if (subMode == SubMode.TRANSLATED || subMode == SubMode.BILINGUAL) currentTran?.let {
-                    SubtitleLine(it, subSize, V2.Gold)
-                }
+    DisposableEffect(player, activity) {
+        val listener = object : Player.Listener {
+            override fun onEvents(p: Player, events: Player.Events) {
+                playback = p.playback()
+                position = p.currentPosition
+                buffered = p.bufferedPosition
             }
         }
-
-        if (locked) {
-            IconButton(onClick = { locked = false }, Modifier.align(Alignment.Center)) {
-                Icon(Icons.Filled.Lock, null, tint = Color.White, modifier = Modifier.size(38.dp))
-            }
-        } else {
-            // Top bar
-            Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color.Black.copy(alpha = 0.55f)).padding(10.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, null, tint = Color.White) }
-                Column(Modifier.weight(1f)) {
-                    Text(title, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                    Text(video?.kind?.titleAr ?: "بث مباشر", color = V2.TextDim, fontSize = 11.sp)
-                }
-                IconButton(onClick = { activity.enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().build()) }) {
-                    Icon(Icons.Filled.PictureInPictureAlt, null, tint = Color.White)
-                }
-                IconButton(onClick = { locked = true }) { Icon(Icons.Filled.Lock, null, tint = Color.White) }
-                Box {
-                    IconButton(onClick = { showMore = true }) { Icon(Icons.Filled.MoreVert, null, tint = Color.White) }
-                    DropdownMenu(expanded = showMore, onDismissRequest = { showMore = false }) {
-                        DropdownMenuItem(text = { Text(if (ar) "لقطة (Snapshot)" else "Snapshot") },
-                            leadingIcon = { Icon(Icons.Filled.PhotoCamera, null) }, onClick = {
-                                showMore = false
-                                scope.launch {
-                                    val ok = withContext(Dispatchers.IO) { saveSnapshot(ctx, video, nowSec) }
-                                    toast = if (ok) (if (ar) "اتحفظت في الصور ✓" else "Saved to Photos ✓") else (if (ar) "فشلت اللقطة" else "Snapshot failed")
-                                }
-                            })
-                        DropdownMenuItem(text = { Text(if (ar) "مشاركة الفيديو" else "Share video") },
-                            leadingIcon = { Icon(Icons.Filled.Share, null) }, onClick = { showMore = false })
-                        DropdownMenuItem(text = { Text(if (ar) "أفقي / رأسي" else "Landscape / Portrait") },
-                            leadingIcon = { Icon(Icons.Filled.ScreenRotation, null) }, onClick = {
-                                showMore = false
-                                activity.requestedOrientation = if (activity.requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
-                                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT else ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                            })
-                    }
-                }
-            }
-
-            // Center controls
-            Row(Modifier.align(Alignment.Center), horizontalArrangement = Arrangement.spacedBy(30.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { player.seekTo((position - 10_000).coerceAtLeast(0)) }) {
-                    Icon(Icons.Filled.FastRewind, null, tint = Color.White, modifier = Modifier.size(38.dp))
-                }
-                IconButton(onClick = { if (player.isPlaying) player.pause() else player.play() }, Modifier.size(72.dp)) {
-                    Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.size(62.dp))
-                }
-                IconButton(onClick = { player.seekTo(position + 10_000) }) {
-                    Icon(Icons.Filled.FastForward, null, tint = Color.White, modifier = Modifier.size(38.dp))
-                }
-            }
-
-            // Bottom controls
-            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(alpha = 0.62f)).padding(horizontal = 14.dp, vertical = 10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(MagicDuration.format(nowSec), color = Color.White, fontSize = 11.sp)
-                    Slider(value = if (duration > 0) position.toFloat() / duration else 0f,
-                        onValueChange = { if (duration > 0) player.seekTo((it * duration).toLong()) },
-                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                        colors = SliderDefaults.colors(thumbColor = V2.Accent, activeTrackColor = V2.Accent))
-                    Text("-" + MagicDuration.format(((duration - position).coerceAtLeast(0)) / 1000.0), color = V2.TextDim, fontSize = 11.sp)
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { showSpeed = true }) { Text(if (rate == 1f) "السرعة" else "×$rate", color = Color.White, fontSize = 12.sp) }
-                    IconButton(onClick = { muted = !muted }) { Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, null, tint = Color.White) }
-                    IconButton(onClick = { showSubs = true }) { Icon(Icons.Filled.ClosedCaption, null, tint = if (subMode == SubMode.OFF) Color.White else V2.Gold) }
-                    IconButton(onClick = { showSearch = true }) { Icon(Icons.Filled.Search, null, tint = Color.White) }
-                    if (video?.hasDubbedAudio == true) TextButton(onClick = { dubOn = !dubOn }) {
-                        Text("🎙 " + if (dubOn) "الدبلجة شغالة" else "الدبلجة", color = if (dubOn) V2.Gold else Color.White, fontSize = 11.sp)
-                    }
-                    IconButton(onClick = { loop = !loop; player.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF }) {
-                        Icon(Icons.Filled.Repeat, null, tint = if (loop) V2.Gold else Color.White)
-                    }
-                    IconButton(onClick = { showSleep = true }) { Icon(Icons.Filled.Timer, null, tint = Color.White) }
-                }
-            }
+        val lifecycle = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP && !activity.isInPictureInPictureMode) player.pause()
         }
-        toast?.let {
-            Box(Modifier.align(Alignment.TopCenter).padding(top = 76.dp).clip(RoundedCornerShape(50)).background(V2.Card).padding(horizontal = 14.dp, vertical = 8.dp)) {
-                Text(it, color = Color.White, fontSize = 12.sp)
+        player.addListener(listener)
+        activity.lifecycle.addObserver(lifecycle)
+        onDispose {
+            activity.lifecycle.removeObserver(lifecycle)
+            player.removeListener(listener)
+            if (video != null) {
+                val last = if (player.playbackState == Player.STATE_ENDED) 0L else player.currentPosition
+                app.library.updatePosition(video, last / 1_000.0, player.duration.takeIf { it > 0 }?.div(1_000.0))
             }
-            LaunchedEffect(it) { delay(2200); toast = null }
+            player.release()
         }
     }
-
-    if (showSpeed) AlertDialog(onDismissRequest = { showSpeed = false },
-        title = { Text(if (ar) "سرعة التشغيل" else "Playback speed") },
-        text = { Column { listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f).forEach { r ->
-            TextButton(onClick = { rate = r; player.setPlaybackSpeed(r); showSpeed = false }) {
-                Text(if (r == 1f) (if (ar) "عادي ×1" else "Normal ×1") else "×$r", color = if (r == rate) V2.Accent else Color.White)
-            } } } },
-        confirmButton = {}, dismissButton = { TextButton(onClick = { showSpeed = false }) { Text("✕") } })
-
-    if (showSleep) AlertDialog(onDismissRequest = { showSleep = false },
-        title = { Text(if (ar) "مؤقت النوم" else "Sleep timer") },
-        text = { Column { listOf(0, 15, 30, 45, 60).forEach { m ->
-            TextButton(onClick = {
-                showSleep = false
-                if (m > 0) scope.launch { delay(m * 60_000L); player.pause(); toast = "⏰ " + (if (ar) "وقف التشغيل" else "Paused by sleep timer") }
-                else toast = if (ar) "المؤقت مقفول" else "Timer off"
-            }) { Text(if (m == 0) (if (ar) "إيقاف المؤقت" else "Off") else "$m min") } } } },
-        confirmButton = {}, dismissButton = { TextButton(onClick = { showSleep = false }) { Text("✕") } })
-
-    if (showSubs) ModalBottomSheet(onDismissRequest = { showSubs = false }) {
-        Column(Modifier.padding(20.dp)) {
-            Text(if (ar) "الترجمة على الشاشة" else "On-screen subtitles", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            SubMode.entries.forEach { m ->
-                Row(Modifier.fillMaxWidth().clickable { subMode = m }.padding(vertical = 11.dp)) {
-                    Text(if (ar) m.ar else m.en, modifier = Modifier.weight(1f), color = if (m == subMode) V2.Accent else Color.White)
-                    if (m == subMode) Text("✓", color = V2.Accent)
-                }
-            }
-            Text(if (ar) "حجم الخط" else "Font size", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
-                listOf(14, 18, 23, 28).forEach { s ->
-                    TextButton(onClick = { subSize = s }) { Text("$s", color = if (s == subSize) V2.Accent else Color.White) }
-                }
-            }
-            if (cues.isEmpty()) Text(if (ar) "الفيديو ده لسه ملوش ترجمة — اعملها من تبويب الترجمة." else "No subtitles yet — create them from the Translate tab.", fontSize = 12.sp, color = V2.TextDim)
-            Spacer(Modifier.height(20.dp))
+    DisposableEffect(dub) { onDispose { dub?.release() } }
+    LaunchedEffect(player, playback.playing, playback.buffering) {
+        if (!playback.playing && !playback.buffering) return@LaunchedEffect
+        while (true) {
+            position = player.currentPosition
+            buffered = player.bufferedPosition
+            delay(250)
         }
     }
+    val dubActive = dubOn && dub != null && dub.playerError == null
+    LaunchedEffect(player, dub, dubActive, muted, playback.playing, rate) {
+        player.volume = if (muted || dubActive) 0f else 1f
+        if (dub == null) return@LaunchedEffect
+        dub.volume = if (muted) 0f else 1f
+        dub.setPlaybackSpeed(rate)
+        if (!dubActive) { dub.pause(); return@LaunchedEffect }
+        dub.seekTo(player.currentPosition)
+        dub.playWhenReady = playback.playing
+        while (playback.playing) {
+            if (dub.playerError != null) { dubOn = false; break }
+            if (abs(dub.currentPosition - player.currentPosition) > 350) dub.seekTo(player.currentPosition)
+            delay(350)
+        }
+    }
+    LaunchedEffect(player, deadline) {
+        if (deadline != 0L) {
+            delay((deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L))
+            player.pause()
+            deadline = 0L
+            notice = if (ar) "المؤقت وقف التشغيل" else "Paused by sleep timer"
+        }
+    }
+    LaunchedEffect(visible, playback.playing, playback.buffering, locked, panel, scrub != null, activityTick, pip, touchExploration) {
+        if (visible && playback.playing && !playback.buffering && !locked && panel == null && scrub == null && !pip && !touchExploration) {
+            delay(4_500)
+            visible = false
+        }
+    }
+    LaunchedEffect(playback.error, playback.ended, pip) {
+        if (!pip && (playback.error != null || playback.ended)) visible = true
+    }
+    LaunchedEffect(notice) {
+        if (notice != null) { delay(2_400); notice = null }
+    }
 
-    if (showSearch) ModalBottomSheet(onDismissRequest = { showSearch = false }) {
-        var q by remember { mutableStateOf("") }
-        val hits = cues.filter { q.isBlank() || it.original.contains(q, true) || it.translated.contains(q, true) }
-        Column(Modifier.padding(20.dp)) {
-            Text(if (ar) "بحث في الترجمة" else "Search subtitles", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            OutlinedTextField(q, { q = it }, placeholder = { Text(if (ar) "اكتب كلمة…" else "Type a word…") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp))
-            LazyColumn {
-                items(hits.take(60)) { c ->
-                    Column(Modifier.fillMaxWidth().clickable { player.seekTo((c.startSec * 1000).toLong()); showSearch = false }.padding(vertical = 8.dp)) {
-                        Text(MagicDuration.format(c.startSec), color = V2.Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Text(c.original, fontSize = 13.sp)
-                        if (c.translated.isNotBlank()) Text(c.translated, fontSize = 12.sp, color = V2.TextDim)
-                    }
+    fun seek(to: Long) {
+        if (!playback.seekable) return
+        val target = to.coerceIn(0L, playback.duration.takeIf { it > 0 } ?: Long.MAX_VALUE)
+        player.seekTo(target)
+        position = target
+        if (dubActive) dub?.seekTo(target)
+        activityTick++
+    }
+    fun jump(offset: Long) = seek(player.currentPosition + offset)
+    fun toggle() {
+        if (playback.active) player.pause()
+        else { if (playback.ended) player.seekToDefaultPosition(); player.play() }
+        activityTick++
+    }
+    fun rotate() {
+        activity.requestedOrientation = if (landscape) ActivityInfo.SCREEN_ORIENTATION_PORTRAIT else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        activityTick++
+    }
+    fun onMute() { muted = !muted; activityTick++ }
+    fun enterPip() {
+        if (!canPip) return
+        val pixels = player.videoSize
+        val aspect = Rational(pixels.width, pixels.height).takeIf { it.toDouble() in (1 / 2.39)..2.39 } ?: Rational(16, 9)
+        if (!runCatching { activity.enterPictureInPictureMode(PictureInPictureParams.Builder().setAspectRatio(aspect).build()) }.getOrDefault(false)) {
+            notice = if (ar) "صورة داخل صورة مش متاحة دلوقتي" else "Picture-in-picture is unavailable right now"
+        }
+    }
+    fun snapshot(time: Long, document: Uri? = null) {
+        video ?: return
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) { savePlayerSnapshot(ctx, video, time, document) }
+            notice = if (ok) (if (ar) "اللقطة اتحفظت" else "Snapshot saved") else (if (ar) "ما قدرناش نحفظ اللقطة" else "Couldn’t save the snapshot")
+        }
+    }
+    var snapshotAt by remember(player) { mutableLongStateOf(0L) }
+    val createSnapshot = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/jpeg")) { result ->
+        result?.let { snapshot(snapshotAt, it) }
+    }
+
+    BackHandler(!pip && locked) { locked = false; visible = true }
+    val chrome = !pip && !locked && visible
+    val toggleChrome by rememberUpdatedState<() -> Unit>({ if (!locked && !pip) { visible = !visible; activityTick++ } })
+    val gestureJump by rememberUpdatedState<(Long) -> Unit>({ offset ->
+        if (!locked && !pip && playback.seekable && playback.error == null) { jump(offset); visible = true }
+    })
+    val clock = scrub?.let { (it * playback.duration).toLong() } ?: position
+    val at = position / 1_000.0
+    val mode = video?.let { if (ar) "ملف محفوظ" else "Saved file" }
+        ?: if (playback.live) (if (ar) "بث مباشر" else "Live stream") else (if (ar) "تشغيل عبر الإنترنت" else "Streaming")
+    val format = listOfNotNull(kind?.ext?.uppercase()?.takeIf { kind != MediaKind.OTHER }, playback.height.takeIf { it > 0 }?.let { "${it}p" })
+        .joinToString(" · ").ifBlank { null }
+
+    PlayerFrame(chromeVisible = chrome, video = {
+        AndroidView(factory = { PlayerView(it).apply { useController = false; isClickable = false; setShutterBackgroundColor(android.graphics.Color.BLACK) } },
+            modifier = Modifier.fillMaxSize(), onReset = null, onRelease = { it.player = null }, update = { view ->
+                if (view.player != player) view.player = player
+                view.resizeMode = if (zoomed) AspectRatioFrameLayout.RESIZE_MODE_ZOOM else AspectRatioFrameLayout.RESIZE_MODE_FIT
+                view.keepScreenOn = playback.playing && !pip
+            })
+        if (!pip && !locked) Box(Modifier.matchParentSize().pointerInput(playback.seekable, playback.error) {
+            if (playback.seekable && playback.error == null) detectTapGestures(onTap = { toggleChrome() }, onDoubleTap = { offset ->
+                gestureJump(if (offset.x < size.width / 2f) -10_000L else 10_000L)
+            }) else detectTapGestures(onTap = { toggleChrome() })
+        }.semantics {
+            onClick(label = if (visible) (if (ar) "اخفِ أدوات التشغيل" else "Hide controls") else (if (ar) "اعرض أدوات التشغيل" else "Show controls")) {
+                toggleChrome(); true
+            }
+        })
+    }, header = {
+        PlayerHeader(ar, title, format, mode, onBack, onTools = { panel = Panel.TOOLS })
+    }, center = {
+        when {
+            pip -> Unit
+            locked -> FilledTonalIconButton(onClick = { locked = false; visible = true; activityTick++ }, Modifier.align(Alignment.Center)) {
+                Icon(Icons.Filled.Lock, if (ar) "افتح أدوات التشغيل" else "Unlock controls", tint = V2.Mint)
+            }
+            playback.error != null -> Surface(shape = RoundedCornerShape(17.dp), color = V2.Card) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(if (ar) "الفيديو ما اشتغلش" else "Couldn’t play this video", style = MaterialTheme.typography.titleMedium)
+                    TextButton(onClick = { player.prepare(); player.play() }) { Text(if (ar) "حاول تاني" else "Retry", color = V2.Mint) }
                 }
             }
+            chrome -> PlayerTransport(ar, playback.active, playback.ended, playback.seekable, playback.buffering,
+                onBackTen = { jump(-10_000L) }, onToggle = ::toggle, onForwardTen = { jump(10_000L) })
+            playback.buffering -> CircularProgressIndicator(Modifier.size(36.dp), color = V2.Mint, strokeWidth = 2.dp)
         }
-    }
-}
-
-@Composable private fun SubtitleLine(text: String, sizeSp: Int, color: Color) {
-    Box(Modifier.padding(top = 4.dp).clip(RoundedCornerShape(8.dp)).background(Color.Black.copy(alpha = 0.68f)).padding(horizontal = 10.dp, vertical = 5.dp)) {
-        Text(text, color = color, fontSize = sizeSp.sp, textAlign = TextAlign.Center, fontWeight = FontWeight.SemiBold)
-    }
-}
-
-private fun saveSnapshot(ctx: android.content.Context, video: SavedVideo?, atSec: Double): Boolean {
-    if (video == null) return false
-    return runCatching {
-        val r = MediaMetadataRetriever(); r.setDataSource(video.localPath)
-        val bmp = r.getFrameAtTime((atSec * 1_000_000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: return false
-        val values = android.content.ContentValues().apply {
-            put(MediaStore.Images.Media.DISPLAY_NAME, "video2-${System.currentTimeMillis()}.jpg")
-            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Video2")
+        if (!pip) notice?.let { message ->
+            Surface(Modifier.align(Alignment.TopCenter).padding(top = 8.dp).semantics { liveRegion = LiveRegionMode.Polite },
+                color = V2.Card, shape = RoundedCornerShape(14.dp)) {
+                Text(message, Modifier.padding(horizontal = 12.dp, vertical = 6.dp), color = Color.White, style = MaterialTheme.typography.bodySmall)
             }
         }
-        val uri = ctx.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return false
-        ctx.contentResolver.openOutputStream(uri)?.use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, it) }
-        r.release(); true
-    }.getOrDefault(false)
+    }, captions = {
+        if (!pip && subMode != SubMode.OFF && playback.error == null) PlayerCaptionLines(
+            if (subMode != SubMode.TRANSLATED) SrtCodec.cueAt(cues, at) else null,
+            if (subMode != SubMode.ORIGINAL) SrtCodec.cueAt(cues, at, translated = true) else null, subSize)
+    }, deck = { compact ->
+        PlayerDeck(ar, compact, clock, playback.duration,
+            if (playback.duration > 0) (buffered.toDouble() / playback.duration).toFloat() else 0f,
+            playback.seekable && playback.duration > 0 && playback.error == null, playback.live, rateLabel(rate), muted,
+            cues.isNotEmpty(), subMode != SubMode.OFF, landscape, onScrub = { scrub = it }, onScrubEnd = {
+                scrub?.let { seek((it * playback.duration).toLong()) }; scrub = null
+            }, onSpeed = { panel = Panel.SPEED }, onMute = ::onMute, onCaptions = { panel = Panel.CAPTIONS }, onRotate = ::rotate)
+    })
+
+    val dismiss: () -> Unit = { panel = null; activityTick++ }
+    val localFile = remember(video?.localPath) { video?.let { File(it.localPath).isFile && it.kind != MediaKind.HLS } == true }
+    val canSnapshot = localFile && (kind?.isCompleteVideo == true || kind == MediaKind.TS)
+    if (!pip) when (panel) {
+        Panel.TOOLS -> {
+            val off = if (ar) "متوقف" else "Off"
+            val on = if (ar) "مفعّل" else "On"
+            PlayerTools(ar, listOfNotNull(
+                PlayerTool(Icons.Filled.Speed, if (ar) "سرعة التشغيل" else "Playback speed", rateLabel(rate)) { panel = Panel.SPEED },
+                PlayerTool(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, if (ar) "كتم الصوت" else "Mute", if (muted) on else off) { onMute(); dismiss() },
+                PlayerTool(Icons.Filled.ClosedCaption, if (ar) "الترجمة" else "Captions",
+                    if (cues.isNotEmpty()) (if (ar) subMode.ar else subMode.en) else (if (ar) "مفيش ترجمة من Video2 للملف ده" else "No Video2 captions for this file"),
+                    cues.isNotEmpty()) { panel = Panel.CAPTIONS },
+                PlayerTool(Icons.Filled.Search, if (ar) "بحث في الترجمة" else "Search captions", enabled = playback.seekable) { panel = Panel.SEARCH }.takeIf { cues.isNotEmpty() },
+                PlayerTool(Icons.Filled.RecordVoiceOver, if (ar) "الدبلجة" else "Dubbed audio", if (dubOn) on else off) { dubOn = !dubOn; dismiss() }.takeIf { canDub },
+                PlayerTool(Icons.Filled.Repeat, if (ar) "تكرار الفيديو" else "Repeat video", if (loop) on else off) {
+                    loop = !loop; player.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF; dismiss()
+                },
+                PlayerTool(Icons.Filled.Timer, if (ar) "مؤقت النوم" else "Sleep timer", if (deadline == 0L) off else on) { panel = Panel.SLEEP },
+                PlayerTool(Icons.Filled.AspectRatio, if (ar) "ملء الشاشة بالقص" else "Zoom to fill", if (zoomed) on else off) { zoomed = !zoomed; dismiss() },
+                PlayerTool(Icons.Filled.ScreenRotation, if (landscape) (if (ar) "عرض رأسي" else "Portrait") else (if (ar) "عرض أفقي" else "Landscape")) { dismiss(); rotate() },
+                PlayerTool(Icons.Filled.PictureInPictureAlt, if (ar) "صورة داخل صورة" else "Picture-in-picture", enabled = playback.error == null) { dismiss(); enterPip() }.takeIf { canPip },
+                PlayerTool(Icons.Filled.Lock, if (ar) "اقفل أدوات التشغيل" else "Lock controls") { dismiss(); locked = true },
+                PlayerTool(Icons.Filled.PhotoCamera, if (ar) "احفظ لقطة" else "Save snapshot") {
+                    dismiss()
+                    snapshotAt = player.currentPosition
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) snapshot(snapshotAt) else createSnapshot.launch(snapshotName())
+                }.takeIf { canSnapshot },
+                PlayerTool(Icons.Filled.Share, if (ar) "شارك الملف" else "Share file") {
+                    dismiss()
+                    if (video != null && !sharePlayerFile(activity, video)) notice = if (ar) "المشاركة مش متاحة للملف ده" else "Couldn’t share this file"
+                }.takeIf { localFile },
+            ), dismiss)
+        }
+        Panel.SPEED -> PlayerChoices(ar, if (ar) "سرعة التشغيل" else "Playback speed", listOf(.5f, .75f, 1f, 1.25f, 1.5f, 2f), rate,
+            { if (it == 1f) { if (ar) "عادي · 1×" else "Normal · 1×" } else rateLabel(it) }, dismiss) { newRate ->
+            player.setPlaybackSpeed(newRate); rate = newRate; dismiss()
+        }
+        Panel.SLEEP -> PlayerChoices(ar, if (ar) "مؤقت النوم" else "Sleep timer", listOf(0, 15, 30, 45, 60), 0.takeIf { deadline == 0L },
+            { if (it == 0) (if (ar) "إلغاء المؤقت" else "Turn timer off") else if (ar) "$it دقيقة" else "$it minutes" }, dismiss) { minutes ->
+            deadline = if (minutes == 0) 0L else SystemClock.elapsedRealtime() + minutes * 60_000L
+            notice = if (minutes == 0) (if (ar) "المؤقت اتلغى" else "Sleep timer cancelled") else
+                (if (ar) "التشغيل هيقف بعد $minutes دقيقة" else "Pausing in $minutes minutes")
+            dismiss()
+        }
+        Panel.CAPTIONS -> PlayerCaptionsSettings(ar, captionModes, subMode, subSize, { chosenMode = it }, { subSize = it }, dismiss)
+        Panel.SEARCH -> PlayerCaptionSearch(ar, cues, dismiss) { cue -> seek((cue.startSec * 1_000).toLong()); dismiss() }
+        null -> Unit
+    }
 }

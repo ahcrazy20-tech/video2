@@ -38,6 +38,7 @@ import com.ahcrazy.video2.core.model.DownloadAuth
 import com.ahcrazy.video2.core.model.DownloadJob
 import com.ahcrazy.video2.core.model.DownloadState
 import com.ahcrazy.video2.core.model.JoinedTracks
+import com.ahcrazy.video2.core.model.HlsVariant
 import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.model.MediaProblem
 import com.ahcrazy.video2.core.model.SavedVideo
@@ -95,11 +96,11 @@ class DownloadManager internal constructor(private val ctx: Context, private val
     @Synchronized
     fun enqueue(media: DetectedMedia, auth: DownloadAuth? = null, maxHeight: Int? = null, variantUrl: String? = null,
                 audioGroup: String? = null): DownloadJob {
-        val external = ResolverType.forMedia(media) != null
+        val external = media.usesPublicMediaTransport()
         val requestAuth = if (external) DownloadAuth.external else auth
         _jobs.value.firstOrNull {
             it.media.url == media.url && it.state.isBusy && !media.drm.isProtected &&
-                (it.auth?.externalHttpsOnly == true || ResolverType.forMedia(it.media) != null) == (requestAuth?.externalHttpsOnly == true)
+                (it.auth?.externalHttpsOnly == true || it.media.usesPublicMediaTransport()) == (requestAuth?.externalHttpsOnly == true)
         }?.let { return it }
         val selection = variantUrl ?: media.checkedVariantUrl.takeIf { external && media.downloadChecked() }
         val group = audioGroup ?: media.checkedAudioGroup.takeIf { selection != null && selection == media.checkedVariantUrl }
@@ -120,16 +121,23 @@ class DownloadManager internal constructor(private val ctx: Context, private val
         return job
     }
 
-    internal fun activeSmartJob(video: YouTubeVideo?) = video?.let { target ->
-        jobs.value.firstOrNull { it.state.isBusy && YouTubeVideo.fromMedia(it.media) == target }
+    internal fun activeSmartJob(request: SmartDownloadRequest): DownloadJob? =
+        jobs.value.firstOrNull { it.state.isBusy && it.media.matchesSource(request) }
+
+    private fun DetectedMedia.matchesSource(request: SmartDownloadRequest): Boolean = when {
+        request.video != null -> YouTubeVideo.fromMedia(this) == request.video
+        request.peerTube != null -> sequenceOf(pageUrl, publicPageUrl).any { PeerTubeVideo.parse(it) == request.peerTube }
+        else -> request.direct.any { it.media.url == url }
     }
 
     @Synchronized internal fun enqueueSmart(candidate: SmartCandidate, request: SmartDownloadRequest, height: Int?): DownloadJob {
         val media = candidate.media
         // Carry a sampled HLS rendition into the real download, including a site-provided stream.
-        val job = activeSmartJob(request.video) ?: enqueue(media, candidate.auth, height, media.checkedVariantUrl, media.checkedAudioGroup)
+        val canonical = media.publicPageUrl?.let(PeerTubeVideo::parse)?.takeIf { request.peerTube != null }
+        val job = activeSmartJob(request) ?: canonical?.let { activeSmartJob(request.copy(peerTube = it)) }
+            ?: enqueue(media, candidate.auth, height, media.checkedVariantUrl, media.checkedAudioGroup)
         if (job.state.isBusy) request.replaceFailedId?.let { id ->
-            if (_jobs.value.any { it.id == id && it.state == DownloadState.FAILED && YouTubeVideo.fromMedia(it.media) == request.video }) {
+            if (_jobs.value.any { it.id == id && it.state == DownloadState.FAILED && (it.media.matchesSource(request) || canonical != null && it.media.matchesSource(request.copy(peerTube = canonical))) }) {
                 remove(id) // Only after a fresh, independently verified source was queued.
             }
         }
@@ -237,8 +245,9 @@ class DownloadManager internal constructor(private val ctx: Context, private val
         task.start()
     }
 
-    internal suspend fun probe(media: DetectedMedia, auth: DownloadAuth, preferredHeight: Int? = null, automatic: Boolean = false): DetectedMedia =
-        mediaProbe.check(media, media.authFor(auth), preferredHeight, automatic)
+    internal suspend fun probe(media: DetectedMedia, auth: DownloadAuth, preferredHeight: Int? = null, automatic: Boolean = false,
+                               exactVariant: HlsVariant? = null): DetectedMedia =
+        mediaProbe.check(media, media.authFor(auth), preferredHeight, automatic, exactVariant)
 
     private suspend fun perform(job: DownloadJob, progress: (Double, Long) -> Unit): SavedVideo {
         val media = job.media
@@ -292,12 +301,16 @@ class DownloadManager internal constructor(private val ctx: Context, private val
                     throw MediaDownloadException("الخادم أرسل جزءًا غير صالح من الملف.")
                 }
                 val body = response.body ?: throw MediaDownloadException("المصدر رجّع ردًا فاضيًا.")
-                val prefix = if (append) null else response.peekBody(if (track != null) TRACK_HEADER_BYTES else 4096L).bytes()
+                val peerTube = job.media.extractionMethod == PeerTubeDownloads.method
+                val prefix = if (append) null else response.peekBody(if (track != null || peerTube) TRACK_HEADER_BYTES else 4096L).bytes()
                 val kind = if (prefix == null) savedKind!! else responseMediaKind(response.request.url.toString(), response.header("Content-Type"),
                     prefix, track?.kind ?: job.media.kind, requireEvidence = true)
                 val total = range?.total ?: body.contentLength().takeIf { it > 0 }
                 if (track != null && (kind != track.kind || total != track.bytes ||
                         prefix != null && prefix.mp4TrackTypes() != setOf(track.handler))) {
+                    throw MediaDownloadException(MediaProblem.NOT_MEDIA.ar, MediaProblem.NOT_MEDIA)
+                }
+                if (peerTube && prefix != null && !validPeerTubeMp4(kind, prefix, total, job.media.byteSize)) {
                     throw MediaDownloadException(MediaProblem.NOT_MEDIA.ar, MediaProblem.NOT_MEDIA)
                 }
                 if (kind == MediaKind.HLS) return@read DirectResult.Playlist(checkedPlaylist(response))
@@ -376,7 +389,7 @@ class DownloadManager internal constructor(private val ctx: Context, private val
     private fun DetectedMedia.rateOwner(): String? = resolverHost ?: httpMediaUrl(url)?.host
 
     private fun DetectedMedia.authFor(default: DownloadAuth): DownloadAuth =
-        (if (ResolverType.forMedia(this) != null) DownloadAuth.external else default)
+        (if (usesPublicMediaTransport()) DownloadAuth.external else default)
             .copy(rateLimitOwner = resolverHost ?: default.rateLimitOwner ?: httpMediaUrl(url)?.host)
 
     private suspend fun playlist(url: HttpUrl, auth: DownloadAuth): HlsDocument = retryMediaRead {

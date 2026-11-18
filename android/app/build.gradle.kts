@@ -16,8 +16,8 @@ android {
         applicationId = "com.ahcrazy.video2"
         minSdk = 26
         targetSdk = 34
-        versionCode = 8
-        versionName = "1.5"
+        versionCode = 9
+        versionName = "1.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
     }

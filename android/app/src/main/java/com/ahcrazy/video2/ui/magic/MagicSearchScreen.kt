@@ -58,11 +58,10 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.ahcrazy.video2.app
 import com.ahcrazy.video2.core.media.YouTubeVideo
-import com.ahcrazy.video2.core.model.DetectedMedia
-import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.util.MagicDuration
 import com.ahcrazy.video2.core.util.MagicQuery
 import com.ahcrazy.video2.data.MagicResult
+import com.ahcrazy.video2.data.PeerTubeVideo
 import com.ahcrazy.video2.data.SmartDownloadRequest
 import com.ahcrazy.video2.ui.browser.ExternalDownloadSheet
 import com.ahcrazy.video2.ui.browser.ExternalVideoChoice
@@ -187,8 +186,9 @@ internal fun MagicSearchScreen(
                 }
                 items(list) { r ->
                     val watch = YouTubeVideo.parse(r.pageUrl)
+                    val peerTube = if (r.source == "peertube") PeerTubeVideo.parse(r.pageUrl) else null
                     ResultCard(r, ar, MagicQuery.parse(state.text),
-                        externalDownload = watch != null,
+                        externalDownload = watch != null || peerTube != null,
                         downloadProgress = jobs.firstOrNull { it.media.pageUrl == r.pageUrl || it.media.url == r.pageUrl ||
                             watch != null && YouTubeVideo.fromMedia(it.media) == watch },
                         onPlay = {
@@ -203,13 +203,8 @@ internal fun MagicSearchScreen(
                         },
                         onOpen = { onOpenInBrowser(r.pageUrl) },
                         onDownload = {
-                            if (watch != null) smart = SmartDownloadRequest(watch, r.title)
-                            else {
-                                val url = r.playableUrl ?: r.pageUrl
-                                val kind = if (url.contains(".m3u8")) MediaKind.HLS else MediaKind.infer(url, null)
-                                app.downloads.enqueue(DetectedMedia(url, r.title, kind, pageUrl = r.pageUrl, extractionMethod = "magic:${r.source}"), null, MagicQuery.parse(state.text).preferredHeight)
-                                state.toast = if (ar) "بدأ التحميل — شوفه في تبويب التحميلات ⬇️" else "Download started — see Downloads tab ⬇️"
-                            }
+                            if (watch != null || peerTube != null) smart = SmartDownloadRequest(watch, r.title, peerTube = peerTube)
+                            else onOpenInBrowser(r.pageUrl) // A watch page is not a downloadable file. Use its capture/download UI.
                         })
                 }
             }
@@ -220,7 +215,7 @@ internal fun MagicSearchScreen(
     smart?.let { request ->
         val height = MagicQuery.parse(state.text).preferredHeight ?: preferredHeight
         SmartDownloadDialog(ar, request, height, onClose = { smart = null }, onQueued = { smart = null; onOpenDownloads() },
-            onManual = { smart = null; external = ExternalVideoChoice(request.video, request.title) })
+            onManual = request.video?.let { video -> { smart = null; external = ExternalVideoChoice(video, request.title) } })
     }
 
     external?.let { choice ->

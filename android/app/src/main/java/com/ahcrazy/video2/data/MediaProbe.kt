@@ -32,7 +32,8 @@ private const val PLAYLIST_LIMIT = 2L * 1024 * 1024
 
 /** User-initiated metadata check. It never downloads the media or changes the source URL. */
 internal class MediaProbe(private val http: MediaHttp) {
-    suspend fun check(media: DetectedMedia, auth: DownloadAuth, preferredHeight: Int? = null, automatic: Boolean = false): DetectedMedia {
+    suspend fun check(media: DetectedMedia, auth: DownloadAuth, preferredHeight: Int? = null, automatic: Boolean = false,
+                      exactVariant: HlsVariant? = null): DetectedMedia {
         val url = httpMediaUrl(media.url) ?: return media.failed(MediaProblem.NOT_MEDIA)
         if (media.drm.isProtected) return media
         if (media.isFragment) return media.failed(MediaProblem.NOT_MEDIA)
@@ -43,7 +44,7 @@ internal class MediaProbe(private val http: MediaHttp) {
                     else if (media.kind == MediaKind.HLS || media.kind == MediaKind.DASH) media else sniff(media, url, auth)
                 if (auth.externalHttpsOnly && !known.kind.isCompleteVideo) throw notMedia()
                 when (known.kind) {
-                    MediaKind.HLS -> checkHls(known, url, auth, preferredHeight, automatic)
+                    MediaKind.HLS -> checkHls(known, url, auth, preferredHeight, automatic, exactVariant)
                     MediaKind.DASH -> checkDash(known, url, auth)
                     else -> known
                 }.copy(probed = true, probeProblem = null, checkedAtMs = System.currentTimeMillis(), probeHttpStatus = null, probeRetryAtMs = null, probeHost = null)
@@ -76,7 +77,7 @@ internal class MediaProbe(private val http: MediaHttp) {
             response.requireMediaSuccess()
             if (response.request.url.isMediaFragment()) throw notMedia()
             val type = response.header("Content-Type")
-            val prefix = response.peekBody(if (trackKind == null) SNIFF_BYTES else TRACK_HEADER_BYTES).bytes()
+            val prefix = response.peekBody(if (trackKind != null || media.extractionMethod == PeerTubeDownloads.method) TRACK_HEADER_BYTES else SNIFF_BYTES).bytes()
             if (prefix.isEmpty()) throw notMedia()
             val range = if (response.code == 206) ContentRange.parse(response.header("Content-Range")) else null
             if (response.code == 206 && (range?.start != 0L || range.total == null)) throw MediaDownloadException("الخادم رجّع نطاقًا غير صالح.")
@@ -90,16 +91,22 @@ internal class MediaProbe(private val http: MediaHttp) {
                 val handler = if (trackKind == MediaKind.M4A) "soun" else "vide"
                 if (kind != trackKind || size != trackSize || prefix.mp4TrackTypes() != setOf(handler)) throw notMedia()
             }
+            if (media.extractionMethod == PeerTubeDownloads.method && !validPeerTubeMp4(kind, prefix, size, media.byteSize)) throw notMedia()
             media.copy(kind = kind, mime = type ?: media.mime, byteSize = size ?: media.byteSize)
         }
 
-    private suspend fun checkHls(media: DetectedMedia, url: HttpUrl, auth: DownloadAuth, preferredHeight: Int?, automatic: Boolean): DetectedMedia {
+    private suspend fun checkHls(media: DetectedMedia, url: HttpUrl, auth: DownloadAuth, preferredHeight: Int?, automatic: Boolean,
+                                 exactVariant: HlsVariant?): DetectedMedia {
         val master = http.read(http.request(url, auth).build(), ::checkedPlaylist)
         val variants = Hls.parseMaster(master.text, master.url.toString())
             .sortedWith(compareByDescending<HlsVariant> { it.height ?: 0 }.thenByDescending { it.bandwidth })
         val playlists = mutableMapOf<HttpUrl, Result<HlsDocument>>()
         val samples = mutableMapOf<Pair<HttpUrl, ByteWindow?>, Result<Unit>>()
-        val selection = selectHlsSource(master, preferredHeight = preferredHeight, validateSelection = { candidate ->
+        val selection = selectHlsSource(master, preferredVariantUrl = exactVariant?.url, preferredHeight = preferredHeight,
+            preferredAudioGroup = exactVariant?.audioGroup.orEmpty().takeIf { exactVariant != null }, validateSelection = { candidate ->
+            if (exactVariant?.height != null && candidate.variant?.height != exactVariant.height) {
+                throw MediaDownloadException(MediaProblem.EXPIRED.ar, MediaProblem.EXPIRED)
+            }
             if (automatic) {
                 val video = candidate.video
                 val audio = candidate.audio
@@ -200,3 +207,6 @@ private fun Response.boundedManifest(): String {
     }
     return text
 }
+
+internal fun validPeerTubeMp4(kind: MediaKind, prefix: ByteArray, size: Long?, expected: Long?): Boolean =
+    kind == MediaKind.MP4 && prefix.mp4TrackTypes().containsAll(setOf("vide", "soun")) && (expected == null || size == expected)

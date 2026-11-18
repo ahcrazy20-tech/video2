@@ -44,6 +44,8 @@ import com.ahcrazy.video2.core.media.YouTubeVideo
 import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.DownloadJob
 import com.ahcrazy.video2.core.model.HlsVariant
+import com.ahcrazy.video2.core.model.MediaKind
+import com.ahcrazy.video2.data.PeerTubeVideo
 import com.ahcrazy.video2.data.ResolverType
 import com.ahcrazy.video2.data.SmartCandidate
 import com.ahcrazy.video2.data.SmartDownloadRequest
@@ -99,7 +101,7 @@ internal fun BrowserScreen(
         checkingUrls = emptyList()
         smartFromCapture = fromCapture
         smart = SmartDownloadRequest(plan.video, item?.title ?: plan.media.firstOrNull()?.title ?: tab.title,
-            direct = plan.media.map { SmartCandidate(it, tab.auth(it)) })
+            direct = plan.media.map { SmartCandidate(it, tab.auth(it)) }, peerTube = plan.peerTube)
     }
 
     SideEffect { session.adBlock = adBlock }
@@ -111,13 +113,14 @@ internal fun BrowserScreen(
         val job = recoverFrom ?: return@LaunchedEffect
         val provider = ResolverType.forMedia(job.media)
         val watch = YouTubeVideo.fromMedia(job.media)
-        if (watch != null && !job.media.drm.isProtected &&
-            (provider != null || job.problem?.needsNewLink == true) && job.httpStatus !in setOf(401, 429)) {
+        val peerTube = PeerTubeVideo.parse(job.media.publicPageUrl ?: job.media.pageUrl)
+        if ((watch != null || peerTube != null) && !job.media.drm.isProtected &&
+            (provider != null || peerTube != null || job.problem?.needsNewLink == true) && job.httpStatus !in setOf(401, 429)) {
             shown = ""
             smartFromCapture = false
             smart = SmartDownloadRequest(watch, job.media.title,
                 excludedUrls = setOfNotNull(job.media.url, job.media.joinedTracks?.audioUrl), replaceFailedId = job.id,
-                skipJoinedTracks = job.media.joinedTracks != null)
+                skipJoinedTracks = job.media.joinedTracks != null, peerTube = peerTube)
             onConsumeRecovery()
             return@LaunchedEffect
         }
@@ -229,7 +232,7 @@ internal fun BrowserScreen(
                                 Badge(containerColor = V2.Mint, contentColor = V2.Bg) { Text("${detected.size}") }
                             }
                         }
-                        if (currentPlan?.video != null) IconButton(onClick = { startSmart(fromCapture = false) },
+                        if (currentPlan != null) IconButton(onClick = { startSmart(fromCapture = false) },
                             modifier = Modifier.testTag("browser.smartDownload")) {
                             Icon(Icons.Filled.CloudDownload, if (ar) "تحميل ذكي" else "Smart download", tint = V2.Mint)
                         }
@@ -287,7 +290,10 @@ internal fun BrowserScreen(
 
     if (shown == "capture") {
         val quality = detected.firstOrNull { it.url == qualityFor }
-        CaptureSheet(ar, tab.url, detected, captureMessage(ar, tab.url, tab.playbackHint, tab.drm.isProtected, tab.detected.size - detected.size),
+        val peerTube = currentPlan?.peerTube != null
+        CaptureSheet(ar, tab.url, if (peerTube) emptyList() else detected, if (peerTube) CaptureMessage(
+            if (ar) "تنزيل من PeerTube" else "Download from PeerTube",
+            if (ar) "استخدم تحميل ذكي لعرض النسخ اللي صاحب الفيديو أتاحها." else "Smart Download shows the renditions the uploader made available.") else captureMessage(ar, tab.url, tab.playbackHint, tab.drm.isProtected, tab.detected.size - detected.size),
             checkingUrls.isNotEmpty(), quality, preferredHeight, recovering = recovering,
             onClose = { shown = ""; recovering = false; qualityFor = null; checkingUrls = emptyList() },
             onScan = tab::rescan, onVerify = ::verify, onPlay = ::play, onDownload = ::download,
@@ -300,7 +306,7 @@ internal fun BrowserScreen(
                 session.add(); session.current.open("https://support.google.com/youtube/answer/56100")
             }, onSmart = if (tab.drm.isProtected) null else { item -> startSmart(item) },
             smartPrimary = currentPlan != null,
-            onExternal = if (tab.drm.isProtected) null else { item ->
+            onExternal = if (tab.drm.isProtected || peerTube) null else { item ->
                 val selected = YouTubeVideo.forCapture(tab.url, detected, item)
                 shown = ""
                 qualityFor = null
@@ -364,10 +370,17 @@ internal fun BrowserScreen(
             confirmButton = { TextButton(enabled = target != null, onClick = {
                 if (target != null) {
                     val captured = tab.detected.firstOrNull { it.url == target.toString() }
-                    val page = target.isYouTubePage() && target.manifestKind() == null && captured == null
+                    val page = (target.isYouTubePage() || PeerTubeVideo.parse(target.toString()) != null) && target.manifestKind() == null && captured == null
                     if (page) {
                         shown = ""
                         tab.open(target.toString())
+                    } else if (captured?.kind == MediaKind.HLS || MediaKind.infer(target.toString(), null) == MediaKind.HLS) {
+                        val stream = captured ?: DetectedMedia(target.toString(), pasteTitle.ifBlank { "HLS" }, MediaKind.HLS,
+                            pageUrl = tab.url.ifBlank { null }, extractionMethod = "manual")
+                        if (captured == null) tab.ingest(stream)
+                        pasteUrl = ""; pasteTitle = ""; shown = "capture"; recovering = false
+                        qualityFor = stream.url
+                        if (!stream.downloadChecked()) verify(stream.url)
                     } else {
                         val maxHeight = preferredHeight.takeIf { it > 0 }
                         val job = if (captured != null) app.downloads.enqueue(captured.copy(title = pasteTitle.ifBlank { captured.title }), tab.auth(captured), maxHeight)
@@ -376,8 +389,16 @@ internal fun BrowserScreen(
                         if (job.state.isBusy) queued() else onOpenDownloads()
                     }
                 }
-            }) { Text(if (target?.isYouTubePage() == true && target.manifestKind() == null && detected.none { it.url == target.toString() })
-                (if (ar) "افتح صفحة المشاهدة" else "Open watch page") else (if (ar) "تحميل" else "Download")) } },
+            }) {
+                val detectedTarget = detected.firstOrNull { it.url == target?.toString() }
+                Text(when {
+                    target != null && (target.isYouTubePage() || PeerTubeVideo.parse(target.toString()) != null) && target.manifestKind() == null && detectedTarget == null ->
+                        if (ar) "افتح صفحة المشاهدة" else "Open watch page"
+                    detectedTarget?.kind == MediaKind.HLS || target != null && MediaKind.infer(target.toString(), null) == MediaKind.HLS ->
+                        if (ar) "اعرض الجودات" else "See qualities"
+                    else -> if (ar) "تحميل" else "Download"
+                })
+            } },
             dismissButton = { TextButton(onClick = { shown = "" }) { Text(if (ar) "إلغاء" else "Cancel") } })
     }
 }
@@ -434,12 +455,15 @@ private fun BrowserPanel(modifier: Modifier, content: @Composable ColumnScope.()
     }
 }
 
-internal data class CaptureSmartPlan(val video: YouTubeVideo?, val media: List<DetectedMedia>)
+internal data class CaptureSmartPlan(val video: YouTubeVideo?, val media: List<DetectedMedia>, val peerTube: PeerTubeVideo? = null)
 
 /** Do not pick an arbitrary search result when several unrelated players were preloaded. */
 internal fun captureSmartPlan(page: String, sources: List<DetectedMedia>, selected: DetectedMedia? = null): CaptureSmartPlan? {
     if (selected?.let { it.fromAd || it.drm.isProtected } == true) return null
     val media = sources.filterNot { it.fromAd }
+    if (selected == null && media.none { it.drm.isProtected }) PeerTubeVideo.parse(page)?.let {
+        return CaptureSmartPlan(null, emptyList(), peerTube = it)
+    }
     val video = YouTubeVideo.forCapture(page, media, selected)
     val matches = if (video != null) media.filter { YouTubeVideo.fromMedia(it) == video }
         else {

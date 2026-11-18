@@ -1,11 +1,9 @@
 package com.ahcrazy.video2
 
 import com.ahcrazy.video2.core.media.DownloadCooldowns
-import com.ahcrazy.video2.core.media.YouTubeVideo
 import com.ahcrazy.video2.core.media.rateWaitMillis
 import com.ahcrazy.video2.core.media.retryAfterMillis
 import com.ahcrazy.video2.core.media.retryDeadline
-import com.ahcrazy.video2.data.PublisherLinks
 import org.junit.Assert.*
 import org.junit.Test
 import java.time.Instant
@@ -33,12 +31,5 @@ class RetryAfterTest {
         assertEquals(first, limits.active("media.example.net"))
         now += 135_000L
         assertNull(limits.active("resolver.example.net"))
-    }
-
-    @Test fun onlyTheVerifiedEpisodeOpensItsPublishersPage() {
-        assertEquals("https://www.aljazeera360.com/interstitial/1051253",
-            PublisherLinks.episodeOnAj360(YouTubeVideo.parse("https://m.youtube.com/watch?v=MKdlLz15cJ4&si=not-shared")))
-        assertNull(PublisherLinks.episodeOnAj360(YouTubeVideo.fromId("AbCdEfG_123")))
-        assertNull(PublisherLinks.episodeOnAj360(null))
     }
 }

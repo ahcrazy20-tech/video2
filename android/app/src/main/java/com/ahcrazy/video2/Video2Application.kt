@@ -21,7 +21,9 @@ class Video2Application : Application() {
                 externalResolver.resolve(ResolverType.INVIDIOUS, endpoint, video, height, title, null, includeSeparateTracks = true)
             },
             check = { candidate, height -> downloads.probe(candidate.media, candidate.auth, height, automatic = true) },
-            cooldowns = downloadCooldowns)
+            cooldowns = downloadCooldowns, resolvePeerTube = externalResolver::peerTube,
+            checkExact = { candidate, variant -> downloads.probe(candidate.media, candidate.auth, variant.height,
+                automatic = true, exactVariant = variant) })
     }
     lateinit var settings: AppSettings
     lateinit var library: LibraryStore

@@ -18,7 +18,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -29,7 +28,7 @@ import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.model.DownloadJob
 import com.ahcrazy.video2.core.model.DownloadState
 import com.ahcrazy.video2.core.util.L10n
-import com.ahcrazy.video2.data.PublisherLinks
+import com.ahcrazy.video2.data.PeerTubeDownloads
 import com.ahcrazy.video2.data.ResolverType
 import com.ahcrazy.video2.ui.components.GlassCard
 import com.ahcrazy.video2.ui.components.cooldownSeconds
@@ -81,11 +80,10 @@ private fun JobRow(job: DownloadJob, ar: Boolean, cooldown: DownloadCooldown?, o
                    onOpenSource: (() -> Unit)?, onOpenLibrary: () -> Unit) {
     val resolver = ResolverType.forMedia(job.media)
     val video = YouTubeVideo.fromMedia(job.media)
-    val publisher = PublisherLinks.episodeOnAj360(video)
-    val handler = LocalUriHandler.current
     val seconds = cooldownSeconds(cooldown?.untilMs)
-    val freshSource = video != null && job.httpStatus !in setOf(401, 429) &&
-        (resolver != null || job.problem?.needsNewLink == true)
+    val peerTube = job.media.extractionMethod == PeerTubeDownloads.method
+    val freshSource = (video != null || peerTube) && job.httpStatus !in setOf(401, 429) &&
+        (peerTube || resolver != null || job.problem?.needsNewLink == true)
     val (icon, tint) = when (job.state) {
         DownloadState.COMPLETED -> Icons.Filled.CheckCircle to V2.Mint
         DownloadState.PAUSED -> Icons.Filled.PauseCircle to V2.Gold
@@ -101,7 +99,9 @@ private fun JobRow(job: DownloadJob, ar: Boolean, cooldown: DownloadCooldown?, o
                 Column(Modifier.weight(1f)) {
                     Text(job.media.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(stateText(job, ar), style = MaterialTheme.typography.bodySmall, color = tint)
-                    resolver?.let { Text((if (ar) "الخادم: " else "Server: ") + it.label, style = MaterialTheme.typography.bodySmall, color = V2.TextDim) }
+                    (resolver?.label ?: "PeerTube".takeIf { peerTube })?.let {
+                        Text((if (ar) "المصدر: " else "Source: ") + it, style = MaterialTheme.typography.bodySmall, color = V2.TextDim)
+                    }
                 }
                 IconButton(onClick = onRemove) { Icon(Icons.Filled.Close, if (ar) "إزالة من القائمة" else "Remove from queue", tint = V2.TextDim) }
             }
@@ -143,9 +143,6 @@ private fun JobRow(job: DownloadJob, ar: Boolean, cooldown: DownloadCooldown?, o
                         job.problem?.needsNewLink == true -> if (ar) "ارجع للمصدر وافحص البدائل" else "Return to source and check alternatives"
                         else -> if (ar) "افتح صفحة المصدر" else "Open source page"
                     })
-                }
-                if (publisher != null && job.state == DownloadState.FAILED) TextButton(onClick = { runCatching { handler.openUri(publisher) } }) {
-                    Text(if (ar) "افتح الحلقة على الجزيرة 360" else "Open on Al Jazeera 360")
                 }
                 if (job.state == DownloadState.COMPLETED) TextButton(onClick = onOpenLibrary) { Text(if (ar) "افتح المكتبة" else "Open Library") }
             }

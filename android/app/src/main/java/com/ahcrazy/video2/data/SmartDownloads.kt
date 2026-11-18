@@ -7,6 +7,7 @@ import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.resolverEndpoint
 import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.DownloadAuth
+import com.ahcrazy.video2.core.model.HlsVariant
 import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.model.MediaProblem
 import kotlinx.coroutines.sync.Mutex
@@ -36,13 +37,14 @@ internal data class SmartDownloadRequest(
     val video: YouTubeVideo?, val title: String?, val direct: List<SmartCandidate> = emptyList(),
     val excludedUrls: Set<String> = emptySet(), val replaceFailedId: String? = null,
     val skipJoinedTracks: Boolean = false,
+    val peerTube: PeerTubeVideo? = null,
 )
 
 internal enum class SmartPhase { DIRECT, LOOKUP, MEDIA }
 internal data class SmartStep(val phase: SmartPhase, val host: String? = null)
 
 internal sealed interface SmartResult {
-    data class Ready(val candidate: SmartCandidate) : SmartResult
+    data class Ready(val candidate: SmartCandidate, val qualities: List<SmartQuality> = emptyList()) : SmartResult
     data class Unavailable(
         val media: MediaProblem? = null, val resolver: ResolverProblem? = null,
         val httpStatus: Int? = null, val protected: Boolean = false,
@@ -59,6 +61,8 @@ internal class SmartDownloads(
     private val servers: List<HttpUrl> = SmartServers.endpoints,
     private val cooldowns: DownloadCooldowns = DownloadCooldowns(SmartServers::cooldownGroup),
     private val nowMs: () -> Long = System::currentTimeMillis,
+    private val resolvePeerTube: suspend (PeerTubeVideo) -> List<DetectedMedia> = { throw ResolverFailure(ResolverProblem.UNSUPPORTED) },
+    private val checkExact: suspend (SmartCandidate, HlsVariant) -> DetectedMedia = { candidate, variant -> check(candidate, variant.height) },
 ) {
     private val resolving = Mutex()
     private var lastWorking: Pair<Long, HttpUrl>? = null
@@ -70,8 +74,10 @@ internal class SmartDownloads(
         progress: (SmartStep) -> Unit = {},
         onDirectChecked: (DetectedMedia) -> Unit = {},
         onRejectedUrl: (String) -> Unit = {},
+        offerQualities: Boolean = false,
     ): SmartResult {
         if (request.direct.any { it.media.drm.isProtected }) return SmartResult.Unavailable(protected = true)
+        request.peerTube?.let { return findPeerTube(it, request.excludedUrls, maxHeight, offerQualities, progress, onRejectedUrl) }
         val seen = request.excludedUrls.toMutableSet()
         request.direct.filter { it.media.probeProblem?.needsNewLink == true }.forEach { seen += it.media.url }
         var failure = SmartResult.Unavailable()
@@ -82,8 +88,8 @@ internal class SmartDownloads(
                 .thenByDescending { it.media.extractionMethod == "webview-download" }
                 .thenBy { it.media.kind == MediaKind.HLS }
                 .thenByDescending { qualityRank(it.media, maxHeight) })
-            .distinctBy { it.media.url }.take(2).toList()
-        for (candidate in direct) {
+            .distinctBy { it.media.url }.take(16).toList()
+        for (candidate in direct.take(2)) {
             val host = httpMediaUrl(candidate.media.url)?.host
             val stage = SmartStep(SmartPhase.DIRECT, host)
             cooldowns.active(host)?.let { return limited(stage, it) }
@@ -93,7 +99,8 @@ internal class SmartDownloads(
             if (checked != null) {
                 onDirectChecked(checked)
                 if (checked.probeProblem?.needsNewLink == true) onRejectedUrl(candidate.media.url)
-                if (checked.isVerifiedVideo()) return SmartResult.Ready(candidate.copy(media = checked))
+                if (checked.isVerifiedVideo()) return ready(candidate.copy(media = checked), offerQualities,
+                    direct.filter { it.media.url !in seen })
                 if (checked.probeHttpStatus == 429 && host != null) {
                     return limited(stage, cooldowns.hold(host, checked.probeHost ?: host, null, checked.probeRetryAtMs))
                 }
@@ -116,7 +123,7 @@ internal class SmartDownloads(
                 val lookup = SmartStep(SmartPhase.LOOKUP, server.host)
                 progress(lookup)
                 val found = try {
-                    withTimeoutOrNull(12_000) { resolve(server, video, maxHeight, request.title) }
+                    withTimeoutOrNull(12_000) { resolve(server, video, if (offerQualities) 0 else maxHeight, request.title) }
                         ?: throw ResolverFailure(ResolverProblem.NETWORK)
                 } catch (e: ResolverFailure) {
                     if (e.problem == ResolverProblem.LIMIT || e.status == 429) {
@@ -131,24 +138,33 @@ internal class SmartDownloads(
                 }
                 val stage = SmartStep(SmartPhase.MEDIA, server.host)
                 progress(stage)
-                val candidates = found.filter { it.isSmartCandidate() && it.url !in seen && it.joinedTracks?.audioUrl !in seen &&
-                    (!request.skipJoinedTracks || it.joinedTracks == null) }
-                    .distinctBy { it.url }.distinctBy(::representation).sortedBy(::representation)
+                val options = found.filter { it.isSmartCandidate() && it.url !in seen && it.joinedTracks?.audioUrl !in seen &&
+                    (!request.skipJoinedTracks || it.joinedTracks == null) }.distinctBy { it.url }
+                val candidates = options.sortedWith(compareBy(::representation)
+                    .thenByDescending { qualityBand(it, maxHeight) }.thenByDescending { qualityRank(it, maxHeight) })
+                    .distinctBy(::representation)
                 externalFailure = SmartResult.Unavailable(resolver = ResolverProblem.UNAVAILABLE, step = stage)
                 val result = withTimeoutOrNull(25_000) {
                     for (media in candidates) {
                         if (!seen.add(media.url)) continue
                         val audio = media.joinedTracks?.audioUrl
                         if (audio != null && !seen.add(audio)) continue
-                        val candidate = SmartCandidate(media, DownloadAuth.external.copy(rateLimitOwner = server.host))
+                        val auth = DownloadAuth.external.copy(rateLimitOwner = server.host)
+                        val candidate = SmartCandidate(media, auth)
                         val verified = check(candidate, height)
-                        if (verified.isVerifiedVideo()) return@withTimeoutOrNull SmartResult.Ready(candidate.copy(media = verified))
+                        if (verified.isVerifiedVideo()) {
+                            val others = if (offerQualities) options.filter { it.url !in seen }.map { SmartCandidate(it, auth) } else emptyList()
+                            return@withTimeoutOrNull ready(candidate.copy(media = verified), offerQualities, others)
+                        }
                         if (verified.probeHttpStatus == 429) {
                             val pause = cooldowns.hold(SmartServers.owner, verified.probeHost ?: server.host, null, verified.probeRetryAtMs)
                             blockedStep = pause to stage
                             return@withTimeoutOrNull limited(stage, pause)
                         }
-                        if (verified.probeProblem?.needsNewLink == true) onRejectedUrl(media.url)
+                        if (verified.probeProblem?.needsNewLink == true) {
+                            onRejectedUrl(media.url)
+                            audio?.let(onRejectedUrl)
+                        }
                         externalFailure = verified.unavailable(stage)
                         if (verified.drm.isProtected || verified.probeProblem == MediaProblem.SIGN_IN) return@withTimeoutOrNull externalFailure
                     }
@@ -164,6 +180,62 @@ internal class SmartDownloads(
             externalFailure
         }
     }
+
+    suspend fun verify(quality: SmartQuality, progress: (SmartStep) -> Unit = {}): SmartResult {
+        val candidate = quality.candidate
+        val media = quality.media
+        val host = httpMediaUrl(media.url)?.host
+        val owner = media.resolverHost ?: candidate.auth.rateLimitOwner ?: host
+        val step = SmartStep(if (candidate.auth.externalHttpsOnly) SmartPhase.MEDIA else SmartPhase.DIRECT, host)
+        cooldowns.active(owner, host)?.let { return limited(step, it) }
+        if (quality.isChecked()) return SmartResult.Ready(candidate)
+        progress(step)
+        val checked = withTimeoutOrNull(19_000) {
+            quality.rendition?.let { checkExact(candidate, it) } ?: check(candidate, quality.height)
+        } ?: return SmartResult.Unavailable(media = MediaProblem.NETWORK, step = step)
+        if (checked.probeHttpStatus == 429 && owner != null) {
+            return limited(step, cooldowns.hold(owner, checked.probeHost ?: owner, null, checked.probeRetryAtMs))
+        }
+        if (!quality.matches(checked)) return checked.unavailable(step)
+        return SmartResult.Ready(candidate.copy(media = checked))
+    }
+
+    private suspend fun findPeerTube(video: PeerTubeVideo, excluded: Set<String>, maxHeight: Int, offerQualities: Boolean,
+                                     progress: (SmartStep) -> Unit, onRejectedUrl: (String) -> Unit): SmartResult {
+        val host = video.page.host
+        val step = SmartStep(SmartPhase.LOOKUP, host)
+        cooldowns.active(host)?.let { return limited(step, it) }
+        progress(step)
+        val files = try {
+            withTimeoutOrNull(12_000) { resolvePeerTube(video) } ?: throw ResolverFailure(ResolverProblem.NETWORK)
+        } catch (e: ResolverFailure) {
+            if (e.status == 429 || e.problem == ResolverProblem.LIMIT) {
+                return limited(step, cooldowns.hold(host, e.host ?: host, e.retryAfterMillis, e.retryAtMs))
+            }
+            return SmartResult.Unavailable(resolver = e.problem, httpStatus = e.status, step = step)
+        }
+        val available = files.filter { it.url !in excluded && it.isSmartCandidate() }
+            .sortedWith(compareByDescending<DetectedMedia> { qualityBand(it, maxHeight) }.thenByDescending { qualityRank(it, maxHeight) })
+        val auth = DownloadAuth.external.copy(rateLimitOwner = host)
+        val attempted = mutableSetOf<String>()
+        var failure = SmartResult.Unavailable(resolver = ResolverProblem.UNAVAILABLE, step = step)
+        for (media in available.take(2)) {
+            attempted += media.url
+            when (val result = verify(SmartQuality(SmartCandidate(media, auth)), progress)) {
+                is SmartResult.Ready -> return ready(result.candidate, offerQualities,
+                    available.filterNot { it.url in attempted }.map { SmartCandidate(it, auth) })
+                is SmartResult.Unavailable -> {
+                    failure = result
+                    if (failure.protected || failure.httpStatus in setOf(401, 403, 429)) break
+                    if (failure.media?.needsNewLink == true) onRejectedUrl(media.url)
+                }
+            }
+        }
+        return failure
+    }
+
+    private fun ready(candidate: SmartCandidate, offer: Boolean, others: List<SmartCandidate>) =
+        SmartResult.Ready(candidate, if (offer) smartQualities(candidate, others) else emptyList())
 
     private fun limited(step: SmartStep, pause: DownloadCooldown) = SmartResult.Unavailable(
         resolver = ResolverProblem.LIMIT.takeUnless { step.phase == SmartPhase.DIRECT },

@@ -64,17 +64,27 @@ internal class ExternalResolver(
     suspend fun resolve(type: ResolverType, server: HttpUrl, video: YouTubeVideo, maxHeight: Int, titleHint: String?, apiKey: String?,
                         includeSeparateTracks: Boolean = false): List<DetectedMedia> {
         if (resolverEndpoint(server.toString()) != server) throw ResolverFailure(ResolverProblem.NETWORK)
-        cooldowns.active(server.host)?.let { throw ResolverFailure(ResolverProblem.LIMIT, 429, host = it.host, retryAtMs = it.untilMs) }
+        return readCatalog(request(type, server, video, maxHeight, apiKey, includeSeparateTracks)) {
+            parse(type, server, video, it, titleHint, maxHeight, includeSeparateTracks)
+        }
+    }
+
+    suspend fun peerTube(video: PeerTubeVideo): List<DetectedMedia> =
+        readCatalog(Request.Builder().url(video.api).header("Accept", "application/json").build()) {
+            PeerTubeDownloads.parse(video, it)
+        }
+
+    private suspend fun readCatalog(request: Request, parse: (JSONObject) -> List<DetectedMedia>): List<DetectedMedia> {
+        val host = request.url.host
+        cooldowns.active(host)?.let { throw ResolverFailure(ResolverProblem.LIMIT, 429, host = it.host, retryAtMs = it.untilMs) }
         return try {
             withTimeoutOrNull(26_000) {
-                client.readMedia(request(type, server, video, maxHeight, apiKey, includeSeparateTracks)) { response ->
-                    parse(type, server, video, response.resolverJson(768 * 1024L), titleHint, maxHeight, includeSeparateTracks)
-                }
+                client.readMedia(request) { response -> parse(response.resolverJson(768 * 1024L)) }
             } ?: throw ResolverFailure(ResolverProblem.NETWORK)
         } catch (e: CancellationException) { throw e }
         catch (e: ResolverFailure) {
             if (e.problem != ResolverProblem.LIMIT) throw e
-            val pause = cooldowns.hold(server.host, e.host ?: server.host, e.retryAfterMillis)
+            val pause = cooldowns.hold(host, e.host ?: host, e.retryAfterMillis)
             throw ResolverFailure(e.problem, 429, e.retryAfterMillis, pause.host, pause.untilMs)
         }
         catch (_: IOException) { throw ResolverFailure(ResolverProblem.NETWORK) }
@@ -175,9 +185,7 @@ internal class ExternalResolver(
                 }
                 if (type == ResolverType.INVIDIOUS && includeSeparateTracks && duration != null &&
                     json.optString("videoId") == video.id && !json.optBoolean("liveNow") && !json.optBoolean("isUpcoming")) {
-                    val pair = pairTracks(json.optJSONArray("adaptiveFormats"), server, maxHeight)
-                    if (pair != null) {
-                        val (picture, sound) = pair
+                    for ((picture, sound) in pairTracks(json.optJSONArray("adaptiveFormats"), server, maxHeight)) {
                         val joined = JoinedTracks(sound.url, picture.bytes, sound.bytes)
                         add(picture.url, MediaKind.MP4, picture.height?.let { "${it}p" }, picture.height, size = joined.size, tracks = joined)
                     }
@@ -190,13 +198,17 @@ internal class ExternalResolver(
         return results.distinctBy { it.url }.sortedWith(compareByDescending<DetectedMedia> {
             val h = it.height ?: 0
             when { h > 0 && (maxHeight <= 0 || h <= maxHeight) -> 2; h == 0 -> 1; else -> 0 }
-        }.thenByDescending { if (maxHeight > 0 && (it.height ?: 0) > maxHeight) -(it.height ?: 0) else (it.height ?: 0) }).take(12)
+        }.thenByDescending { if (maxHeight > 0 && (it.height ?: 0) > maxHeight) -(it.height ?: 0) else (it.height ?: 0) }).let { ordered ->
+            val capped = ordered.take(12)
+            val hls = ordered.firstOrNull { it.kind == MediaKind.HLS }
+            if (hls != null && hls !in capped) capped.take(11) + hls else capped
+        }
     }
 
     private data class Track(val url: String, val bytes: Long, val height: Int?, val bitrate: Long, val audio: Boolean)
 
     /** A documented complete-file pair, not media URLs constructed from itags, ranges or streaming fragments. */
-    private fun pairTracks(data: JSONArray?, server: HttpUrl, maxHeight: Int): Pair<Track, Track>? {
+    private fun pairTracks(data: JSONArray?, server: HttpUrl, maxHeight: Int): List<Pair<Track, Track>> {
         val tracks = entries(data).mapNotNull { entry ->
             if (entry.optBoolean("drm") || entry.optBoolean("isDRM")) return@mapNotNull null
             val mime = entry.optString("type").lowercase()
@@ -210,9 +222,9 @@ internal class ExternalResolver(
                 ?.takeIf { it in 1..4320 && (maxHeight <= 0 || it <= maxHeight) } ?: return@mapNotNull null
             Track(url.toString(), size, height, entry.optLong("bitrate"), audio)
         }.distinctBy { it.url }
-        val video = tracks.filterNot { it.audio }.maxWithOrNull(compareBy<Track> { it.height }.thenBy { it.bitrate }) ?: return null
-        val audio = tracks.filter { it.audio }.maxByOrNull { it.bitrate } ?: return null
-        return video to audio
+        val audio = tracks.filter { it.audio }.maxByOrNull { it.bitrate } ?: return emptyList()
+        return tracks.filterNot { it.audio }.sortedWith(compareByDescending<Track> { it.height }.thenByDescending { it.bitrate })
+            .distinctBy { it.height }.take(8).map { it to audio }
     }
 
     // Some deployments use an absolute URL; a root-relative target belongs to this trusted instance.
