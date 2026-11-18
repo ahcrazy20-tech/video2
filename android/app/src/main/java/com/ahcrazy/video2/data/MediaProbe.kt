@@ -34,7 +34,7 @@ internal class MediaProbe(private val http: MediaHttp) {
         if (media.isFragment) return media.failed(MediaProblem.NOT_MEDIA)
         if (url.isExpiredPlayerLink()) return media.failed(MediaProblem.EXPIRED)
         return try {
-            withTimeoutOrNull(12_000) {
+            withTimeoutOrNull(if (auth.externalHttpsOnly) 18_000 else 12_000) {
                 val known = if (media.kind == MediaKind.HLS || media.kind == MediaKind.DASH) media else sniff(media, url, auth)
                 if (auth.externalHttpsOnly && !known.kind.isCompleteVideo) throw notMedia()
                 when (known.kind) {
@@ -78,15 +78,36 @@ internal class MediaProbe(private val http: MediaHttp) {
         val master = http.read(http.request(url, auth).build(), ::checkedPlaylist)
         val variants = Hls.parseMaster(master.text, master.url.toString())
             .sortedWith(compareByDescending<HlsVariant> { it.height ?: 0 }.thenByDescending { it.bandwidth })
-        val selection = selectHlsSource(master, preferredHeight = preferredHeight) { asset ->
-            http.read(http.request(asset, auth).build(), ::checkedPlaylist)
-        }
-        if (auth.externalHttpsOnly && (selection.video.resources.asSequence() + selection.audio?.resources.orEmpty().asSequence())
-                .any { externalHttpsUrl(it.url.toString()) == null }) throw notMedia()
+        val selection = selectHlsSource(master, preferredHeight = preferredHeight, validateSelection = { candidate ->
+            if (auth.externalHttpsOnly) {
+                // A resolver can return a good manifest whose actual media is still refused by a CDN.
+                checkHlsSample(candidate.video, auth)
+                candidate.audio?.let { checkHlsSample(it, auth) }
+            }
+        }) { asset -> http.read(http.request(asset, auth).build(), ::checkedPlaylist) }
         val chosen = selection.variant
-        return media.copy(kind = MediaKind.HLS, variants = variants, byteSize = null,
+        return media.copy(kind = MediaKind.HLS, variants = variants, byteSize = null, checkedVariantUrl = chosen?.url,
             durationSec = media.durationSec ?: selection.video.duration.takeIf { it > 0 },
             height = chosen?.height ?: media.height, width = chosen?.width ?: media.width)
+    }
+
+    private suspend fun checkHlsSample(plan: HlsMediaPlan, auth: DownloadAuth) {
+        if (plan.resources.any { externalHttpsUrl(it.url.toString()) == null }) throw notMedia()
+        val first = plan.resources.firstOrNull { !it.initialization && !it.key } ?: throw notMedia()
+        val request = http.request(first.url, auth)
+        first.range?.let { request.header("Range", it.header).header("Accept-Encoding", "identity") }
+        http.read(request.build()) { response ->
+            response.requireMediaSuccess()
+            val range = first.range
+            val received = ContentRange.parse(response.header("Content-Range"))
+            if (range != null && (response.code != 206 || received?.start != range.offset || received.end != range.last) ||
+                range == null && response.code != 200) throw notMedia()
+            val prefix = response.peekBody(512).bytes()
+            val type = response.header("Content-Type")?.substringBefore(';')?.trim()?.lowercase()
+            val text = prefix.toString(Charsets.UTF_8).trimStart('\uFEFF', ' ', '\t', '\r', '\n')
+            if (prefix.isEmpty() || type in setOf("text/html", "application/xhtml+xml", "application/json") ||
+                text.startsWith("<!DOCTYPE", true) || text.startsWith("<html", true) || text.startsWith('{')) throw notMedia()
+        }
     }
 
     private suspend fun checkDash(media: DetectedMedia, url: HttpUrl, auth: DownloadAuth): DetectedMedia =
@@ -98,7 +119,7 @@ internal class MediaProbe(private val http: MediaHttp) {
         }
 
     private fun DetectedMedia.failed(problem: MediaProblem, status: Int? = null) =
-        copy(probed = true, probeProblem = problem, checkedAtMs = null, probeHttpStatus = status)
+        copy(probed = true, probeProblem = problem, checkedAtMs = null, probeHttpStatus = status, checkedVariantUrl = null)
     private fun notMedia() = MediaDownloadException(MediaProblem.NOT_MEDIA.ar, MediaProblem.NOT_MEDIA)
 }
 

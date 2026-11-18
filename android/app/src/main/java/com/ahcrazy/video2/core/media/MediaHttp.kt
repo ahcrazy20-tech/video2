@@ -24,7 +24,10 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 
 /** Cookies stay in WebView storage and are looked up for the actual URL on every HTTP hop. */
-internal class MediaHttp(private val cookies: (HttpUrl) -> String? = { CookieManager.getInstance().getCookie(it.toString()) }) {
+internal class MediaHttp(
+    externalBuilder: OkHttpClient.Builder = OkHttpClient.Builder(),
+    private val cookies: (HttpUrl) -> String? = { CookieManager.getInstance().getCookie(it.toString()) }
+) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(35, TimeUnit.SECONDS)
@@ -53,7 +56,7 @@ internal class MediaHttp(private val cookies: (HttpUrl) -> String? = { CookieMan
         chain.proceed(request.build())
     }.build()
 
-    private val external = OkHttpClient.Builder().externalTransport().addInterceptor(PublicMediaReads)
+    private val external = externalBuilder.externalTransport().apply { interceptors().add(0, PublicMediaReads) }
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
         .dispatcher(Dispatcher().apply { maxRequestsPerHost = 8 }).build()
 

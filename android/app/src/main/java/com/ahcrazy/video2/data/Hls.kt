@@ -9,7 +9,8 @@ import com.ahcrazy.video2.core.model.MediaProblem
 import okhttp3.HttpUrl
 
 internal data class HlsDocument(val url: HttpUrl, val text: String)
-internal data class HlsResource(val url: HttpUrl, val name: String, val range: ByteWindow? = null, val key: Boolean = false)
+internal data class HlsResource(val url: HttpUrl, val name: String, val range: ByteWindow? = null,
+                                val key: Boolean = false, val initialization: Boolean = false)
 internal data class HlsMediaPlan(val text: String, val resources: List<HlsResource>, val duration: Double)
 internal data class HlsAudio(val attributes: Map<String, String>, val url: HttpUrl?)
 internal class ProtectedMedia(val drm: DRMKind) : java.io.IOException("بث محمي بـ DRM (${drm.titleAr}) — لن يتم التحميل.")
@@ -138,7 +139,7 @@ internal object Hls {
                     val url = a["URI"]?.let { resolve(doc.url, it) } ?: invalidResource()
                     val window = a["BYTERANGE"]?.let { byteRange(it, url, previousMap) }
                     val resource = inits.getOrPut(url to window) {
-                        HlsResource(url, "$track-init-${inits.size}.mp4", window).also { resources += it }
+                        HlsResource(url, "$track-init-${inits.size}.mp4", window, initialization = true).also { resources += it }
                     }
                     previousMap = resource
                     local += "#EXT-X-MAP:URI=\"${resource.name}\""
@@ -207,6 +208,7 @@ internal suspend fun selectHlsSource(
     master: HlsDocument,
     preferredVariantUrl: String? = null,
     preferredHeight: Int? = null,
+    validateSelection: suspend (HlsSelection) -> Unit = {},
     load: suspend (HttpUrl) -> HlsDocument
 ): HlsSelection {
     Hls.validate(master.text)
@@ -215,7 +217,7 @@ internal suspend fun selectHlsSource(
     val selected = if (preferredVariantUrl != null) variants.firstOrNull { it.url == preferredVariantUrl }
         ?: throw MediaDownloadException("الجودة المختارة مبقتش موجودة. اختارها تاني من صفحة المصدر.", MediaProblem.EXPIRED)
     else Hls.pickVariant(variants, preferredHeight)
-    if (selected == null) return HlsSelection(null, Hls.plan(master, "video"), null, null)
+    if (selected == null) return HlsSelection(null, Hls.plan(master, "video"), null, null).also { validateSelection(it) }
     val ordering = if (preferredVariantUrl != null) listOf(selected) else listOf(selected) + variants
         .filter { it.url != selected.url && (selected.height == null || (it.height ?: 0) <= selected.height) }
         .sortedWith(compareByDescending<HlsVariant> { it.height ?: 0 }.thenByDescending { it.bandwidth }).take(2)
@@ -225,7 +227,7 @@ internal suspend fun selectHlsSource(
             val video = Hls.plan(load(httpMediaUrl(variant.url)!!), "video")
             val audioTrack = Hls.selectAudio(master, variant)
             val audio = audioTrack?.url?.let { Hls.plan(load(it), "audio") }
-            return HlsSelection(variant, video, audioTrack, audio)
+            return HlsSelection(variant, video, audioTrack, audio).also { validateSelection(it) }
         } catch (e: MediaDownloadException) {
             // Permission is not guessed. Only explicitly listed alternatives are considered.
             if (preferredVariantUrl != null || e.problem !in HLS_ALTERNATIVE_PROBLEMS) throw e

@@ -133,7 +133,8 @@ data class DetectedMedia(
     val requestReferer: String? = null,
     val fromAd: Boolean = false, val probeProblem: MediaProblem? = null,
     val checkedAtMs: Long? = null, val probeHttpStatus: Int? = null,
-    val publicPageUrl: String? = null
+    val publicPageUrl: String? = null,
+    val checkedVariantUrl: String? = null
 ) {
     val id: String get() = url
     fun downloadChecked(now: Long = System.currentTimeMillis()): Boolean =

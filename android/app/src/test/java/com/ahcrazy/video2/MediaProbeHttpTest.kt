@@ -12,6 +12,10 @@ import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.model.MediaProblem
 import com.ahcrazy.video2.data.MediaProbe
 import kotlinx.coroutines.runBlocking
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -145,6 +149,33 @@ class MediaProbeHttpTest {
             assertEquals(listOf("/master", "/high?sig=test", "/low?sig=test"), List(3) { server.nextRequest().path })
             assertEquals(3, server.requestCount)
         }
+    }
+
+    @Test fun externalHlsChecksTheSegmentsNotJustTheManifestAndKeepsTheVerifiedRendition() = runBlocking<Unit> {
+        val requests = mutableListOf<String>()
+        val fixture = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val path = request.url.encodedPath
+            assertNull(request.header("Cookie"))
+            assertNull(request.header("Referer"))
+            requests += path
+            val text = when (path) {
+                "/manifest" -> "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1920x1080\nhigh\n" +
+                    "#EXT-X-STREAM-INF:BANDWIDTH=700000,RESOLUTION=640x360\nlow\n"
+                "/high", "/low" -> "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\n$path.ts\n#EXT-X-ENDLIST\n"
+                "/low.ts" -> "sample segment"
+                else -> "denied"
+            }
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).message("fixture")
+                .code(if (path == "/high.ts") 403 else 200).body(text.toResponseBody()).build()
+        }
+        val http = MediaHttp(fixture) { error("External media must not consult the browser’s cookies") }
+        val media = DetectedMedia("https://media.example.net/manifest", "sample", MediaKind.HLS, extractionMethod = "external-invidious")
+        val result = MediaProbe(http).check(media, DownloadAuth.external)
+        assertTrue(result.downloadChecked())
+        assertEquals(360, result.height)
+        assertEquals("https://media.example.net/low", result.checkedVariantUrl)
+        assertEquals(listOf("/manifest", "/high", "/high.ts", "/low", "/low.ts"), requests)
     }
 
     @Test fun onlyTransientReadsAreRetried() = runBlocking<Unit> {

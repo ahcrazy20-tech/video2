@@ -83,7 +83,8 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
             it.media.url == media.url && it.state.isBusy && !media.drm.isProtected &&
                 (it.auth?.externalHttpsOnly == true || ResolverType.forMedia(it.media) != null) == (requestAuth?.externalHttpsOnly == true)
         }?.let { return it }
-        val job = DownloadJob(media = media, auth = requestAuth, preferredMaxHeight = maxHeight, preferredVariantUrl = variantUrl).let {
+        val selection = variantUrl ?: media.checkedVariantUrl.takeIf { external && media.downloadChecked() }
+        val job = DownloadJob(media = media, auth = requestAuth, preferredMaxHeight = maxHeight, preferredVariantUrl = selection).let {
             when {
                 media.drm.isProtected -> it.copy(state = DownloadState.BLOCKED_DRM, errorMessage = ProtectedMedia(media.drm).message)
                 !media.canDownload -> it.copy(state = DownloadState.FAILED, errorMessage = media.probeProblem?.ar ?: unsupported(media).message, problem = media.probeProblem, httpStatus = media.probeHttpStatus)

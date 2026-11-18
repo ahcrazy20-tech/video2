@@ -1,3 +1,7 @@
+import org.gradle.api.tasks.testing.TestDescriptor
+import org.gradle.api.tasks.testing.TestListener
+import org.gradle.api.tasks.testing.TestResult
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -34,6 +38,18 @@ android {
         unitTests.isIncludeAndroidResources = true
         unitTests.all { test ->
             test.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+            if (System.getenv("GITHUB_ACTIONS") == "true") test.addTestListener(object : TestListener {
+                override fun beforeSuite(suite: TestDescriptor) = Unit
+                override fun beforeTest(test: TestDescriptor) = Unit
+                override fun afterSuite(suite: TestDescriptor, result: TestResult) = Unit
+                override fun afterTest(test: TestDescriptor, result: TestResult) {
+                    if (result.resultType == TestResult.ResultType.FAILURE) {
+                        val detail = "${test.className}.${test.name}: ${result.exception}".take(900)
+                            .replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                        println("::error title=Android test failure::$detail")
+                    }
+                }
+            })
         }
     }
     packaging {
