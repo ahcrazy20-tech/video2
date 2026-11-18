@@ -235,7 +235,7 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
             val result = http.read(request.build()) { response ->
                 if (response.code == 416 && from > 0) return@read null
                 response.requireMediaSuccess()
-                val range = ContentRange.parse(response.header("Content-Range"))
+                val range = if (response.code == 206) ContentRange.parse(response.header("Content-Range")) else null
                 val append = from > 0 && response.code == 206
                 // If a redirect now points at a different resource or the range is inconsistent, start over.
                 if (append && (range?.start != from || resume?.text("url") != response.request.url.toString() ||
@@ -330,7 +330,7 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
                                 response.requireMediaSuccess()
                                 val body = response.body ?: throw MediaDownloadException("أحد أجزاء البث فاضي.")
                                 val received = ContentRange.parse(response.header("Content-Range"))
-                                if (item.range != null && (response.code != 206 || received?.start != item.range.offset || received.end != item.range.last)) {
+                                if (item.range != null && (response.code != 206 || received == null || received.start != item.range.offset || received.end != item.range.last)) {
                                     throw MediaDownloadException("خادم HLS لم يُرسل نطاق البيانات المطلوب.")
                                 }
                                 if (item.range == null && response.code != 200) throw MediaDownloadException("الخادم أرسل جزء HLS غير مكتمل.")

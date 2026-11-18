@@ -182,7 +182,7 @@ internal object Hls {
     private fun resolve(base: HttpUrl, value: String) = base.resolve(value)?.let { httpMediaUrl(it.toString()) }
     private fun attrs(line: String) = attrPattern.findAll(line.substringAfter(':')).associate { it.groupValues[1] to it.groupValues[2].trim().removeSurrounding("\"") }
     private fun serialize(attrs: Map<String, String>) = attrs.entries.joinToString(",") { (k, v) ->
-        if (k in setOf("BANDWIDTH", "RESOLUTION", "TYPE", "DEFAULT", "AUTOSELECT", "FORCED", "METHOD", "IV", "KEYFORMATVERSIONS") && k != "KEYFORMATVERSIONS") "$k=$v"
+        if (k in setOf("BANDWIDTH", "RESOLUTION", "TYPE", "DEFAULT", "AUTOSELECT", "FORCED", "METHOD", "IV")) "$k=$v"
         else "$k=\"$v\""
     }
 
