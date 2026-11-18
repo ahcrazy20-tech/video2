@@ -1,5 +1,6 @@
 package com.ahcrazy.video2.ui.browser
 
+import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 
@@ -14,6 +15,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -28,23 +31,30 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDirection
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.ahcrazy.video2.app
 import com.ahcrazy.video2.core.media.httpMediaUrl
+import com.ahcrazy.video2.core.media.isYouTubePage
+import com.ahcrazy.video2.core.media.manifestKind
 import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.HlsVariant
-import com.ahcrazy.video2.core.model.MediaKind
-import com.ahcrazy.video2.core.util.L10n
-import com.ahcrazy.video2.ui.components.EmptyState
-import com.ahcrazy.video2.ui.components.GlassCard
 import com.ahcrazy.video2.ui.theme.V2
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun BrowserScreen(ar: Boolean, session: BrowserSession, openUrl: String?, onConsumeOpenUrl: () -> Unit, onPlayStream: (BrowserStream) -> Unit) {
+internal fun BrowserScreen(
+    ar: Boolean, session: BrowserSession, openUrl: String?, onConsumeOpenUrl: () -> Unit,
+    onPlayStream: (BrowserStream) -> Unit, onOpenDownloads: () -> Unit = {}
+) {
     val ctx = LocalContext.current
     val app = (ctx as android.app.Activity).app()
     val focus = LocalFocusManager.current
@@ -55,9 +65,10 @@ internal fun BrowserScreen(ar: Boolean, session: BrowserSession, openUrl: String
     val adBlock by app.settings.adBlockEnabled.collectAsState(initial = true)
     val preferredHeight by app.settings.downloadMaxHeight.collectAsState(initial = 0)
     var shown by remember(tab.id) { mutableStateOf("") }
-    var qualityFor by remember(tab.id) { mutableStateOf<String?>(null) }
-    var checkingQuality by remember(tab.id) { mutableStateOf(false) }
-    var refreshing by remember(tab.id) { mutableStateOf(false) }
+    val captureRevision = tab.captureRevision
+    val fullscreen = tab.fullscreen
+    var qualityFor by remember(tab.id, captureRevision) { mutableStateOf<String?>(null) }
+    var checkingUrls by remember(tab.id, captureRevision) { mutableStateOf(emptyList<String>()) }
     var pasteUrl by remember { mutableStateOf("") }
     var pasteTitle by remember { mutableStateOf("") }
     val extractor = remember { ctx.assets.open("extractor.js").bufferedReader().use { it.readText() } }
@@ -65,18 +76,35 @@ internal fun BrowserScreen(ar: Boolean, session: BrowserSession, openUrl: String
     val detected = tab.detected.filter { !filterAds || !it.fromAd }.sortedByDescending(::mediaScore)
 
     SideEffect { session.adBlock = adBlock }
-    BackHandler(enabled = tab.canGoBack) { tab.goBack() }
+    BackHandler(enabled = fullscreen != null || tab.canGoBack) { if (fullscreen != null) tab.exitFullscreen() else tab.goBack() }
     LaunchedEffect(openUrl) {
         if (!openUrl.isNullOrBlank()) { session.current.open(openUrl); onConsumeOpenUrl() }
     }
-    LaunchedEffect(tab.id, qualityFor) {
-        val item = tab.detected.firstOrNull { it.url == qualityFor } ?: return@LaunchedEffect
-        val page = tab.url
-        checkingQuality = true
-        try {
-            val result = if (item.variants.isEmpty() && !item.probed) app.downloads.probe(item, tab.auth(item)) else item
-            if (tab.url == page && tab.detected.any { it.url == item.url }) tab.ingest(result)
-        } finally { checkingQuality = false }
+    LaunchedEffect(tab.id, captureRevision, shown, checkingUrls) {
+        if (shown != "capture" || checkingUrls.isEmpty()) return@LaunchedEffect
+        val slots = Semaphore(3)
+        tab.detected.filter { !it.drm.isProtected && it.url in checkingUrls }.map { candidate ->
+            async {
+                slots.withPermit {
+                    val result = app.downloads.probe(candidate, tab.auth(candidate))
+                    if (tab.captureRevision == captureRevision && tab.detected.any { it.url == candidate.url }) tab.ingest(result)
+                }
+            }
+        }.awaitAll()
+        checkingUrls = emptyList()
+    }
+
+    fun verify(url: String?) {
+        if (checkingUrls.isNotEmpty()) return
+        checkingUrls = if (url != null) listOf(url) else detected.filterNot { it.drm.isProtected }
+            .sortedBy { it.probed && it.probeProblem == null }.take(6).map { it.url }
+    }
+
+    fun queued() {
+        scope.launch {
+            if (snackbars.showSnackbar(if (ar) "اتضاف لقائمة التحميلات" else "Added to Downloads",
+                actionLabel = if (ar) "التحميلات" else "Downloads", duration = SnackbarDuration.Short) == SnackbarResult.ActionPerformed) onOpenDownloads()
+        }
     }
 
     fun download(item: DetectedMedia, variant: HlsVariant? = null, auto: Boolean = false) {
@@ -86,14 +114,13 @@ internal fun BrowserScreen(ar: Boolean, session: BrowserSession, openUrl: String
         val job = app.downloads.enqueue(current, tab.auth(current), maxHeight, variant?.url)
         shown = ""
         qualityFor = null
-        if (job.state.isBusy) scope.launch {
-            snackbars.showSnackbar(if (ar) "اتضاف لقائمة التحميلات" else "Added to Downloads")
-        }
+        checkingUrls = emptyList()
+        if (job.state.isBusy) queued()
     }
 
     fun play(item: DetectedMedia) {
         val current = tab.detected.firstOrNull { it.url == item.url } ?: return
-        if (current.drm.isProtected || !current.kind.exoSupported) return
+        if (!current.canPlay) return
         shown = ""
         onPlayStream(BrowserStream(current, tab.auth(current)))
     }
@@ -108,48 +135,52 @@ internal fun BrowserScreen(ar: Boolean, session: BrowserSession, openUrl: String
 
     Box(Modifier.fillMaxSize().background(V2.Bg)) {
         Column(Modifier.fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = tab::goBack, enabled = tab.canGoBack) {
-                    Icon(Icons.Filled.ArrowBack, if (ar) "رجوع" else "Back", tint = if (tab.canGoBack) Color.White else V2.TextDim)
-                }
-                IconButton(onClick = tab::goForward, enabled = tab.canGoForward) {
-                    Icon(Icons.Filled.ArrowForward, if (ar) "للأمام" else "Forward", tint = if (tab.canGoForward) Color.White else V2.TextDim)
-                }
-                OutlinedTextField(tab.address, { tab.address = it },
-                    placeholder = { Text(if (ar) "ابحث أو اكتب رابط" else "Search or type a URL", fontSize = 12.sp) },
-                    singleLine = true, modifier = Modifier.weight(1f).testTag("browser.address"),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(onGo = { submitAddress() }),
-                    trailingIcon = {
-                        IconButton(onClick = { submitAddress() }, enabled = tab.address.isNotBlank(), modifier = Modifier.testTag("browser.go")) {
-                            Icon(Icons.Filled.Search, if (ar) "فتح الرابط أو البحث" else "Open URL or search")
+            if (fullscreen == null) Surface(color = V2.Bg) {
+                Column {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = tab::goBack, enabled = tab.canGoBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, if (ar) "رجوع" else "Back", tint = if (tab.canGoBack) Color.White else V2.TextDim)
                         }
-                    })
-                IconButton(onClick = tab::reload, enabled = tab.url.isNotBlank()) {
-                    Icon(Icons.Filled.Refresh, if (ar) "تحديث" else "Reload", tint = if (tab.url.isNotBlank()) Color.White else V2.TextDim)
-                }
-            }
-            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                BadgedBox(badge = { if (detected.isNotEmpty()) Badge(containerColor = V2.Accent) { Text("${detected.size}") } }) {
-                    IconButton(onClick = { shown = "detector"; tab.rescan() }) {
-                        Icon(Icons.Filled.VideoLibrary, if (ar) "الوسائط المكتشفة" else "Detected media", tint = V2.Gold)
+                        IconButton(onClick = tab::goForward, enabled = tab.canGoForward) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowForward, if (ar) "للأمام" else "Forward", tint = if (tab.canGoForward) Color.White else V2.TextDim)
+                        }
+                        OutlinedTextField(tab.address, { tab.address = it },
+                            placeholder = { Text(if (ar) "بحث أو رابط" else "Search or URL", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            singleLine = true, modifier = Modifier.weight(1f).testTag("browser.address"),
+                            shape = RoundedCornerShape(21.dp),
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(textDirection = TextDirection.ContentOrLtr),
+                            colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = V2.CardSoft, unfocusedContainerColor = V2.Card,
+                                unfocusedBorderColor = V2.Outline),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                            keyboardActions = KeyboardActions(onGo = { submitAddress() }),
+                            trailingIcon = {
+                                IconButton(onClick = { submitAddress() }, enabled = tab.address.isNotBlank(), modifier = Modifier.testTag("browser.go")) {
+                                    Icon(Icons.Filled.Search, if (ar) "فتح الرابط أو البحث" else "Open URL or search")
+                                }
+                            })
+                        IconButton(onClick = tab::reload, enabled = tab.url.isNotBlank()) {
+                            Icon(Icons.Filled.Refresh, if (ar) "تحديث" else "Reload", tint = if (tab.url.isNotBlank()) Color.White else V2.TextDim)
+                        }
                     }
-                }
-                IconButton(onClick = { shown = "radar"; tab.rescan() }) { Icon(Icons.Filled.Radar, if (ar) "الرادار" else "Radar", tint = V2.Mint) }
-                IconButton(onClick = { shown = "paste" }) { Icon(Icons.Filled.ContentPaste, if (ar) "تحميل رابط مباشر" else "Direct download", tint = V2.Accent) }
-                BadgedBox(badge = { Badge(containerColor = V2.CardSoft) { Text("${session.tabs.size}") } }) {
-                    IconButton(onClick = { shown = "tabs" }) { Icon(Icons.Filled.Tab, if (ar) "التبويبات" else "Tabs", tint = Color.White) }
-                }
-                IconButton(onClick = { session.add() }) { Icon(Icons.Filled.Add, if (ar) "تبويب جديد" else "New tab", tint = Color.White) }
-            }
-            if (tab.loading) LinearProgressIndicator(progress = { tab.progress }, Modifier.fillMaxWidth(), color = V2.Accent)
-            if (tab.drm.isProtected && !tab.hideDrmBanner) {
-                Row(Modifier.fillMaxWidth().background(V2.Accent.copy(alpha = 0.16f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Shield, null, tint = V2.Accent)
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (ar) "الصفحة فيها مصدر محمي بـ DRM. المصدر المحمي مش هيتحمّل." else "A protected source was detected. DRM sources cannot be downloaded.",
-                        modifier = Modifier.weight(1f), fontSize = 12.sp)
-                    TextButton(onClick = { tab.hideDrmBanner = true }) { Text(if (ar) "إخفاء" else "Hide") }
+                    Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 5.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        FilledTonalButton(onClick = { focus.clearFocus(); shown = "capture"; tab.rescan() },
+                            modifier = Modifier.weight(1f).testTag("browser.capture"), contentPadding = PaddingValues(horizontal = 12.dp),
+                            colors = ButtonDefaults.filledTonalButtonColors(containerColor = V2.Mint.copy(alpha = .14f), contentColor = V2.Mint)) {
+                            Icon(Icons.Filled.Radar, null, Modifier.size(19.dp)); Spacer(Modifier.width(6.dp))
+                            Text(if (ar) "الالتقاط" else "Capture", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (detected.isNotEmpty()) {
+                                Spacer(Modifier.width(6.dp))
+                                Badge(containerColor = V2.Mint, contentColor = V2.Bg) { Text("${detected.size}") }
+                            }
+                        }
+                        IconButton(onClick = { shown = "paste" }) { Icon(Icons.Filled.ContentPaste, if (ar) "تحميل رابط مباشر" else "Direct download", tint = V2.Sky) }
+                        BadgedBox(badge = { if (session.tabs.size > 1) Badge(containerColor = V2.CardSoft) { Text("${session.tabs.size}") } }) {
+                            IconButton(onClick = { shown = "tabs" }) { Icon(Icons.Filled.Tab, if (ar) "التبويبات" else "Tabs") }
+                        }
+                        IconButton(onClick = { session.add() }) { Icon(Icons.Filled.Add, if (ar) "تبويب جديد" else "New tab") }
+                    }
+                    if (tab.loading) LinearProgressIndicator(progress = { tab.progress.coerceIn(0f, 1f) }, Modifier.fillMaxWidth(), color = V2.Mint)
+                    else HorizontalDivider(color = V2.Outline)
                 }
             }
             Box(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
@@ -167,68 +198,47 @@ internal fun BrowserScreen(ar: Boolean, session: BrowserSession, openUrl: String
                         )
                     }
                     tab.failure?.let { BrowserFailure(ar, it, onRetry = tab::reload, onHome = tab::goHome) }
+                    if (fullscreen != null) {
+                        key(fullscreen.view) {
+                            AndroidView(
+                                factory = { c -> FrameLayout(c).apply { setBackgroundColor(android.graphics.Color.BLACK) } },
+                                modifier = Modifier.fillMaxSize(), onReset = null,
+                                onRelease = { it.removeAllViews() },
+                                update = { box ->
+                                    val custom = fullscreen.view
+                                    if (custom.parent !== box) {
+                                        (custom.parent as? ViewGroup)?.removeView(custom)
+                                        box.addView(custom, FrameLayout.LayoutParams(-1, -1))
+                                    }
+                                }
+                            )
+                        }
+                        Row(Modifier.align(Alignment.TopEnd).padding(8.dp).clip(RoundedCornerShape(16.dp))
+                            .background(Color.Black.copy(alpha = .70f))) {
+                            IconButton(onClick = { shown = "capture"; tab.rescan() }) { Icon(Icons.Filled.Radar, if (ar) "الالتقاط" else "Capture", tint = V2.Mint) }
+                            IconButton(onClick = tab::exitFullscreen) { Icon(Icons.Filled.FullscreenExit, if (ar) "خروج من ملء العرض" else "Exit full screen", tint = Color.White) }
+                        }
+                    }
                 }
             }
         }
         SnackbarHost(snackbars, Modifier.align(Alignment.BottomCenter))
     }
 
-    if (shown == "detector" || shown == "radar") {
-        val radar = shown == "radar"
-        ModalBottomSheet(onDismissRequest = { shown = ""; qualityFor = null }) {
-            Column(Modifier.fillMaxHeight(0.92f).padding(horizontal = 18.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val heading = if (radar) (if (ar) "الرادار الذكي" else "Smart Media Radar")
-                        else (if (ar) "الوسائط المكتشفة" else "Detected media")
-                    Text(heading, fontWeight = FontWeight.Bold, fontSize = 17.sp, modifier = Modifier.weight(1f))
-                    TextButton(enabled = !refreshing, onClick = {
-                        tab.rescan()
-                        if (radar) scope.launch {
-                            val page = tab.url
-                            refreshing = true
-                            try {
-                                for (item in detected.filterNot { it.drm.isProtected || it.probed }.take(8)) {
-                                    val result = app.downloads.probe(item, tab.auth(item))
-                                    if (tab.url != page) break
-                                    if (tab.detected.any { it.url == item.url }) tab.ingest(result)
-                                }
-                            } finally { refreshing = false }
-                        }
-                    }) { Text(if (ar) "فحص" else "Scan") }
-                    TextButton(onClick = { shown = "" }) { Text(if (ar) "إغلاق" else "Close") }
-                }
-                if (refreshing) LinearProgressIndicator(Modifier.fillMaxWidth())
-                if (detected.isEmpty()) EmptyState(if (radar) Icons.Filled.Radar else Icons.Filled.VideoLibrary,
-                    if (ar) "لسه مفيش وسائط" else "No media yet",
-                    if (ar) "شغّل الفيديو جوه الصفحة وبعدها افتح قائمة الالتقاط. بعض المشغّلات ما بتكشفش الرابط قبل التشغيل." else "Play the video on the page first. Some players only expose the stream after playback starts.")
-                LazyColumn {
-                    val groups = if (radar) detected.groupBy { httpMediaUrl(it.url)?.host.orEmpty() } else mapOf("" to detected)
-                    groups.forEach { (host, items) ->
-                        if (host.isNotEmpty()) item { Text("$host · ${items.size}", fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.padding(vertical = 6.dp)) }
-                        items(items, key = { it.id }) { m ->
-                            MediaCard(m, ar, onPlay = { play(m) }, onDownload = { download(m) }, onQuality = { qualityFor = m.url })
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    val quality = tab.detected.firstOrNull { it.url == qualityFor }
-    if (quality != null) {
-        AlertDialog(onDismissRequest = { qualityFor = null }, title = { Text(if (ar) "جودات البث المتاحة" else "Available stream qualities") }, text = {
-            if (checkingQuality) LinearProgressIndicator(Modifier.fillMaxWidth())
-            else if (quality.drm.isProtected) Text(if (ar) "البث محمي بـ DRM." else "This stream is DRM-protected.")
-            else LazyColumn(Modifier.heightIn(max = 300.dp)) {
-                item { TextButton(onClick = { download(quality, auto = true) }) { Text(if (ar) "تلقائي (أعلى جودة)" else "Auto (highest)") } }
-                if (quality.variants.isEmpty()) item {
-                    Text(if (ar) "مفيش جودات منفصلة ظهرت في قائمة البث." else "No separate renditions found in this playlist.", color = V2.TextDim)
-                }
-                items(quality.variants, key = { it.id }) { variant ->
-                    TextButton(onClick = { download(quality, variant) }) { Text(variant.qualityLabel) }
-                }
-            }
-        }, confirmButton = { TextButton(onClick = { qualityFor = null }) { Text(if (ar) "إغلاق" else "Close") } })
+    if (shown == "capture") {
+        val quality = detected.firstOrNull { it.url == qualityFor }
+        CaptureSheet(ar, tab.url, detected, captureMessage(ar, tab.url, tab.playbackHint, tab.drm.isProtected, tab.detected.size - detected.size),
+            checkingUrls.isNotEmpty(), quality, preferredHeight,
+            onClose = { shown = ""; qualityFor = null; checkingUrls = emptyList() },
+            onScan = tab::rescan, onVerify = ::verify, onPlay = ::play, onDownload = ::download,
+            onQuality = {
+                qualityFor = it?.url
+                if (it != null && (!it.probed || it.probeProblem != null)) verify(it.url)
+            },
+            onYoutubeHelp = {
+                shown = ""; checkingUrls = emptyList()
+                session.add(); session.current.open("https://support.google.com/youtube/answer/56100")
+            })
     }
 
     if (shown == "tabs") {
@@ -257,19 +267,29 @@ internal fun BrowserScreen(ar: Boolean, session: BrowserSession, openUrl: String
         AlertDialog(onDismissRequest = { shown = "" }, title = { Text(if (ar) "تحميل من رابط مباشر" else "Download from a direct link") },
             text = {
                 Column {
-                    OutlinedTextField(pasteUrl, { pasteUrl = it }, label = { Text("HTTP / HTTPS") }, singleLine = true)
+                    OutlinedTextField(pasteUrl, { pasteUrl = it }, label = { Text("HTTP / HTTPS") }, singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(textDirection = TextDirection.Ltr))
                     OutlinedTextField(pasteTitle, { pasteTitle = it }, label = { Text(if (ar) "العنوان (اختياري)" else "Title (optional)") }, singleLine = true)
-                    Text(if (ar) "الصق رابط ملف فيديو أو بث HLS، مش عنوان صفحة المشاهدة." else "Paste a media file or HLS URL, not the watch page.", fontSize = 12.sp, color = V2.TextDim)
+                    Text(if (ar) "الصق رابط ملف فيديو أو بث HLS، مش عنوان صفحة المشاهدة." else "Paste a media file or HLS URL, not the watch page.", color = V2.TextDim)
                 }
             },
             confirmButton = { TextButton(enabled = target != null, onClick = {
                 if (target != null) {
                     val captured = tab.detected.firstOrNull { it.url == target.toString() }
-                    if (captured?.drm?.isProtected == true) app.downloads.enqueue(captured, tab.auth(captured))
-                    else app.downloads.enqueueManual(target.toString(), pasteTitle, tab.url.ifBlank { null }, tab.auth(captured), preferredHeight.takeIf { it > 0 })
-                    pasteUrl = ""; pasteTitle = ""; shown = ""
+                    val page = target.isYouTubePage() && target.manifestKind() == null && captured == null
+                    if (page) {
+                        shown = ""
+                        tab.open(target.toString())
+                    } else {
+                        val maxHeight = preferredHeight.takeIf { it > 0 }
+                        val job = if (captured != null) app.downloads.enqueue(captured.copy(title = pasteTitle.ifBlank { captured.title }), tab.auth(captured), maxHeight)
+                            else app.downloads.enqueueManual(target.toString(), pasteTitle, tab.url.ifBlank { null }, tab.auth(), maxHeight)
+                        pasteUrl = ""; pasteTitle = ""; shown = ""
+                        if (job.state.isBusy) queued() else onOpenDownloads()
+                    }
                 }
-            }) { Text(if (ar) "تحميل" else "Download") } },
+            }) { Text(if (target?.isYouTubePage() == true && target.manifestKind() == null && detected.none { it.url == target.toString() })
+                (if (ar) "افتح صفحة المشاهدة" else "Open watch page") else (if (ar) "تحميل" else "Download")) } },
             dismissButton = { TextButton(onClick = { shown = "" }) { Text(if (ar) "إلغاء" else "Cancel") } })
     }
 }
@@ -277,11 +297,13 @@ internal fun BrowserScreen(ar: Boolean, session: BrowserSession, openUrl: String
 @Composable
 private fun BrowserStart(ar: Boolean, onSearch: () -> Unit, onDirect: () -> Unit) {
     BrowserPanel(Modifier.testTag("browser.start")) {
-        Icon(Icons.Filled.Explore, null, Modifier.size(46.dp), tint = V2.Mint)
-        Text(if (ar) "متصفح فيديو ٢" else "Video2 Browser", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Text(if (ar) "اكتب رابط أو كلمة للبحث في الشريط فوق. شغّل الفيديو على الصفحة، وبعدها افتح «الوسائط المكتشفة»."
-            else "Enter a URL or search above. Play the video on the page, then open Detected media.",
-            color = V2.TextDim, textAlign = TextAlign.Center, fontSize = 13.sp)
+        Surface(shape = RoundedCornerShape(25.dp), color = V2.CardSoft) {
+            Icon(Icons.Filled.Explore, null, Modifier.padding(18.dp).size(42.dp), tint = V2.Mint)
+        }
+        Text(if (ar) "متصفح فيديو ٢" else "Video2 Browser", style = MaterialTheme.typography.headlineMedium)
+        Text(if (ar) "افتح صفحة وشغّل الفيديو، وبعدها اضغط «الالتقاط» عشان تشوف المصادر المتاحة."
+            else "Open a page and play the video, then tap Capture to see available sources.",
+            color = V2.TextDim, textAlign = TextAlign.Center)
         Button(onClick = onSearch) { Text(if (ar) "افتح Google" else "Open Google") }
         TextButton(onClick = onDirect, modifier = Modifier.testTag("browser.start.direct")) {
             Text(if (ar) "عندي رابط تحميل مباشر" else "I have a direct download URL")
@@ -318,39 +340,8 @@ private fun BrowserPanel(modifier: Modifier, content: @Composable ColumnScope.()
     }
 }
 
-@Composable
-internal fun MediaCard(m: DetectedMedia, ar: Boolean, onPlay: () -> Unit, onDownload: () -> Unit, onQuality: () -> Unit) {
-    GlassCard(Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
-        Column {
-            Text(m.title.ifBlank { httpMediaUrl(m.url)?.host.orEmpty() }, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
-            Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Chip(if (ar) m.kind.titleAr else m.kind.titleEn, V2.Gold)
-                (m.qualityLabel ?: m.height?.let { "${it}p" })?.let { Chip(it, V2.Mint) }
-                if (m.durationSec != null) Chip(m.durationText, V2.TextDim)
-                if (m.byteSize != null) Chip(L10n.fmtBytes(m.byteSize), V2.TextDim)
-                if (m.drm.isProtected) Chip("DRM", V2.Accent)
-            }
-            Text("${httpMediaUrl(m.url)?.host.orEmpty()} · ${m.extractionMethod}", fontSize = 11.sp, color = V2.TextDim,
-                maxLines = 1, modifier = Modifier.padding(top = 6.dp))
-            Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Button(onClick = onPlay, enabled = m.kind.exoSupported && !m.drm.isProtected, contentPadding = PaddingValues(horizontal = 10.dp)) {
-                    Icon(Icons.Filled.PlayArrow, null, Modifier.size(16.dp)); Text(if (ar) "تشغيل" else "Play", fontSize = 12.sp)
-                }
-                Button(onClick = onDownload, enabled = m.canDownload, contentPadding = PaddingValues(horizontal = 10.dp)) {
-                    Icon(Icons.Filled.Download, null, Modifier.size(16.dp)); Text(if (ar) "تحميل" else "Download", fontSize = 12.sp)
-                }
-                if (m.kind == MediaKind.HLS) TextButton(onClick = onQuality, enabled = m.canDownload, contentPadding = PaddingValues(horizontal = 8.dp)) {
-                    Text(if (ar) "الجودة" else "Quality", fontSize = 12.sp)
-                }
-            }
-            if (m.drm.isProtected) Text(if (ar) "محمي بـ DRM — التشغيل في صفحة الموقع لو متاح." else "DRM protected; use the original page for playback.", fontSize = 11.sp, color = V2.Accent)
-            else if (m.kind == MediaKind.DASH) Text(if (ar) "DASH للتشغيل فقط" else "DASH is playback-only", fontSize = 11.sp, color = V2.TextDim)
-        }
-    }
-}
-
 @Composable fun Chip(text: String, color: Color) {
-    Box(Modifier.clip(RoundedCornerShape(50)).background(color.copy(alpha = 0.15f)).padding(horizontal = 7.dp, vertical = 3.dp)) {
-        Text(text, fontSize = 10.sp, color = color, fontWeight = FontWeight.Bold)
+    Surface(shape = RoundedCornerShape(50), color = color.copy(alpha = 0.15f), contentColor = color) {
+        Text(text, Modifier.padding(horizontal = 7.dp, vertical = 3.dp), style = MaterialTheme.typography.labelMedium)
     }
 }

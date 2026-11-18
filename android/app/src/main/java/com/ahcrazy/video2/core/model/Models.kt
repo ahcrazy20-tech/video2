@@ -3,6 +3,7 @@ package com.ahcrazy.video2.core.model
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.isMediaFragment
 import com.ahcrazy.video2.core.media.origin
+import com.ahcrazy.video2.core.media.manifestKind
 import java.util.UUID
 
 /** Faithful Android port of iOS Models.swift (MediaKind / DRMKind / media / jobs). */
@@ -25,9 +26,10 @@ enum class MediaKind(val ext: String, val titleAr: String, val titleEn: String) 
             val path = (parsed?.encodedPath ?: url.substringBefore('?').substringBefore('#')).lowercase()
             val type = (mime?.takeIf { it.isNotBlank() } ?: parsed?.queryParameter("mime"))
                 .orEmpty().substringBefore(';').trim().lowercase()
+            val manifest = parsed?.manifestKind()
             return when {
-                type.contains("mpegurl") -> HLS
-                type == "application/dash+xml" -> DASH
+                type.contains("mpegurl") || manifest == HLS -> HLS
+                type == "application/dash+xml" || manifest == DASH -> DASH
                 path.endsWith(".m3u8") -> HLS
                 path.endsWith(".mpd") -> DASH
                 path.endsWith(".webm") || type.endsWith("/webm") -> WEBM
@@ -92,6 +94,19 @@ data class DownloadAuth(
     }
 }
 
+enum class MediaProblem(val ar: String, val en: String, val needsNewLink: Boolean = false) {
+    ACCESS("المصدر رفض الوصول. شغّل الفيديو أو سجّل الدخول في الصفحة والتقط رابط جديد.",
+        "The source refused access. Play or sign in on the page, then capture a fresh link.", true),
+    EXPIRED("الرابط انتهى أو الملف اتشال. افتح صفحة المصدر والتقط رابط جديد.",
+        "The link expired or the file is gone. Reopen the source page for a fresh link.", true),
+    NOT_MEDIA("ده رابط صفحة أو جزء بث، مش ملف وسائط كامل.", "This is a page or a stream fragment, not a complete media source.", true),
+    TEMPORARY("المصدر مش متاح مؤقتًا. حاول تاني بعد شوية.", "The source is temporarily unavailable. Try again shortly."),
+    NETWORK("الاتصال بالمصدر ما اكتملش. اتأكد من الإنترنت وحاول تاني.", "Couldn't connect to the source. Check your connection and try again."),
+    BAD_RESPONSE("الخادم رجّع بيانات ناقصة أو صيغة غير مدعومة.", "The server returned incomplete or unsupported data.");
+
+    fun text(arabic: Boolean) = if (arabic) ar else en
+}
+
 data class DetectedMedia(
     val url: String, val title: String, val kind: MediaKind, val mime: String? = null,
     val qualityLabel: String? = null, val drm: DRMKind = DRMKind.NONE, val pageUrl: String? = null,
@@ -99,10 +114,11 @@ data class DetectedMedia(
     val width: Int? = null, val height: Int? = null, val probed: Boolean = false,
     val variants: List<HlsVariant> = emptyList(),
     val requestReferer: String? = null, val requestOrigin: String? = null,
-    val fromAd: Boolean = false
+    val fromAd: Boolean = false, val probeProblem: MediaProblem? = null
 ) {
     val id: String get() = url
-    val canDownload: Boolean get() = !drm.isProtected && !isFragment && kind != MediaKind.DASH && httpMediaUrl(url) != null
+    val canPlay: Boolean get() = kind.exoSupported && !drm.isProtected && !isFragment && probeProblem?.needsNewLink != true
+    val canDownload: Boolean get() = probeProblem?.needsNewLink != true && !drm.isProtected && !isFragment && kind != MediaKind.DASH && httpMediaUrl(url) != null
     val isFragment: Boolean get() = kind.isLikelyFragment || httpMediaUrl(url)?.isMediaFragment() == true
     val durationText: String
         get() {
@@ -145,5 +161,7 @@ data class DownloadJob(
     val bytesWritten: Long = 0L, val errorMessage: String? = null,
     val createdAt: Long = System.currentTimeMillis(), val destPath: String? = null,
     val preferredMaxHeight: Int? = null, val auth: DownloadAuth? = null,
-    val preferredVariantUrl: String? = null
-)
+    val preferredVariantUrl: String? = null, val problem: MediaProblem? = null
+) {
+    val canRetry: Boolean get() = media.canDownload && problem?.needsNewLink != true && state in setOf(DownloadState.PAUSED, DownloadState.FAILED)
+}

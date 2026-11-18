@@ -84,7 +84,7 @@ internal object Hls {
         val group = variant.audioGroup ?: return null
         val track = lines(doc.text).filter { it.startsWith("#EXT-X-MEDIA:") }.map(::attrs)
             .filter { it["TYPE"] == "AUDIO" && it["GROUP-ID"] == group }.sortedByDescending { it["DEFAULT"] == "YES" }
-            .firstOrNull() ?: return null
+            .firstOrNull() ?: throw MediaDownloadException("قائمة HLS بتشير لمسار صوت مش موجود.")
         val url = track["URI"]?.let { resolve(doc.url, it) ?: invalidResource() }
         return HlsAudio(track, url)
     }

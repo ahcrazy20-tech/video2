@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -39,6 +40,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ahcrazy.video2.core.util.L10n
@@ -59,6 +62,7 @@ internal fun AppTabs(
     lang: String,
     savedState: SaveableStateHolder,
     onSelect: (AppTab) -> Unit,
+    immersive: Boolean = false,
     content: @Composable (AppTab) -> Unit
 ) {
     Column(Modifier.fillMaxSize()
@@ -69,22 +73,23 @@ internal fun AppTabs(
         Box(Modifier.weight(1f).fillMaxWidth()) {
             savedState.SaveableStateProvider(selected.name) { content(selected) }
         }
-        Column(Modifier.fillMaxWidth().background(V2.Card)
+        if (immersive) Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)))
+        else Column(Modifier.fillMaxWidth().background(V2.Card)
             .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))) {
-            Row(Modifier.fillMaxWidth().height(62.dp).selectableGroup().padding(horizontal = 2.dp, vertical = 4.dp)) {
+            Row(Modifier.fillMaxWidth().height(64.dp).selectableGroup().padding(horizontal = 2.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 AppTab.entries.forEach { tab ->
                     val active = tab == selected
-                    val tint = if (active) V2.Accent else V2.TextDim
+                    val tint = if (active) V2.Mint else V2.TextDim
                     Column(
-                        Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(10.dp))
-                            .testTag(tab.label).selectable(selected = active, role = Role.Tab, onClick = { onSelect(tab) }),
+                        Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(12.dp))
+                            .background(if (active) V2.Mint.copy(alpha = .12f) else V2.Card).testTag(tab.label).selectable(selected = active, role = Role.Tab, onClick = { onSelect(tab) }),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
                         Icon(tab.icon, contentDescription = null, tint = tint, modifier = Modifier.size(21.dp))
-                        Text(L10n.t(lang, tab.label), fontSize = 9.sp, fontWeight = FontWeight.SemiBold, color = tint, maxLines = 1)
-                        Box(Modifier.padding(top = 2.dp).size(5.dp).clip(RoundedCornerShape(50))
-                            .then(if (active) Modifier.background(V2.Accent) else Modifier))
+                        Text(L10n.t(lang, tab.label), fontSize = 10.sp, lineHeight = 12.sp, fontWeight = FontWeight.SemiBold,
+                            color = tint, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
                     }
                 }
             }

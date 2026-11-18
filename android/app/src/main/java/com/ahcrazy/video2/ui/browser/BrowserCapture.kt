@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
@@ -24,6 +25,7 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.isMediaFragment
+import com.ahcrazy.video2.core.media.isPlayerTrackDelivery
 import com.ahcrazy.video2.core.media.isVideoAd
 import com.ahcrazy.video2.core.media.origin
 import com.ahcrazy.video2.core.model.DRMKind
@@ -53,6 +55,8 @@ internal class BrowserSession {
 }
 
 internal enum class BrowserPageError { LOAD_FAILED, WEBVIEW_UNAVAILABLE, RENDERER_STOPPED }
+internal enum class PlaybackHint { PLAYER, IN_PAGE, SEGMENTED }
+internal data class WebFullscreen(val view: View, val callback: WebChromeClient.CustomViewCallback)
 
 /** The WebView and all callbacks belong to this tab, independent of Compose selecting another tab. */
 internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
@@ -65,7 +69,12 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
     val detected = mutableStateListOf<DetectedMedia>()
     var drm by mutableStateOf(DRMKind.NONE)
         private set
-    var hideDrmBanner by mutableStateOf(false)
+    var playbackHint by mutableStateOf<PlaybackHint?>(null)
+        private set
+    var captureRevision by mutableStateOf(0)
+        private set
+    var fullscreen by mutableStateOf<WebFullscreen?>(null)
+        private set
     var failure by mutableStateOf<BrowserPageError?>(null)
         private set
     var canGoBack by mutableStateOf(false)
@@ -112,6 +121,17 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
 
     fun rescan() { webView?.evaluateJavascript("window.__v2Scan && window.__v2Scan()", null) }
 
+    fun exitFullscreen() {
+        val active = fullscreen ?: return
+        fullscreen = null
+        (active.view.parent as? ViewGroup)?.removeView(active.view)
+        active.callback.onCustomViewHidden()
+    }
+
+    private fun notePlayback(hint: PlaybackHint) {
+        if (hint.ordinal > (playbackHint?.ordinal ?: -1)) playbackHint = hint
+    }
+
     fun ingest(incoming: DetectedMedia) {
         if (destroyed || incoming.isFragment) return
         val oldIndex = detected.indexOfFirst { it.url == incoming.url }
@@ -123,15 +143,18 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
             if (urlsWithDrm.size < 200) urlsWithDrm[incoming.url] = protection
         }
         val next = if (old == null) incoming.copy(drm = protection) else old.copy(
-            title = incoming.title.takeIf { incoming.extractionMethod.startsWith("html5") && !old.extractionMethod.startsWith("html5") } ?: old.title,
+            title = incoming.title.takeIf { incoming.extractionMethod.startsWith("player-") ||
+                (incoming.extractionMethod.startsWith("html5") && !old.extractionMethod.startsWith("player-") && !old.extractionMethod.startsWith("html5")) } ?: old.title,
             kind = incoming.kind.takeIf { it != MediaKind.OTHER && (incoming.mime != null || old.kind == MediaKind.OTHER || incoming.probed) } ?: old.kind,
             mime = incoming.mime ?: old.mime, drm = protection,
-            extractionMethod = incoming.extractionMethod.takeIf { it.startsWith("html5") } ?: old.extractionMethod,
+            extractionMethod = incoming.extractionMethod.takeIf { it.startsWith("html5") || it.startsWith("player-") } ?: old.extractionMethod,
+            qualityLabel = incoming.qualityLabel ?: old.qualityLabel,
             durationSec = incoming.durationSec ?: old.durationSec, width = incoming.width ?: old.width, height = incoming.height ?: old.height,
             byteSize = incoming.byteSize ?: old.byteSize, variants = incoming.variants.ifEmpty { old.variants }, probed = old.probed || incoming.probed,
             requestReferer = incoming.requestReferer?.takeIf { old.requestReferer == null || (incoming.extractionMethod == "webview-request") } ?: old.requestReferer,
             requestOrigin = incoming.requestOrigin ?: old.requestOrigin,
-            fromAd = old.fromAd || incoming.fromAd
+            fromAd = old.fromAd || incoming.fromAd,
+            probeProblem = if (incoming.probed) incoming.probeProblem else old.probeProblem
         )
         if (old == next) return
         if (oldIndex >= 0) detected[oldIndex] = next else {
@@ -144,19 +167,33 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
         }
     }
 
-    private fun startPage(target: String) {
+    private fun resetCapture() {
         pageEpoch++
+        captureRevision = pageEpoch
+        detected.clear()
+        drm = DRMKind.NONE
+        playbackHint = null
+        framesWithDrm.clear()
+        urlsWithDrm.clear()
+        nativeRequests.clear()
+    }
+
+    private fun startPage(target: String) {
+        exitFullscreen()
+        resetCapture()
         url = target
         address = target
         failure = null
         loading = true
         progress = 0f
-        detected.clear()
-        drm = DRMKind.NONE
-        hideDrmBanner = false
-        framesWithDrm.clear()
-        urlsWithDrm.clear()
-        nativeRequests.clear()
+    }
+
+    private fun updateRoute(target: String) {
+        if (httpMediaUrl(target) == httpMediaUrl(url)) return
+        val wasEditing = address != url
+        resetCapture()
+        url = target
+        if (!wasEditing) address = target
     }
 
     /** Attach the retained WebView inside a clipped native container for this viewport only. */
@@ -180,6 +217,7 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
 
     fun unmount(container: FrameLayout) {
         webView?.takeIf { it.parent === container }?.let { view ->
+            exitFullscreen()
             view.onPause()
             container.removeView(view)
         }
@@ -205,7 +243,7 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
                     if (view !== webView) return@addWebMessageListener
                     val origin = httpMediaUrl(sourceOrigin.toString()) ?: return@addWebMessageListener
                     if (isMainFrame && httpMediaUrl(view.url)?.origin() != origin.origin()) return@addWebMessageListener
-                    message.data?.let { ingestMessage(it, origin) }
+                    message.data?.let { ingestMessage(it, origin, if (isMainFrame) httpMediaUrl(view.url) else null) }
                 }
                 true
             }
@@ -218,6 +256,13 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
         }.getOrDefault(false)
         view.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(v: WebView?, newProgress: Int) { if (v === webView) progress = newProgress / 100f }
+            override fun onShowCustomView(custom: View, callback: CustomViewCallback) {
+                if (view !== webView || !view.isAttachedToWindow || fullscreen != null) callback.onCustomViewHidden()
+                else fullscreen = WebFullscreen(custom, callback)
+            }
+
+            override fun onHideCustomView() { if (view === webView) exitFullscreen() }
+
             override fun onReceivedTitle(v: WebView?, newTitle: String?) {
                 if (v === webView && !newTitle.isNullOrBlank()) title = newTitle
             }
@@ -245,10 +290,10 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
             override fun doUpdateVisitedHistory(view: WebView, target: String?, isReload: Boolean) {
                 if (view !== webView) return
                 updateHistory(view)
-                if (target == null || target == url || httpMediaUrl(target) == null) return
-                val wasEditing = address != url
-                url = target
-                if (!wasEditing) address = target
+                if (target != null && httpMediaUrl(target) != null && httpMediaUrl(target) != httpMediaUrl(url)) {
+                    updateRoute(target)
+                    if (!loading) main.postDelayed({ if (view === webView && url == target) rescan() }, 250)
+                }
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -273,17 +318,23 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
                 val target = httpMediaUrl(request.url.toString()) ?: return null
                 val adHost = generateSequence(target.host) { h -> h.substringAfter('.', "").ifEmpty { null } }.any { it in adHosts }
                 if (session.adBlock && adHost && !request.isForMainFrame) return WebResourceResponse("text/plain", "utf-8", byteArrayOf().inputStream())
-                if (request.method != "GET" || target.isMediaFragment()) return null
+                if (request.method != "GET") return null
+                val track = target.isPlayerTrackDelivery()
+                if (target.isMediaFragment() && !track) return null
                 val header = request.requestHeaders
                 val accept = header.header("Accept")?.substringBefore(',')?.takeIf { it.startsWith("video/") || it.startsWith("audio/") }
                 val kind = MediaKind.infer(target.toString(), accept)
-                if (kind == MediaKind.OTHER || kind == MediaKind.TS) return null
+                if (!track && (kind == MediaKind.OTHER || kind == MediaKind.TS)) return null
                 val ref = httpMediaUrl(header.header("Referer"))
                 val origin = httpMediaUrl(header.header("Origin"))
                 val epoch = pageEpoch
                 if (nativeRequests.size < 450 && nativeRequests.add("$epoch|$target|${ref.orEmptyString()}")) {
                     main.post {
-                        if (view === webView && epoch == pageEpoch) candidate(target, kind, accept, "webview-request", ref, origin, ad = adHost)
+                        if (view === webView && epoch == pageEpoch) {
+                            if (track && detected.none { it.url == target.toString() }) {
+                                if (!adHost) notePlayback(PlaybackHint.SEGMENTED)
+                            } else candidate(target, kind, accept, "webview-request", ref, origin, ad = adHost)
+                        }
                     }
                 }
                 return null // Do not proxy or execute a second request.
@@ -306,7 +357,9 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
                     view.evaluateJavascript("window.__v2Drain ? window.__v2Drain() : []") { result ->
                         if (view === webView && epoch == pageEpoch && result.length <= 600_000) runCatching {
                             val arr = JSONArray(result)
-                            for (i in 0 until minOf(80, arr.length())) ingestMessage(arr.optString(i), origin)
+                            if (origin == httpMediaUrl(url)) {
+                                for (i in 0 until minOf(80, arr.length())) ingestMessage(arr.optString(i), origin)
+                            }
                         }
                     }
                 }
@@ -316,11 +369,22 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
         return view
     }
 
-    private fun ingestMessage(payload: String, origin: HttpUrl) {
+    private fun ingestMessage(payload: String, origin: HttpUrl, livePage: HttpUrl? = null) {
         if (destroyed || payload.length !in 1..24_000) return
         val body = runCatching { JSONObject(payload) }.getOrNull() ?: return
-        val current = httpMediaUrl(url) ?: return
         val frame = httpMediaUrl(body.optString("page"))?.takeIf { it.origin() == origin.origin() } ?: return
+        val current = httpMediaUrl(url) ?: return
+        if (livePage != null && (frame != livePage || frame != current)) return
+        if (body.optString("type") == "playback") {
+            val hint = when (body.optString("mode")) {
+                "player" -> PlaybackHint.PLAYER
+                "in-page" -> PlaybackHint.IN_PAGE
+                "segmented" -> PlaybackHint.SEGMENTED
+                else -> return
+            }
+            notePlayback(hint)
+            return
+        }
         if (body.optString("type") == "drm") {
             val media = httpMediaUrl(body.optString("url"))?.toString()
             drm = DRMKind.UNKNOWN_PROTECTED
@@ -339,11 +403,14 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
         val target = httpMediaUrl(item.optString("url")) ?: return
         val type = item.optString("mime").take(150).takeIf { it.isNotBlank() }
         val method = item.optString("method", "page").takeIf { it.matches(Regex("[a-z0-9-]{1,32}")) } ?: "page"
+        if (target.isPlayerTrackDelivery() && (!item.optBoolean("completeTrack") ||
+                !(method.startsWith("player-") || method.startsWith("html5")))) return
         val kind = MediaKind.infer(target.toString(), type)
         if (kind == MediaKind.TS) return
         val protection = runCatching { DRMKind.valueOf(item.optString("drm")) }.getOrDefault(DRMKind.NONE)
         ingest(DetectedMedia(
-            url = target.toString(), title = body.optString("title").take(512).ifBlank { titleFor(target) }, kind = kind, mime = type,
+            url = target.toString(), title = item.optString("name").take(512).ifBlank { body.optString("title").take(512).ifBlank { titleFor(target) } },
+            kind = kind, mime = type, qualityLabel = item.optString("label").take(40).ifBlank { null },
             drm = protection, pageUrl = current.toString(), extractionMethod = method,
             durationSec = item.optDouble("duration").takeIf { it.isFinite() && it > 0 },
             width = item.optInt("width").takeIf { it in 1..16384 }, height = item.optInt("height").takeIf { it in 1..16384 },
@@ -369,6 +436,7 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
     private fun disposeWebView(rendererStopped: Boolean = false) {
         val view = webView
         webView = null
+        exitFullscreen()
         main.removeCallbacksAndMessages(null)
         canGoBack = false
         canGoForward = false
@@ -398,7 +466,8 @@ internal fun browserTarget(raw: String): String? {
 }
 
 internal fun mediaScore(item: DetectedMedia): Int =
-    (if (item.kind.isCompleteVideo) 50 else 0) + (if (item.kind.exoSupported) 15 else 0) +
+    (if (item.canDownload) 100 else 0) + (if (item.kind.isCompleteVideo) 50 else 0) + (if (item.canPlay) 15 else 0) +
+        (if (item.probed && item.probeProblem == null) 25 else 0) + (if (item.probeProblem != null) -100 else 0) +
         (if ((item.durationSec ?: 0.0) > 5.0) 18 else 0) + (if (item.extractionMethod.startsWith("html5")) 22 else 0) +
         minOf((item.height ?: 0) / 32, 40) + (if (item.drm.isProtected) -100 else 0) + (if (item.fromAd) -100 else 0)
 

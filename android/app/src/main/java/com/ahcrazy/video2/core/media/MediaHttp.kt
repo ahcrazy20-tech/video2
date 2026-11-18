@@ -2,10 +2,12 @@ package com.ahcrazy.video2.core.media
 
 import android.webkit.CookieManager
 import com.ahcrazy.video2.core.model.DownloadAuth
+import com.ahcrazy.video2.core.model.MediaProblem
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -15,6 +17,10 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import java.util.concurrent.TimeUnit
+import java.io.EOFException
+import java.net.SocketException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 
 /** Cookies stay in WebView storage and are looked up for the actual URL on every HTTP hop. */
 internal class MediaHttp(private val cookies: (HttpUrl) -> String? = { CookieManager.getInstance().getCookie(it.toString()) }) {
@@ -27,8 +33,11 @@ internal class MediaHttp(private val cookies: (HttpUrl) -> String? = { CookieMan
             val request = incoming.newBuilder().removeHeader("Cookie")
             val auth = incoming.tag(DownloadAuth::class.java)
             if (auth != null) {
-                val downgrade = !incoming.url.isHttps && httpMediaUrl(auth.referer)?.isHttps == true
+                val referer = httpMediaUrl(auth.referer)
+                val original = chain.call().request().url
+                val downgrade = !incoming.url.isHttps && (referer?.isHttps == true || original.isHttps)
                 if (downgrade) request.removeHeader("Referer").removeHeader("Origin")
+                else if (incoming.url.origin() != original.origin() && referer != null) request.header("Referer", referer.origin() + "/")
                 if (auth.useBrowserCookies && !downgrade) {
                     cookies(incoming.url)?.takeIf { it.isNotBlank() }?.let { request.header("Cookie", it) }
                 }
@@ -62,9 +71,30 @@ internal class MediaHttp(private val cookies: (HttpUrl) -> String? = { CookieMan
 
 internal fun Response.requireMediaSuccess() {
     if (isSuccessful) return
-    throw MediaDownloadException(when (code) {
-        401, 403 -> "المصدر رفض التحميل (HTTP $code). افتح الصفحة وسجّل الدخول أو شغّل الفيديو والتقط رابطًا جديدًا."
-        404, 410 -> "الرابط غير متاح أو انتهت صلاحيته (HTTP $code). التقط رابطًا جديدًا من الصفحة."
-        else -> "تعذّر تنزيل المصدر (HTTP $code)."
-    })
+    val problem = when (code) {
+        401, 403 -> MediaProblem.ACCESS
+        404, 410 -> MediaProblem.EXPIRED
+        408, 425, 429, 500, 502, 503, 504 -> MediaProblem.TEMPORARY
+        else -> MediaProblem.BAD_RESPONSE
+    }
+    val delay = header("Retry-After")?.trim()?.let { raw ->
+        raw.toLongOrNull()?.coerceIn(0, 4)?.times(1000) ?: Long.MAX_VALUE
+    }
+    throw MediaDownloadException("${problem.ar} (HTTP $code)", problem, code, delay)
+}
+
+/** Only retry safe reads on transient responses. Permanent access failures are never retried. */
+internal suspend fun <T> retryMediaRead(read: suspend () -> T): T {
+    repeat(2) { attempt ->
+        try { return read() } catch (e: java.io.IOException) {
+            val wait = when (e) {
+                is MediaDownloadException -> if (e.problem == MediaProblem.TEMPORARY) e.retryDelayMillis ?: (350L shl attempt) else null
+                is SocketException, is SocketTimeoutException, is EOFException, is UnknownHostException -> 350L shl attempt
+                else -> null
+            }
+            if (wait == null || wait > 3_000) throw e
+            delay(wait.coerceAtLeast(150))
+        }
+    }
+    return read()
 }

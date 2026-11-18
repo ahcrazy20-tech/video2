@@ -3,6 +3,8 @@ package com.ahcrazy.video2
 import com.ahcrazy.video2.core.media.ContentRange
 import com.ahcrazy.video2.core.media.MediaDownloadException
 import com.ahcrazy.video2.core.media.httpMediaUrl
+import com.ahcrazy.video2.core.media.isPlayerTrackDelivery
+import com.ahcrazy.video2.core.media.matchesResume
 import com.ahcrazy.video2.core.model.DRMKind
 import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.DownloadAuth
@@ -12,10 +14,32 @@ import com.ahcrazy.video2.data.HlsDocument
 import com.ahcrazy.video2.data.ProtectedMedia
 import com.ahcrazy.video2.core.media.responseMediaKind
 import com.ahcrazy.video2.ui.browser.browserTarget
+import com.ahcrazy.video2.ui.browser.captureGroups
+import com.ahcrazy.video2.ui.browser.captureMessage
+import com.ahcrazy.video2.ui.browser.PlaybackHint
 import org.junit.Assert.*
 import org.junit.Test
 
 class MediaPipelineTests {
+    @Test fun incompletePlayerTrafficIsNotTreatedAsAnAvailableSource() {
+        val page = "https://m.youtube.com/watch?v=example"
+        val message = captureMessage(true, page, PlaybackHint.SEGMENTED, protected = false)
+        assertTrue(message.youtube)
+        assertEquals("اتعرفنا على المشغّل", message.title)
+        assertNotEquals(message.title, captureMessage(true, page, PlaybackHint.SEGMENTED, protected = true).title)
+        assertTrue(httpMediaUrl("https://edge.googlevideo.com/videoplayback?mime=video%2Fmp4")!!.isPlayerTrackDelivery())
+        assertFalse(httpMediaUrl("https://googlevideo.com.example/videoplayback")!!.isPlayerTrackDelivery())
+        assertEquals(MediaKind.HLS, MediaKind.infer("https://manifest.googlevideo.com/api/manifest/hls_playlist/id/sample", null))
+    }
+
+    @Test fun radarRanksVerifiedAndDownloadableSourcesAcrossDifferentCdnHosts() {
+        val page = "https://example.net/watch?id=7"
+        val hls = DetectedMedia("https://first.example/test.m3u8", "sample", MediaKind.HLS, probed = true, pageUrl = page)
+        val dash = hls.copy(url = "https://second.example/test.mpd", kind = MediaKind.DASH)
+        val old = hls.copy(url = "https://first.example/old.m3u8", pageUrl = "https://example.net/watch?id=6")
+        assertEquals(listOf(listOf(hls, dash), listOf(old)), captureGroups(listOf(hls, dash, old)).map { it.items })
+    }
+
     @Test fun addressBarAcceptsDomainsAndSearchButRejectsNonBrowserSchemes() {
         assertEquals("https://example.net/watch?x=1", browserTarget(" example.net/watch?x=1 "))
         assertEquals("https://www.google.com/search?q=video+sample", browserTarget("video sample"))
@@ -58,6 +82,10 @@ class MediaPipelineTests {
         assertNull(ContentRange.parse("bytes 101-99/200"))
         assertNull(ContentRange.parse("bytes 101-199/199"))
         assertNull(ContentRange.parse("bytes */200"))
+        assertTrue(ContentRange(101, 150, 200).matchesResume(101, 200))
+        assertFalse(ContentRange(101, 150, 201).matchesResume(101, 200))
+        assertFalse(ContentRange(102, 150, 200).matchesResume(101, 200))
+        assertFalse(ContentRange(101, 150, null).matchesResume(101, 200))
     }
 
     @Test fun localHlsKeepsTimingEncryptionAndInitializersAndResolvesRanges() {

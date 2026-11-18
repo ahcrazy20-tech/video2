@@ -87,9 +87,10 @@ fun Video2Root() {
                     onBack = { playingVideo = null; playingStream = null })
                 reviewJob != null -> SubtitleReviewScreen(reviewJob!!, ar) { reviewJob = null }
                 showConvert -> ConversionScreen(ar) { showConvert = false }
-                else -> AppTabs(tab, lang, tabState, onSelect = { tab = it }) { active ->
+                else -> AppTabs(tab, lang, tabState, onSelect = { tab = it }, immersive = tab == AppTab.BROWSER && browser.current.fullscreen != null) { active ->
                     when (active) {
-                        AppTab.BROWSER -> BrowserScreen(ar, browser, browserUrl, { browserUrl = null }, onPlayStream = { playingStream = it })
+                        AppTab.BROWSER -> BrowserScreen(ar, browser, browserUrl, { browserUrl = null }, onPlayStream = { playingStream = it },
+                            onOpenDownloads = { tab = AppTab.DOWNLOADS })
                         AppTab.LIBRARY -> LibraryScreen(ar,
                             onPlay = { playingVideo = it },
                             onTranslate = { translatePreselect = it; tab = AppTab.TRANSLATE },
@@ -99,7 +100,8 @@ fun Video2Root() {
                             onDub = { dubTarget = it },
                             onConvert = { showConvert = true })
                         AppTab.TRANSLATE -> TranslateScreen(ar, translatePreselect, { translatePreselect = null }, onReviewJob = { reviewJob = it })
-                        AppTab.DOWNLOADS -> DownloadsScreen(ar)
+                        AppTab.DOWNLOADS -> DownloadsScreen(ar, onOpenSource = { url -> browserUrl = url; tab = AppTab.BROWSER },
+                            onOpenLibrary = { tab = AppTab.LIBRARY })
                         AppTab.SETTINGS -> SettingsScreen(ar, onLangChange = { code -> scope.launch { app.settings.setLang(code) } },
                             onLockNow = { locked = true })
                         AppTab.MAGIC -> MagicSearchScreen(ar, magicSearch, scope,
