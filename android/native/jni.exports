@@ -1,0 +1,4 @@
+{
+    global: Java_com_ahcrazy_video2_data_offline_*;
+    local: *;
+};

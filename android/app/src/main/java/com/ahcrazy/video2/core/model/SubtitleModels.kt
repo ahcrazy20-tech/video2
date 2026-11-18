@@ -92,10 +92,18 @@ object DubbingVoices {
 
 enum class TranslationPhase { QUEUED, PREPARING, EXTRACTING, TRANSCRIBING, REFINING, TRANSLATING, SAVING, DONE, PAUSED, CANCELLED, FAILED }
 
+enum class TranslationMode { CLOUD, ON_DEVICE;
+    companion object {
+        // Only old jobs without this field are implicitly cloud. Unknown new modes fail closed.
+        fun fromStored(value: String?) = if (value == null || value == CLOUD.name) CLOUD else ON_DEVICE
+    }
+}
+
 data class TranslationJob(
     val id: String, val videoId: String, val videoTitle: String,
     val sourceLang: String = "auto", val targetLang: String = "ar",
     val sttProvider: String = "auto", val refinerProvider: String = "auto", val translatorProvider: String = "auto",
     val phase: TranslationPhase = TranslationPhase.QUEUED, val progress: Double = 0.0,
-    val cueCount: Int = 0, val message: String? = null, val createdAt: Long = System.currentTimeMillis()
+    val cueCount: Int = 0, val message: String? = null, val createdAt: Long = System.currentTimeMillis(),
+    val mode: TranslationMode = TranslationMode.CLOUD, val offlineModel: String? = null, val offlineIssue: String? = null
 )

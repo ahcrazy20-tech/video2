@@ -50,22 +50,34 @@ class LibraryStore(ctx: Context) {
     }
 
     @Synchronized fun add(video: SavedVideo) { _videos.value = listOf(video) + _videos.value.filterNot { it.id == video.id }; save() }
-    fun update(video: SavedVideo) { _videos.value = _videos.value.map { if (it.id == video.id) video else it }; save() }
+    @Synchronized fun update(video: SavedVideo) { _videos.value = _videos.value.map { if (it.id == video.id) video else it }; save() }
     fun byId(id: String): SavedVideo? = _videos.value.firstOrNull { it.id == id }
 
-    fun delete(video: SavedVideo) {
+    @Synchronized fun delete(item: SavedVideo) {
+        val video = byId(item.id) ?: return
         val f = File(video.localPath)
         if (video.kind == MediaKind.HLS || f.extension == "m3u8") f.parentFile?.deleteRecursively() else f.delete()
         video.thumbnailPath?.let { File(it).delete() }
         video.subtitleFiles.values.forEach { File(it).delete() }
+        File(subtitlesDir, video.id).deleteRecursively()
         video.dubbedAudioPath?.let { File(it).delete() }
         _videos.value = _videos.value.filter { it.id != video.id }; save()
     }
 
-    fun rename(video: SavedVideo, newTitle: String) = update(video.copy(title = newTitle))
-    fun setFolder(video: SavedVideo, folderId: String?) = update(video.copy(folderId = folderId))
-    fun updatePosition(video: SavedVideo, posSec: Double, durationSec: Double?) =
-        update(video.copy(lastPositionSec = posSec, durationSec = durationSec ?: video.durationSec))
+    @Synchronized fun rename(video: SavedVideo, newTitle: String) {
+        byId(video.id)?.let { update(it.copy(title = newTitle)) }
+    }
+    @Synchronized fun setFolder(video: SavedVideo, folderId: String?) {
+        byId(video.id)?.let { update(it.copy(folderId = folderId)) }
+    }
+    @Synchronized fun updatePosition(video: SavedVideo, posSec: Double, durationSec: Double?) {
+        byId(video.id)?.let { update(it.copy(lastPositionSec = posSec, durationSec = durationSec ?: it.durationSec)) }
+    }
+    @Synchronized internal fun attachSubtitles(id: String, path: String, files: Map<String, String>, target: String): Boolean {
+        val video = byId(id)?.takeIf { it.localPath == path } ?: return false
+        update(video.copy(subtitleFiles = files, subtitleTargetLang = target))
+        return true
+    }
     fun createFolder(name: String) { _folders.value += LibraryFolder(name = name); save() }
     fun deleteFolder(folder: LibraryFolder) {
         _videos.value = _videos.value.map { if (it.folderId == folder.id) it.copy(folderId = null) else it }

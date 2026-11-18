@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.22)
+project(video2_whisper LANGUAGES C CXX)
+include(../cpu-only.cmake)
+set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+add_subdirectory("${VIDEO2_SOURCES}" vendor EXCLUDE_FROM_ALL)
+video2_jni(video2_whisper whisper)

@@ -1,3 +1,4 @@
+import java.util.zip.ZipFile
 import org.gradle.api.tasks.testing.TestDescriptor
 import org.gradle.api.tasks.testing.TestListener
 import org.gradle.api.tasks.testing.TestResult
@@ -8,16 +9,20 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val offlineLibs = layout.buildDirectory.dir("generated/offline/jniLibs")
+
 android {
+    sourceSets.getByName("main").jniLibs.srcDir(offlineLibs)
     namespace = "com.ahcrazy.video2"
     compileSdk = 34
+    ndkVersion = "27.3.13750724"
 
     defaultConfig {
         applicationId = "com.ahcrazy.video2"
         minSdk = 26
         targetSdk = 34
-        versionCode = 9
-        versionName = "1.6"
+        versionCode = 10
+        versionName = "1.7"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
     }
@@ -56,6 +61,43 @@ android {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
 }
+
+val sdkDir = androidComponents.sdkComponents.sdkDirectory
+val compileOfflineRuntimes by tasks.registering(Exec::class) {
+    val script = rootProject.file("tools/build-offline.sh")
+    inputs.file(script)
+    inputs.dir(rootProject.file("native"))
+    outputs.dir(offlineLibs)
+    doFirst {
+        commandLine("bash", script, "android", layout.buildDirectory.dir("intermediates/offline").get().asFile,
+            offlineLibs.get().asFile, sdkDir.get().asFile)
+    }
+}
+// Order packaging's jniLibs merge explicitly as well as preBuild.
+tasks.named("preBuild") { dependsOn(compileOfflineRuntimes) }
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }
+    .configureEach { dependsOn(compileOfflineRuntimes) }
+
+// The existing APK workflow verifies that the assembled debug APK really includes both engines.
+val verifyOfflineDebugApk by tasks.registering {
+    dependsOn("packageDebug")
+    doLast {
+        val apks = layout.buildDirectory.dir("outputs/apk/debug").get().asFile.listFiles()
+            .orEmpty().filter { it.extension == "apk" }
+        check(apks.isNotEmpty()) { "No debug APK was produced" }
+        for (apk in apks) ZipFile(apk).use { zip ->
+            for (engine in listOf("whisper", "hymt")) {
+                check(zip.getEntry("lib/arm64-v8a/libvideo2_$engine.so") != null) {
+                    "${apk.name} is missing the on-device $engine runtime"
+                }
+            }
+            check(zip.entries().asSequence().none { it.name.endsWith(".gguf") || it.name.endsWith("ggml-large-v3.bin") }) {
+                "Model weights must remain outside the APK"
+            }
+        }
+    }
+}
+tasks.matching { it.name == "assembleDebug" }.configureEach { dependsOn(verifyOfflineDebugApk) }
 
 dependencies {
     implementation(libs.androidx.core.ktx)

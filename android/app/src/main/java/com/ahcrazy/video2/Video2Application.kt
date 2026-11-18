@@ -11,6 +11,8 @@ import com.ahcrazy.video2.data.ResolverType
 import com.ahcrazy.video2.data.SmartDownloads
 import com.ahcrazy.video2.data.SmartServers
 import com.ahcrazy.video2.data.TranslationManager
+import com.ahcrazy.video2.data.offline.OfflineModels
+import com.ahcrazy.video2.data.offline.OfflineWork
 
 /** Manual DI container (the iOS app injects the same stores as EnvironmentObjects). */
 class Video2Application : Application() {
@@ -25,6 +27,8 @@ class Video2Application : Application() {
             checkExact = { candidate, variant -> downloads.probe(candidate.media, candidate.auth, variant.height,
                 automatic = true, exactVariant = variant) })
     }
+    internal val offlineWork by lazy { OfflineWork(this) }
+    internal val offlineModels by lazy { OfflineModels(this, offlineWork) }
     lateinit var settings: AppSettings
     lateinit var library: LibraryStore
     lateinit var downloads: DownloadManager
@@ -36,7 +40,7 @@ class Video2Application : Application() {
         settings = AppSettings(this)
         library = LibraryStore(this)
         downloads = DownloadManager(this, library, downloadCooldowns)
-        translations = TranslationManager(this, library, settings)
+        translations = TranslationManager(this, library, settings, offlineModels, offlineWork)
         magic = MagicSearchRepository()
     }
 }

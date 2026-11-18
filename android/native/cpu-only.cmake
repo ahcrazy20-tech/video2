@@ -1,0 +1,23 @@
+# Both engines bundle a different ggml ABI. Build static dependencies in separate
+# projects and expose only JNI entry points from each shared object.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
+set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
+set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+
+function(video2_jni target vendor)
+    add_library(${target} SHARED bridge.cpp)
+    target_compile_features(${target} PRIVATE cxx_std_17)
+    target_link_libraries(${target} PRIVATE ${vendor})
+    target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
+    if(NOT ANDROID)
+        target_include_directories(${target} PRIVATE "${VIDEO2_JNI_HEADERS}")
+    endif()
+    set(exports "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/jni.exports")
+    set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${exports}")
+    target_link_options(${target} PRIVATE "-Wl,--version-script=${exports}" "-Wl,-z,defs")
+endfunction()
