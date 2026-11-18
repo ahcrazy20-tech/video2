@@ -15,3 +15,6 @@ xcuserdata/
 *.keystore
 video2-offline*.tar
 video2-offline*.tar.json
+
+# Local Python tool/test caches
+__pycache__/

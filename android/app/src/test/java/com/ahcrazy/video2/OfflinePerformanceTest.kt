@@ -107,6 +107,45 @@ class OfflinePerformanceTest {
         }
     }
 
+    @Test fun featureAndHeadroomGatesAvoidVulkanAndAnUnverifiedContextIsNeverCountedAsGpu() {
+        val input = tmp.newFile().apply { writeText("video") }
+        fun run(feature: Boolean, headroom: Boolean, expected: GpuFallback) {
+            var vkOpens = 0
+            var vkClosed = false
+            val loader = object : LocalEngines {
+                override fun speechVulkan(model: File, signal: CancellationSignal): LocalSpeech {
+                    vkOpens++
+                    return object : LocalSpeech {
+                        override fun decode(pcm: ShortArray, language: String, prompt: String, fast: Boolean, progress: WhisperProgress): SpeechResult =
+                            error("do not decode unless the backend is actually Vulkan")
+                        override fun close() { vkClosed = true }
+                    }
+                }
+                override fun speech(model: File, signal: CancellationSignal): LocalSpeech = object : LocalSpeech {
+                    override fun decode(pcm: ShortArray, language: String, prompt: String, fast: Boolean, progress: WhisperProgress) =
+                        SpeechResult("en", listOf(segment(100, "First")))
+                    override fun close() {}
+                }
+                override fun translator(model: File, kind: OfflineModel, signal: CancellationSignal): LocalTranslator = error("same language")
+            }
+            val stats = OfflineStats()
+            OfflinePipeline({ input }, loader, vulkanSupported = { feature }, vulkanHeadroom = { headroom }) { _, audio, _, _ ->
+                pcm(5L, audio)
+            }.run(tmp.newFolder(), input, SubLang.EN, SubLang.EN, OfflineModel.WHISPER_MEDIUM_Q5, CancellationSignal(),
+                preset = OfflinePreset.VULKAN, stats = stats) { _, _, _, _ -> }
+            assertEquals(if (feature && headroom) 1 else 0, vkOpens)
+            assertEquals(vkOpens > 0, vkClosed)
+            with(stats.report()) {
+                assertEquals(expected, gpuFallback)
+                assertEquals(0, gpuWindows)
+                assertEquals(1, cpuWindows)
+            }
+        }
+        run(false, true, GpuFallback.UNAVAILABLE)
+        run(true, false, GpuFallback.HEADROOM)
+        run(true, true, GpuFallback.ENGINE)
+    }
+
     @Test fun interruptedGpuAttemptResumesOnCpuWithoutRepeatingSavedAudioWindows() {
         val input = tmp.newFile().apply { writeText("video") }
         val dir = tmp.newFolder()

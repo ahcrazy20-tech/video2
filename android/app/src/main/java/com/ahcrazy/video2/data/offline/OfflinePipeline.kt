@@ -221,7 +221,9 @@ internal class OfflinePipeline(
             val path = modelPath(speechModel)
             var ownedMarker = false
             fun openCpu(): LocalSpeech = stage(OfflineIssue.TRANSCRIPTION, speechModel.memoryIssue) {
-                stats.measure(OfflineStats.Stage.CPU_SPEECH) { engines.speech(path, signal) }
+                // A failed GPU attempt may have changed available memory, even after it closes.
+                val cpuPath = if (stats.gpuFallback == GpuFallback.ENGINE) modelPath(speechModel) else path
+                stats.measure(OfflineStats.Stage.CPU_SPEECH) { engines.speech(cpuPath, signal) }
             }
             fun openGpu(): LocalSpeech? {
                 if (preset == OfflinePreset.CPU) return null
