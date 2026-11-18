@@ -164,7 +164,7 @@ internal fun BrowserScreen(
         if (!current.canDownload) return
         if (!current.downloadChecked()) { verify(current.url); return }
         val maxHeight = variant?.height ?: preferredHeight.takeIf { it > 0 && !auto }
-        val job = app.downloads.enqueue(current, tab.auth(current), maxHeight, variant?.url)
+        val job = app.downloads.enqueue(current, tab.auth(current), maxHeight, variant?.url, variant?.let { it.audioGroup.orEmpty() })
         shown = ""
         qualityFor = null
         checkingUrls = emptyList()

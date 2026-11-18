@@ -100,8 +100,11 @@ internal class MediaProbe(private val http: MediaHttp) {
             }
         }) { asset -> playlists.once(asset) { http.read(http.request(asset, auth).build(), ::checkedPlaylist) } }
         val chosen = selection.variant
-        return media.copy(kind = MediaKind.HLS, variants = variants, byteSize = null, checkedVariantUrl = chosen?.url,
-            durationSec = media.durationSec ?: selection.video.duration.takeIf { it > 0 },
+        // Show video qualities once, preferring the group that actually passed verification.
+        val displayVariants = (listOfNotNull(chosen) + variants).distinctBy { it.url }
+            .sortedWith(compareByDescending<HlsVariant> { it.height ?: 0 }.thenByDescending { it.bandwidth })
+        return media.copy(kind = MediaKind.HLS, variants = displayVariants, byteSize = null, checkedVariantUrl = chosen?.url,
+            checkedAudioGroup = chosen?.audioGroup.orEmpty().takeIf { chosen != null }, durationSec = media.durationSec ?: selection.video.duration.takeIf { it > 0 },
             height = chosen?.height ?: media.height, width = chosen?.width ?: media.width)
     }
 
@@ -125,7 +128,7 @@ internal class MediaProbe(private val http: MediaHttp) {
         }
 
     private fun DetectedMedia.failed(problem: MediaProblem, status: Int? = null) =
-        copy(probed = true, probeProblem = problem, checkedAtMs = null, probeHttpStatus = status, checkedVariantUrl = null)
+        copy(probed = true, probeProblem = problem, checkedAtMs = null, probeHttpStatus = status, checkedVariantUrl = null, checkedAudioGroup = null)
     private fun notMedia() = MediaDownloadException(MediaProblem.NOT_MEDIA.ar, MediaProblem.NOT_MEDIA)
 }
 

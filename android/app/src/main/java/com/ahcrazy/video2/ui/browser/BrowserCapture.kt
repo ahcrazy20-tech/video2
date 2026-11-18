@@ -182,6 +182,8 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
             probeProblem = if (incoming.probed) incoming.probeProblem else old.probeProblem,
             checkedAtMs = if (incoming.probed) incoming.checkedAtMs else old.checkedAtMs,
             probeHttpStatus = if (incoming.probed) incoming.probeHttpStatus else old.probeHttpStatus,
+            checkedVariantUrl = if (incoming.probed) incoming.checkedVariantUrl else old.checkedVariantUrl,
+            checkedAudioGroup = if (incoming.probed) incoming.checkedAudioGroup else old.checkedAudioGroup,
             publicPageUrl = incoming.publicPageUrl ?: old.publicPageUrl
         )
         if (old == next) return

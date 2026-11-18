@@ -120,8 +120,8 @@ internal fun SmartServerDisclosure(ar: Boolean) {
     Text(if (ar) "لو مفيش مصدر مباشر صالح، التطبيق هيجرب خوادم Invidious العامة دي. أول ما يلاقي مصدر قابل للتحميل هيبدأ تلقائيًا."
         else "If no direct source works, Video2 tries these public Invidious servers and starts downloading when a source passes the media check.")
     Text(SmartServers.endpoints.joinToString("\n") { it.host }, style = MaterialTheme.typography.bodySmall.copy(textDirection = TextDirection.Ltr), color = V2.Sky)
-    Text(if (ar) "الخادم بيستقبل معرّف فيديو YouTube، مش الكوكيز ولا تسجيل الدخول ولا رابط الفيديو الموقّع. فعّلها للفيديوهات العامة المسموح لك تحفظها. التفعيل مرة واحدة وتقدر تلغيه من الإعدادات."
-        else "Only the YouTube video ID is sent, not your cookies, sign-in data, or signed media link. Use this for public videos you're allowed to save. Enable it once and turn it off in Settings anytime.", color = V2.TextDim)
+    Text(if (ar) "الخادم بيستقبل معرّف فيديو YouTube وبيشوف عنوان اتصالك، مش الكوكيز ولا تسجيل الدخول ولا رابط الوسائط الموقّع. التفعيل مرة واحدة للفيديوهات العامة المسموح لك تحفظها، وتقدر تلغيه من الإعدادات."
+        else "The server sees your IP and the YouTube video ID, not your cookies, sign-in data, or signed media link. Enable once for public videos you're allowed to save, and turn it off in Settings anytime.", color = V2.TextDim)
     TextButton(onClick = { runCatching { uriHandler.openUri(SmartServers.privacy) } }) {
         Text(if (ar) "خصوصية الخادم" else "Server privacy policy")
     }

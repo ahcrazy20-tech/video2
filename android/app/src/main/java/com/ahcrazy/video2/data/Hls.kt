@@ -42,7 +42,8 @@ internal object Hls {
                 }
             }
         }
-        return out.distinctBy { it.url }
+        // A master may list the same video playlist paired with two different audio groups.
+        return out.distinctBy { it.id }
     }
 
     fun pickVariant(variants: List<HlsVariant>, maxHeight: Int?): HlsVariant? {
@@ -210,19 +211,26 @@ internal suspend fun selectHlsSource(
     master: HlsDocument,
     preferredVariantUrl: String? = null,
     preferredHeight: Int? = null,
+    preferredAudioGroup: String? = null,
     validateSelection: suspend (HlsSelection) -> Unit = {},
     load: suspend (HttpUrl) -> HlsDocument
 ): HlsSelection {
     Hls.validate(master.text)
     val variants = Hls.parseMaster(master.text, master.url.toString())
     if (Hls.isMaster(master.text) && variants.isEmpty()) throw MediaDownloadException("مفيش جودة صالحة في قائمة HLS.")
-    val selected = if (preferredVariantUrl != null) variants.firstOrNull { it.url == preferredVariantUrl }
-        ?: throw MediaDownloadException("الجودة المختارة مبقتش موجودة. اختارها تاني من صفحة المصدر.", MediaProblem.EXPIRED)
+    val selected = if (preferredVariantUrl != null) variants.firstOrNull {
+        it.url == preferredVariantUrl && (preferredAudioGroup == null || it.audioGroup.orEmpty() == preferredAudioGroup)
+    } ?: throw MediaDownloadException("الجودة المختارة مبقتش موجودة. اختارها تاني من صفحة المصدر.", MediaProblem.EXPIRED)
     else Hls.pickVariant(variants, preferredHeight)
     if (selected == null) return HlsSelection(null, Hls.plan(master, "video"), null, null).also { validateSelection(it) }
-    val ordering = if (preferredVariantUrl != null) listOf(selected) else listOf(selected) + variants
-        .filter { it.url != selected.url && (selected.height == null || (it.height ?: 0) <= selected.height) }
-        .sortedWith(compareByDescending<HlsVariant> { it.height ?: 0 }.thenByDescending { it.bandwidth }).take(2)
+    val ordering = if (preferredVariantUrl != null) listOf(selected) else {
+        val others = variants.filter { it.id != selected.id && (selected.height == null || (it.height ?: 0) <= selected.height) }
+            .sortedWith(compareByDescending<HlsVariant> { it.height ?: 0 }.thenByDescending { it.bandwidth })
+        // Try another audio group for this picture and reserve a slot for a different video rendition.
+        val audioAlternative = others.firstOrNull { it.url == selected.url }
+        listOf(selected) + listOfNotNull(audioAlternative) + others.filter { it.url != selected.url }
+            .distinctBy { it.url }.take(if (audioAlternative == null) 2 else 1)
+    }
     var firstFailure: MediaDownloadException? = null
     for (variant in ordering) {
         try {

@@ -207,6 +207,33 @@ class MediaProbeHttpTest {
         }
     }
 
+    @Test fun audioGroupFallbackKeepsTheSameVideoAndPinsTheWorkingGroup() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            val master = "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"high\",NAME=\"Default\",URI=\"high\"\n" +
+                "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"low\",NAME=\"Default\",URI=\"low\"\n" +
+                "#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720,AUDIO=\"high\"\nvideo\n" +
+                "#EXT-X-STREAM-INF:BANDWIDTH=980000,RESOLUTION=1280x720,AUDIO=\"low\"\nvideo\n"
+            val playlist = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\n"
+            server.dispatchWith { r -> when (r.path) {
+                "/master" -> MockResponse().setBody(master)
+                "/video", "/high", "/low" -> MockResponse().setBody(playlist + "${r.path}.ts\n#EXT-X-ENDLIST\n")
+                "/video.ts", "/low.ts" -> MockResponse().setBody("media bytes")
+                else -> MockResponse().setResponseCode(403)
+            } }
+            val probe = MediaProbe(MediaHttp { null })
+            val media = DetectedMedia(server.url("/master").toString(), "sample", MediaKind.HLS)
+            val result = probe.check(media, DownloadAuth.default, automatic = true)
+            assertTrue(result.downloadChecked())
+            assertEquals("low", result.checkedAudioGroup)
+            assertEquals(1, result.variants.size)
+            assertEquals("low", result.variants.single().audioGroup)
+            assertEquals(server.url("/video").toString(), result.checkedVariantUrl)
+            assertEquals(listOf("/master", "/video", "/high", "/video.ts", "/high.ts", "/low", "/low.ts"),
+                List(7) { server.nextRequest().path })
+            assertEquals(7, server.requestCount)
+        }
+    }
+
     @Test fun onlyTransientReadsAreRetried() = runBlocking<Unit> {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setResponseCode(503))

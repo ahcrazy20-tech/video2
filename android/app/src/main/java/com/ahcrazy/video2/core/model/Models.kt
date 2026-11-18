@@ -69,7 +69,7 @@ data class HlsVariant(
     val url: String, val bandwidth: Int = 0, val width: Int? = null,
     val height: Int? = null, val codecs: String? = null, val audioGroup: String? = null
 ) {
-    val id: String get() = url
+    val id: String get() = "${url.length}:$url:${audioGroup.orEmpty()}"
     val qualityLabel: String
         get() = when {
             height != null && height > 0 -> "${height}p"
@@ -134,7 +134,7 @@ data class DetectedMedia(
     val fromAd: Boolean = false, val probeProblem: MediaProblem? = null,
     val checkedAtMs: Long? = null, val probeHttpStatus: Int? = null,
     val publicPageUrl: String? = null,
-    val checkedVariantUrl: String? = null
+    val checkedVariantUrl: String? = null, val checkedAudioGroup: String? = null
 ) {
     val id: String get() = url
     fun downloadChecked(now: Long = System.currentTimeMillis()): Boolean =
@@ -183,7 +183,8 @@ data class DownloadJob(
     val bytesWritten: Long = 0L, val errorMessage: String? = null,
     val createdAt: Long = System.currentTimeMillis(), val destPath: String? = null,
     val preferredMaxHeight: Int? = null, val auth: DownloadAuth? = null,
-    val preferredVariantUrl: String? = null, val problem: MediaProblem? = null, val httpStatus: Int? = null
+    val preferredVariantUrl: String? = null, val problem: MediaProblem? = null, val httpStatus: Int? = null,
+    val preferredAudioGroup: String? = null
 ) {
     val canRetry: Boolean get() = media.canDownload && problem?.needsNewLink != true && state in setOf(DownloadState.PAUSED, DownloadState.FAILED)
 }

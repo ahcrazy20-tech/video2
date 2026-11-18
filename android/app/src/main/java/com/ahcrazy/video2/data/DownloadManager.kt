@@ -77,7 +77,8 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
     init { loadJobs() }
 
     @Synchronized
-    fun enqueue(media: DetectedMedia, auth: DownloadAuth? = null, maxHeight: Int? = null, variantUrl: String? = null): DownloadJob {
+    fun enqueue(media: DetectedMedia, auth: DownloadAuth? = null, maxHeight: Int? = null, variantUrl: String? = null,
+                audioGroup: String? = null): DownloadJob {
         val external = ResolverType.forMedia(media) != null
         val requestAuth = if (external) DownloadAuth.external else auth
         _jobs.value.firstOrNull {
@@ -85,7 +86,9 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
                 (it.auth?.externalHttpsOnly == true || ResolverType.forMedia(it.media) != null) == (requestAuth?.externalHttpsOnly == true)
         }?.let { return it }
         val selection = variantUrl ?: media.checkedVariantUrl.takeIf { external && media.downloadChecked() }
-        val job = DownloadJob(media = media, auth = requestAuth, preferredMaxHeight = maxHeight, preferredVariantUrl = selection).let {
+        val group = audioGroup ?: media.checkedAudioGroup.takeIf { selection != null && selection == media.checkedVariantUrl }
+        val job = DownloadJob(media = media, auth = requestAuth, preferredMaxHeight = maxHeight,
+            preferredVariantUrl = selection, preferredAudioGroup = group).let {
             when {
                 media.drm.isProtected -> it.copy(state = DownloadState.BLOCKED_DRM, errorMessage = ProtectedMedia(media.drm).message)
                 !media.canDownload -> it.copy(state = DownloadState.FAILED, errorMessage = media.probeProblem?.ar ?: unsupported(media).message, problem = media.probeProblem, httpStatus = media.probeHttpStatus)
@@ -108,7 +111,7 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
     @Synchronized internal fun enqueueSmart(candidate: SmartCandidate, request: SmartDownloadRequest, height: Int?): DownloadJob {
         val media = candidate.media
         // Carry a sampled HLS rendition into the real download, including a site-provided stream.
-        val job = activeSmartJob(request.video) ?: enqueue(media, candidate.auth, height, media.checkedVariantUrl)
+        val job = activeSmartJob(request.video) ?: enqueue(media, candidate.auth, height, media.checkedVariantUrl, media.checkedAudioGroup)
         if (job.state.isBusy) request.replaceFailedId?.let { id ->
             if (_jobs.value.any { it.id == id && it.state == DownloadState.FAILED && YouTubeVideo.fromMedia(it.media) == request.video }) {
                 remove(id) // Only after a fresh, independently verified source was queued.
@@ -309,7 +312,8 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
     }
 
     private suspend fun downloadHls(job: DownloadJob, master: HlsDocument, auth: DownloadAuth, work: File, progress: (Double, Long) -> Unit): SavedVideo {
-        val (variant, video, audioTrack, audio) = selectHlsSource(master, job.preferredVariantUrl, job.preferredMaxHeight) { playlist(it, auth) }
+        val (variant, video, audioTrack, audio) = selectHlsSource(master, job.preferredVariantUrl, job.preferredMaxHeight,
+            preferredAudioGroup = job.preferredAudioGroup) { playlist(it, auth) }
         val resources = video.resources + audio?.resources.orEmpty()
         val localMaster = if (audio != null && audioTrack != null && variant != null) Hls.localMaster(variant, audioTrack) else video.text
         val folder = File(work, "hls")
@@ -449,7 +453,8 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
                     put("bytesWritten", j.bytesWritten); put("createdAt", j.createdAt)
                     put("errorMessage", j.errorMessage); put("problem", j.problem?.name); put("httpStatus", j.httpStatus)
                     put("preferredMaxHeight", j.preferredMaxHeight)
-                    put("preferredVariantUrl", j.preferredVariantUrl); put("destPath", j.destPath)
+                    put("preferredVariantUrl", j.preferredVariantUrl); put("preferredAudioGroup", j.preferredAudioGroup)
+                    put("destPath", j.destPath)
                     put("media", JSONObject().apply {
                         put("url", j.media.url); put("title", j.media.title); put("kind", j.media.kind.name)
                         put("pageUrl", j.media.pageUrl); put("publicPageUrl", j.media.publicPageUrl); put("method", j.media.extractionMethod); put("drm", j.media.drm.name)
@@ -482,6 +487,7 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
                         problem = j.text("problem")?.let { runCatching { MediaProblem.valueOf(it) }.getOrNull() },
                         httpStatus = j.optInt("httpStatus").takeIf { it in 100..599 },
                         preferredMaxHeight = j.optInt("preferredMaxHeight").takeIf { it > 0 }, preferredVariantUrl = j.text("preferredVariantUrl"),
+                        preferredAudioGroup = j.optString("preferredAudioGroup").takeUnless { j.isNull("preferredAudioGroup") },
                         media = DetectedMedia(m.getString("url"), m.getString("title"), MediaKind.valueOf(m.getString("kind")),
                             pageUrl = m.text("pageUrl"), publicPageUrl = m.text("publicPageUrl"), extractionMethod = m.optString("method", "manual"),
                             drm = runCatching { DRMKind.valueOf(m.optString("drm")) }.getOrDefault(DRMKind.NONE),
