@@ -191,7 +191,8 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
         if (!media.canDownload) throw unsupported(media)
         val url = httpMediaUrl(media.url) ?: throw unsupported(media)
         if (url.isExpiredPlayerLink()) throw MediaDownloadException(MediaProblem.EXPIRED.ar, MediaProblem.EXPIRED)
-        val auth = job.auth ?: DownloadAuth.default.copy(referer = media.requestReferer ?: media.pageUrl)
+        val auth = if (media.extractionMethod.startsWith("external-")) DownloadAuth.external
+            else job.auth ?: DownloadAuth.default.copy(referer = media.requestReferer ?: media.pageUrl)
         val work = workDir(job.id).apply { mkdirs() }
         if (media.kind == MediaKind.HLS) return downloadHls(job, playlist(url, auth), auth, work, progress)
         return when (val file = retryMediaRead { downloadDirect(job, url, auth, work, progress) }) {
@@ -431,7 +432,7 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
                     put("preferredVariantUrl", j.preferredVariantUrl); put("destPath", j.destPath)
                     put("media", JSONObject().apply {
                         put("url", j.media.url); put("title", j.media.title); put("kind", j.media.kind.name)
-                        put("pageUrl", j.media.pageUrl); put("method", j.media.extractionMethod); put("drm", j.media.drm.name)
+                        put("pageUrl", j.media.pageUrl); put("publicPageUrl", j.media.publicPageUrl); put("method", j.media.extractionMethod); put("drm", j.media.drm.name)
                         put("duration", j.media.durationSec)
                     })
                     // Auth configuration only. Session cookies are never serialized into this file.
@@ -462,7 +463,7 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
                         httpStatus = j.optInt("httpStatus").takeIf { it in 100..599 },
                         preferredMaxHeight = j.optInt("preferredMaxHeight").takeIf { it > 0 }, preferredVariantUrl = j.text("preferredVariantUrl"),
                         media = DetectedMedia(m.getString("url"), m.getString("title"), MediaKind.valueOf(m.getString("kind")),
-                            pageUrl = m.text("pageUrl"), extractionMethod = m.optString("method", "manual"),
+                            pageUrl = m.text("pageUrl"), publicPageUrl = m.text("publicPageUrl"), extractionMethod = m.optString("method", "manual"),
                             drm = runCatching { DRMKind.valueOf(m.optString("drm")) }.getOrDefault(DRMKind.NONE),
                             durationSec = m.optDouble("duration").takeIf { it.isFinite() && it > 0 }),
                         auth = j.optJSONObject("auth")?.let { auth ->

@@ -40,8 +40,10 @@ import com.ahcrazy.video2.app
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.isYouTubePage
 import com.ahcrazy.video2.core.media.manifestKind
+import com.ahcrazy.video2.core.media.YouTubeVideo
 import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.DownloadJob
+import com.ahcrazy.video2.core.model.DownloadAuth
 import com.ahcrazy.video2.core.model.HlsVariant
 import com.ahcrazy.video2.ui.theme.V2
 import kotlinx.coroutines.async
@@ -68,6 +70,7 @@ internal fun BrowserScreen(
     val preferredHeight by app.settings.downloadMaxHeight.collectAsState(initial = 0)
     var shown by remember { mutableStateOf("") }
     var recovering by remember { mutableStateOf(false) }
+    var external by remember { mutableStateOf<ExternalVideoChoice?>(null) }
     val captureRevision = tab.captureRevision
     val fullscreen = tab.fullscreen
     var qualityFor by remember(tab.id, captureRevision) { mutableStateOf<String?>(null) }
@@ -258,7 +261,24 @@ internal fun BrowserScreen(
             onYoutubeHelp = {
                 shown = ""; checkingUrls = emptyList()
                 session.add(); session.current.open("https://support.google.com/youtube/answer/56100")
+            }, onExternal = if (tab.drm.isProtected) null else { item ->
+                val selected = item?.let(YouTubeVideo::fromMedia)
+                    ?: YouTubeVideo.parse(tab.url)
+                    ?: detected.mapNotNull(YouTubeVideo::fromMedia).distinct().singleOrNull()
+                shown = ""
+                qualityFor = null
+                checkingUrls = emptyList()
+                external = ExternalVideoChoice(selected, item?.title)
             })
+    }
+
+    external?.let { choice ->
+        ExternalDownloadSheet(ar, choice, preferredHeight, onClose = { external = null; shown = "capture" }, onDownload = { media ->
+            val job = app.downloads.enqueue(media, DownloadAuth.external, preferredHeight.takeIf { it > 0 })
+            external = null
+            shown = ""
+            if (job.state.isBusy) queued() else onOpenDownloads()
+        })
     }
 
     if (shown == "tabs") {

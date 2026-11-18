@@ -84,15 +84,18 @@ data class DownloadAuth(
     val origin: String? = null,
     val useBrowserCookies: Boolean = false,
     val accept: String? = null,
-    val observedResource: String? = null
+    val observedResource: String? = null,
+    val externalHttpsOnly: Boolean = false
 ) {
     companion object {
         const val CHROME_UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
         val default = DownloadAuth(CHROME_UA)
+        internal val external = DownloadAuth(CHROME_UA, externalHttpsOnly = true)
     }
 
     internal fun headersFor(target: HttpUrl, initial: HttpUrl): Map<String, String> = buildMap {
         put("User-Agent", userAgent.safeHeader(512) ?: CHROME_UA)
+        if (externalHttpsOnly) return@buildMap
         val ref = httpMediaUrl(referer)
         if (!target.isHttps && (ref?.isHttps == true || initial.isHttps)) return@buildMap
         val recorded = httpMediaUrl(observedResource)
@@ -129,7 +132,8 @@ data class DetectedMedia(
     val variants: List<HlsVariant> = emptyList(),
     val requestReferer: String? = null,
     val fromAd: Boolean = false, val probeProblem: MediaProblem? = null,
-    val checkedAtMs: Long? = null, val probeHttpStatus: Int? = null
+    val checkedAtMs: Long? = null, val probeHttpStatus: Int? = null,
+    val publicPageUrl: String? = null
 ) {
     val id: String get() = url
     fun downloadChecked(now: Long = System.currentTimeMillis()): Boolean =

@@ -23,8 +23,14 @@ class AppSettings(private val ctx: Context) {
         val ADBLOCK_MODE = stringPreferencesKey("adblock.mode")
         val ADBLOCK_FILTER_VIDEO_ADS = stringPreferencesKey("adblock.filterVideoAds")
         val AZURE_REGION = stringPreferencesKey("azure.region")
+        fun resolver(type: ResolverType) = stringPreferencesKey("dl.external.${type.name.lowercase()}")
         fun model(purpose: String, provider: String) = stringPreferencesKey("model.$purpose.$provider")
     }
+
+    internal val resolverEndpoints: Flow<Map<ResolverType, String>> = ctx.dataStore.data.map { preferences ->
+        ResolverType.entries.mapNotNull { type -> preferences[K.resolver(type)]?.let { type to it } }.toMap()
+    }
+    internal suspend fun setResolverEndpoint(type: ResolverType, value: String) = ctx.dataStore.edit { it[K.resolver(type)] = value }
 
     val lang: Flow<String> = ctx.dataStore.data.map { it[K.LANG] ?: "ar" }
     val downloadMaxHeight: Flow<Int> = ctx.dataStore.data.map { it[K.DOWNLOAD_MAX_HEIGHT] ?: 0 }

@@ -130,7 +130,8 @@
   function watchId(doc) {
     var page = asUrl(doc.URL, doc);
     if (!page || !isYouTube(page.hostname)) return '';
-    return page.searchParams.get('v') || (page.pathname.match(/^\/(?:embed|shorts|live)\/([^/]+)/) || [])[1] || '';
+    if (/^\/watch\/?$/.test(page.pathname)) return page.searchParams.get('v') || '';
+    return (page.pathname.match(/^\/(?:embed|shorts|live|v)\/([^/]+)\/?$/) || [])[1] || '';
   }
   function readPlayer(o, method, doc) {
     var sd = o.streamingData;

@@ -21,6 +21,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.isYouTubePage
+import com.ahcrazy.video2.core.media.YouTubeVideo
 import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.HlsVariant
 import com.ahcrazy.video2.core.model.MediaKind
@@ -61,7 +62,7 @@ internal fun CaptureSheet(
     checking: Boolean, quality: DetectedMedia?, preferredHeight: Int, recovering: Boolean,
     onClose: () -> Unit, onScan: () -> Unit, onVerify: (String?) -> Unit,
     onPlay: (DetectedMedia) -> Unit, onDownload: (DetectedMedia, HlsVariant?, Boolean) -> Unit,
-    onQuality: (DetectedMedia?) -> Unit, onYoutubeHelp: () -> Unit
+    onQuality: (DetectedMedia?) -> Unit, onYoutubeHelp: () -> Unit, onExternal: ((DetectedMedia?) -> Unit)?
 ) {
     val host = httpMediaUrl(page)?.host
     val groups = remember(media) { captureGroups(media) }
@@ -133,6 +134,10 @@ internal fun CaptureSheet(
                             }
                         }
                     }
+                    if (onExternal != null) TextButton(onClick = { onExternal(null) }) {
+                        Icon(Icons.Filled.CloudDownload, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp))
+                        Text(if (ar) "تحميل عبر خادم خارجي" else "Download via external server")
+                    }
                     if (checking) {
                         LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
                         Text(if (ar) "جارٍ التحقق من ردّ المصدر…" else "Checking source responses…", color = V2.TextDim)
@@ -143,7 +148,7 @@ internal fun CaptureSheet(
                 }
                 if (groups.isEmpty()) item { CaptureMessagePanel(ar, message, onYoutubeHelp) }
                 items(groups, key = { "${it.key.first.length}:${it.key.first}${it.key.second}" }) { group ->
-                    GroupCard(ar, group, checking, onPlay, onDownload, onQuality, onVerify)
+                    GroupCard(ar, group, checking, onPlay, onDownload, onQuality, onVerify, onExternal)
                 }
             }
         }
@@ -165,12 +170,13 @@ internal fun CaptureMessagePanel(ar: Boolean, message: CaptureMessage, onYoutube
 @Composable
 private fun GroupCard(
     ar: Boolean, group: CaptureGroup, checking: Boolean, onPlay: (DetectedMedia) -> Unit,
-    onDownload: (DetectedMedia, HlsVariant?, Boolean) -> Unit, onQuality: (DetectedMedia?) -> Unit, onVerify: (String?) -> Unit
+    onDownload: (DetectedMedia, HlsVariant?, Boolean) -> Unit, onQuality: (DetectedMedia?) -> Unit, onVerify: (String?) -> Unit,
+    onExternal: ((DetectedMedia?) -> Unit)?
 ) {
     var expanded by rememberSaveable(group.key.first, group.key.second) { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         group.items.take(if (expanded) group.items.size else 1).forEach { m ->
-            key(m.url) { SourceCard(m, ar, checking, onPlay, onDownload, onQuality, onVerify) }
+            key(m.url) { SourceCard(m, ar, checking, onPlay, onDownload, onQuality, onVerify, onExternal) }
         }
         if (group.items.size > 1) TextButton(onClick = { expanded = !expanded }) {
             Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, null, Modifier.size(20.dp))
@@ -184,7 +190,8 @@ private fun GroupCard(
 @Composable
 private fun SourceCard(
     m: DetectedMedia, ar: Boolean, checking: Boolean, onPlay: (DetectedMedia) -> Unit,
-    onDownload: (DetectedMedia, HlsVariant?, Boolean) -> Unit, onQuality: (DetectedMedia?) -> Unit, onVerify: (String?) -> Unit
+    onDownload: (DetectedMedia, HlsVariant?, Boolean) -> Unit, onQuality: (DetectedMedia?) -> Unit, onVerify: (String?) -> Unit,
+    onExternal: ((DetectedMedia?) -> Unit)?
 ) {
     val ready = m.downloadChecked()
     val status = when {
@@ -231,7 +238,9 @@ private fun SourceCard(
                 if (!offersDownload && !m.drm.isProtected && !ready) TextButton(enabled = !checking, onClick = { onVerify(m.url) }) {
                     Text(if (m.probeProblem != null) (if (ar) "أعد التحقق" else "Check again") else (if (ar) "تحقق" else "Check"))
                 }
-
+                if (onExternal != null && !m.drm.isProtected && m.probeProblem?.needsNewLink == true && YouTubeVideo.fromMedia(m) != null) {
+                    OutlinedButton(onClick = { onExternal(m) }) { Text(if (ar) "خادم خارجي" else "External server") }
+                }
             }
         }
     }

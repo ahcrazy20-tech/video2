@@ -34,10 +34,11 @@ internal class MediaHttp(private val cookies: (HttpUrl) -> String? = { CookieMan
             val auth = incoming.tag(DownloadAuth::class.java)
             if (auth != null) {
                 request.removeHeader("Origin").removeHeader("Referer").removeHeader("Accept")
+                if (auth.externalHttpsOnly) request.removeHeader("Authorization")
                 val original = chain.call().request().url
                 val downgrade = !incoming.url.isHttps && (original.isHttps || httpMediaUrl(auth.referer)?.isHttps == true)
                 auth.headersFor(incoming.url, original).forEach { (name, value) -> request.header(name, value) }
-                if (auth.useBrowserCookies && !downgrade) {
+                if (auth.useBrowserCookies && !auth.externalHttpsOnly && !downgrade) {
                     cookies(incoming.url)?.safeHeader(32_768)?.let { request.header("Cookie", it) }
                 }
             }
@@ -47,23 +48,34 @@ internal class MediaHttp(private val cookies: (HttpUrl) -> String? = { CookieMan
     fun request(url: HttpUrl, auth: DownloadAuth): Request.Builder = Request.Builder().url(url)
         .tag(DownloadAuth::class.java, auth)
 
-    fun playerClient(auth: DownloadAuth): OkHttpClient = client.newBuilder().addInterceptor { chain ->
+    fun playerClient(auth: DownloadAuth): OkHttpClient = (if (auth.externalHttpsOnly) external else client).newBuilder().addInterceptor { chain ->
         val request = chain.request().newBuilder().tag(DownloadAuth::class.java, auth)
         chain.proceed(request.build())
     }.build()
 
-    // Keep the cancellation watcher alive until the response body has been consumed, not just until headers arrive.
-    suspend fun <T> read(request: Request, consume: suspend (Response) -> T): T = withContext(Dispatchers.IO) {
-        coroutineScope {
-            val call = client.newCall(request)
-            val watcher = launch(start = CoroutineStart.UNDISPATCHED) {
-                try { awaitCancellation() } finally { call.cancel() }
-            }
-            try {
-                ensureActive()
-                call.execute().use { consume(it) }
-            } finally { watcher.cancel() }
+    private val external = client.newBuilder().dns(publicMediaDns).followSslRedirects(false)
+        .readTimeout(60, TimeUnit.SECONDS).build()
+
+    suspend fun <T> read(request: Request, consume: suspend (Response) -> T): T {
+        val transport = if (request.tag(DownloadAuth::class.java)?.externalHttpsOnly == true) {
+            if (externalHttpsUrl(request.url.toString()) == null) throw MediaDownloadException(MediaProblem.NOT_MEDIA.ar, MediaProblem.NOT_MEDIA)
+            external
+        } else client
+        return transport.readMedia(request, consume)
+    }
+}
+
+// Keep the cancellation watcher alive until the response body has been consumed, not just until headers arrive.
+internal suspend fun <T> OkHttpClient.readMedia(request: Request, consume: suspend (Response) -> T): T = withContext(Dispatchers.IO) {
+    coroutineScope {
+        val call = newCall(request)
+        val watcher = launch(start = CoroutineStart.UNDISPATCHED) {
+            try { awaitCancellation() } finally { call.cancel() }
         }
+        try {
+            ensureActive()
+            call.execute().use { consume(it) }
+        } finally { watcher.cancel() }
     }
 }
 

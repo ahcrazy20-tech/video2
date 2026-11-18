@@ -28,6 +28,7 @@ import com.ahcrazy.video2.core.media.MediaRequestContexts
 import com.ahcrazy.video2.core.media.ObservedMediaRequest
 import com.ahcrazy.video2.core.media.pageReferer
 import com.ahcrazy.video2.core.media.safeHeader
+import com.ahcrazy.video2.core.media.YouTubeVideo
 import com.ahcrazy.video2.core.media.isMediaFragment
 import com.ahcrazy.video2.core.media.isPlayerTrackDelivery
 import com.ahcrazy.video2.core.media.isVideoAd
@@ -180,7 +181,8 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
             fromAd = old.fromAd || incoming.fromAd,
             probeProblem = if (incoming.probed) incoming.probeProblem else old.probeProblem,
             checkedAtMs = if (incoming.probed) incoming.checkedAtMs else old.checkedAtMs,
-            probeHttpStatus = if (incoming.probed) incoming.probeHttpStatus else old.probeHttpStatus
+            probeHttpStatus = if (incoming.probed) incoming.probeHttpStatus else old.probeHttpStatus,
+            publicPageUrl = incoming.publicPageUrl ?: old.publicPageUrl
         )
         if (old == next) return
         if (oldIndex >= 0) detected[oldIndex] = next else {
@@ -447,7 +449,7 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
             drm = protection, pageUrl = current.toString(), extractionMethod = method,
             durationSec = item.optDouble("duration").takeIf { it.isFinite() && it > 0 },
             width = item.optInt("width").takeIf { it in 1..16384 }, height = item.optInt("height").takeIf { it in 1..16384 },
-            requestReferer = frame.toString(), fromAd = item.optBoolean("ad") || target.isVideoAd()
+            requestReferer = frame.toString(), publicPageUrl = YouTubeVideo.parse(frame.toString())?.watchUrl, fromAd = item.optBoolean("ad") || target.isVideoAd()
         ))
     }
 
