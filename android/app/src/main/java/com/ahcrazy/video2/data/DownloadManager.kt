@@ -312,7 +312,7 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
         val done = AtomicInteger(0)
         val bytes = AtomicLong(0)
         coroutineScope {
-            repeat(minOf(resources.size, 6)) {
+            repeat(minOf(resources.size, if (auth.externalHttpsOnly) 2 else 6)) {
                 launch {
                     while (true) {
                         val item = resources.getOrNull(next.getAndIncrement()) ?: break

@@ -31,7 +31,7 @@ import org.robolectric.annotation.Config
 import java.net.InetAddress
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(sdk = [34], application = android.app.Application::class)
 class ExternalResolverTest {
     private val id = "AbCdEfG_123"
     private val canonical = "https://www.youtube.com/watch?v=$id"
