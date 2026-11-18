@@ -182,6 +182,7 @@ class OfflineSubtitleTest {
     @Test fun compactPacksDoNotPullLargerModelsAndLegacyIdsStayTheSame() {
         val medium = OfflineModel.WHISPER_MEDIUM
         val q5 = OfflineModel.WHISPER_MEDIUM_Q5
+        val turbo = OfflineModel.WHISPER_TURBO
         val large = OfflineModel.WHISPER_LARGE
         val q4 = OfflineModel.HYMT_Q4
         val light = OfflineModel.HYMT_LITE
@@ -189,6 +190,8 @@ class OfflineSubtitleTest {
         assertEquals(listOf(large, light), OfflineModel.pack(large, light))
         assertEquals(6_158_411_955L, OfflineModel.pack(medium, q4).sumOf { it.spec.bytes })
         assertEquals(1_672_292_915L, OfflineModel.pack(q5, light).sumOf { it.spec.bytes })
+        assertEquals(1_707_121_643L, OfflineModel.pack(turbo, light).sumOf { it.spec.bytes })
+        assertTrue(turbo.supportsFastSpeech)
         assertEquals("whisper-medium-6c14d5adee5f.bin", medium.installedName)
         assertEquals("hymt2-7b-q4-9f96256500f3.gguf", q4.installedName)
         assertEquals(medium, OfflineModel.speechForJob(medium.id))
@@ -396,6 +399,9 @@ class OfflineSubtitleTest {
         }) { _, _, _, _ -> error("No audio extraction") }
         pipeline.reuseTranscript(old, fresh, input, CancellationSignal())
         assertFalse(File(fresh, oldResult.name).exists())
+        // Even if a stale final result happens to be in this directory, never use it for another translator.
+        CueJson.write(File(fresh, oldResult.name), CueJson.read(oldResult))
+        assertNotEquals(File(fresh, oldResult.name), OfflinePipeline.translatedCuesFile(fresh, "ar", OfflineModel.HYMT_LITE))
         val result = pipeline.run(fresh, input, SubLang.AUTO, SubLang.AR, OfflineModel.WHISPER_MEDIUM,
             CancellationSignal(), translator = OfflineModel.HYMT_LITE) { _, _, _, _ -> }.single()
         assertEquals(source.copy(translated = "احفظ كلامي"), result)

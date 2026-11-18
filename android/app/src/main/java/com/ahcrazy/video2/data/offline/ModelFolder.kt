@@ -3,6 +3,7 @@ package com.ahcrazy.video2.data.offline
 import android.content.ContentResolver
 import android.net.Uri
 import android.os.CancellationSignal
+import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract as Docs
 import java.io.File
 import java.io.FileOutputStream
@@ -15,7 +16,7 @@ import java.util.UUID
 /** External storage provider only: no cloud document provider and no app-owned directory. */
 internal fun isLocalModelFolder(uri: Uri): Boolean {
     if (uri.scheme != "content" || uri.authority != "com.android.externalstorage.documents" || !Docs.isTreeUri(uri)) return false
-    val id = Docs.getTreeDocumentId(uri)
+    val id = try { Docs.getTreeDocumentId(uri) } catch (_: IllegalArgumentException) { return false }
     val path = id.substringAfter(':', "").split('/')
     return path.isNotEmpty() && path.none { it.isBlank() || it == "." || it == ".." } && !path.first().equals("Android", ignoreCase = true)
 }
@@ -63,15 +64,17 @@ internal class ModelFolder(private val resolver: ContentResolver, private val tr
         var published = false
         try {
             source.inputStream().use { input ->
-                (resolver.openOutputStream(pending, "w") ?: throw IOException("Cannot write model backup")).use { output ->
+                val fd = resolver.openFileDescriptor(pending, "w", signal) ?: throw IOException("Cannot write model backup")
+                ParcelFileDescriptor.AutoCloseOutputStream(fd).use { output ->
                     copyVerifiedWeight(model.spec, input, output, signal, progress)
+                    output.fd.sync()
                 }
             }
             signal.throwIfCanceled()
             pending = Docs.renameDocument(resolver, pending, model.installedName) ?: throw IOException("Cannot publish model backup")
             // The provider may resolve a collision by changing the name. Don't claim that as a valid backup.
-            published = resolver.query(pending, arrayOf(Docs.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use {
-                it.moveToFirst() && it.getString(0) == model.installedName
+            published = resolver.query(pending, arrayOf(Docs.Document.COLUMN_DISPLAY_NAME, Docs.Document.COLUMN_SIZE), null, null, null)?.use {
+                it.moveToFirst() && it.getString(0) == model.installedName && !it.isNull(1) && it.getLong(1) == model.spec.bytes
             } ?: false
             if (!published) throw IOException("Model backup name did not match")
         } finally {
@@ -107,11 +110,13 @@ internal fun copyVerifiedWeight(
     progress(bytes)
 }
 
+internal fun restoreStagingFile(destination: File) = File(destination.parentFile, "${destination.name}.import")
+
 /** Failure/cancellation leaves the previous model and part download untouched. */
 internal fun restoreVerifiedWeight(
     spec: PinnedModel, destination: File, signal: CancellationSignal, open: () -> InputStream, progress: (Long) -> Unit
 ) {
-    val staging = File(destination.parentFile, "${destination.name}.import")
+    val staging = restoreStagingFile(destination)
     try {
         open().use { input ->
             FileOutputStream(staging).use { output ->

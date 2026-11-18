@@ -78,6 +78,7 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
     val installed by app.offlineModels.models.collectAsState()
     var showNew by remember { mutableStateOf(false) }
     var showModels by remember { mutableStateOf(false) }
+    var requestedTranslator by remember { mutableStateOf(OfflineModel.HYMT_LITE) }
 
     androidx.compose.runtime.LaunchedEffect(preselected) { if (preselected != null) showNew = true }
 
@@ -97,7 +98,7 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
                 Text(if (ar) "نزّل الموديلات مرة واحدة. بعدها التفريغ والترجمة من غير إنترنت أو مفاتيح API." else
                     "Install the models once. Then transcribe and translate without internet or API keys.",
                     fontSize = 11.sp, color = V2.TextDim, modifier = Modifier.padding(top = 4.dp))
-                TextButton(onClick = { showModels = true }) {
+                TextButton(onClick = { requestedTranslator = OfflineModel.HYMT_LITE; showModels = true }) {
                     Text(if (localWork?.kind in setOf(OfflineWorkKind.DOWNLOAD, OfflineWorkKind.MODEL_BACKUP, OfflineWorkKind.MODEL_RESTORE)) {
                         val percent = ((localWork?.progress ?: 0.0) * 100).toInt()
                         if (ar) "تجهيز الموديلات · $percent%" else "Preparing models · $percent%"
@@ -141,15 +142,16 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
                         val issue = if (retired && job.phase != TranslationPhase.DONE) OfflineIssue.RETIRED_TRANSLATOR
                             else OfflineIssue.entries.firstOrNull { it.name == job.offlineIssue }
                         (issue?.text(ar) ?: job.message)?.let { Text(it, fontSize = 11.sp, color = V2.Gold, modifier = Modifier.padding(top = 6.dp)) }
-                        if (!running && app.translations.canRetranslate(job)) {
-                            val hasLight = installed[OfflineModel.HYMT_LITE]?.installed == true
+                        if (!running) app.translations.alternateTranslator(job)?.let { alternate ->
+                            val ready = installed[alternate]?.installed == true
+                            val size = if (alternate == OfflineModel.HYMT_LITE) "1.8B" else "7B"
                             TextButton(enabled = localWork == null, onClick = {
-                                if (hasLight) app.translations.retranslateLight(job.id) else showModels = true
+                                if (ready) app.translations.retranslate(job.id) else { requestedTranslator = alternate; showModels = true }
                             }) {
-                                Text(if (hasLight) {
-                                    if (ar) "ترجم بـ1.8B من التفريغ المحفوظ" else "Translate saved transcript with 1.8B"
+                                Text(if (ready) {
+                                    if (ar) "ترجم بـ$size من التفريغ المحفوظ" else "Translate saved transcript with $size"
                                 } else {
-                                    if (ar) "نزّل 1.8B لإعادة الترجمة فقط" else "Get 1.8B to retranslate without transcribing"
+                                    if (ar) "نزّل $size لإعادة الترجمة فقط" else "Get $size to retranslate without transcribing"
                                 })
                             }
                         }
@@ -170,7 +172,7 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
     if (showNew) NewTranslationSheet(app, ar, videos, preselected, onDismiss = { showNew = false; onConsumePreselected() })
     if (showModels) ModalBottomSheet(onDismissRequest = { showModels = false }) {
         var speech by remember { mutableStateOf(app.offlineModels.defaultSpeech) }
-        var model by remember { mutableStateOf(OfflineModel.HYMT_LITE) }
+        var model by remember(requestedTranslator) { mutableStateOf(requestedTranslator) }
         Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
             Text(if (ar) "الموديلات المحلية" else "On-device models", fontSize = 18.sp, fontWeight = FontWeight.Bold)
             ModelFolderPanel(app, ar)
@@ -283,6 +285,7 @@ private fun OfflineModelPanel(
     PickerRow(if (ar) "موديل التفريغ" else "Speech model", speech, OfflineModel.speechModels, {
         val hint = when (it) {
             OfflineModel.WHISPER_MEDIUM_Q5 -> if (ar) "أخف · للصوت الواضح" else "Smaller · clear speech"
+            OfflineModel.WHISPER_TURBO -> if (ar) "نسخة Turbo من Large-v3" else "Faster decoder than Large-v3"
             OfflineModel.WHISPER_LARGE -> if (ar) "للصوت الأصعب" else "Challenging speech"
             else -> if (ar) "تفريغ متوازن" else "Balanced speech"
         }
@@ -309,6 +312,11 @@ private fun OfflineModelPanel(
                 }
                 Text("$bytes · $state", fontSize = 11.sp, color = V2.TextDim)
             }
+            if (current?.installed != true) TextButton(enabled = work == null && app.offlineModels.compatible(asset),
+                onClick = { app.offlineModels.download(asset) }) {
+                Text(if ((current?.downloaded ?: 0) > 0) { if (ar) "استئناف" else "Resume" }
+                    else { if (ar) "تنزيل" else "Download" })
+            }
             if ((current?.downloaded ?: 0) > 0) TextButton(enabled = work == null, onClick = { remove = asset }) {
                 Text(if (ar) "إزالة" else "Remove")
             }
@@ -321,14 +329,14 @@ private fun OfflineModelPanel(
         "Ready offline. Long videos can take time and warm up your phone.", fontSize = 11.sp, color = V2.TextDim)
     if (!compatible) Text(OfflineIssue.NOT_SUPPORTED.text(ar), color = V2.Gold, fontSize = 12.sp)
     if (downloading != null) {
-        val selected = listOfNotNull(OfflineModel.speechForJob(downloading.key.substringBefore('/')),
-            OfflineModel.translatorForJob(downloading.key.substringAfter('/'))).joinToString(" + ") { it.label }
+        val ids = downloading.key.split('/')
+        val selected = ids.mapNotNull { id -> OfflineModel.entries.firstOrNull { it.id == id } }.joinToString(" + ") { it.label }
         Text(if (ar) "جارٍ تجهيز $selected" else "Preparing $selected", fontSize = 11.sp, color = V2.TextDim)
         LinearProgressIndicator(progress = { downloading.progress.toFloat() }, Modifier.fillMaxWidth().padding(top = 8.dp))
         TextButton(enabled = !downloading.stopping, onClick = { app.offlineWork.cancel(OfflineWorkKind.DOWNLOAD, downloading.key) }) {
             Text(if (downloading.stopping) { if (ar) "جارٍ الإيقاف…" else "Stopping…" } else { if (ar) "إيقاف التنزيل (قابل للاستئناف)" else "Stop download (resumable)" })
         }
-    } else if (!ready) {
+    } else if (pack.count { models[it]?.installed != true } > 1) {
         val partial = pack.any { models[it]?.let { state -> state.downloaded > 0 && !state.installed } == true }
         Button(enabled = compatible && work == null, onClick = { app.offlineModels.downloadPack(speech, translator) }, modifier = Modifier.fillMaxWidth()) {
             Text(if (partial) { if (ar) "استئناف تنزيل الموديلات" else "Resume model download" } else { if (ar) "تنزيل الموديلات" else "Download models" })
@@ -358,7 +366,9 @@ private fun ModelFolderPanel(app: Video2Application, ar: Boolean) {
         "Choose a local folder, e.g. Documents/Video2 Models. Downloads are backed up here for offline restore after reinstalling.",
         fontSize = 11.sp, color = V2.TextDim)
     folder?.let {
-        Text(DocumentsContract.getTreeDocumentId(it).substringAfter(':'), fontSize = 12.sp, color = V2.Mint,
+        val id = DocumentsContract.getTreeDocumentId(it)
+        val volume = if (id.startsWith("primary:")) { if (ar) "التخزين الداخلي" else "Internal storage" } else id.substringBefore(':')
+        Text("$volume / ${id.substringAfter(':')}", fontSize = 12.sp, color = V2.Mint,
             modifier = Modifier.padding(top = 4.dp))
     }
     Row(verticalAlignment = Alignment.CenterVertically) {

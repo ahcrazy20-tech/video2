@@ -1,7 +1,11 @@
 package com.ahcrazy.video2.data.offline;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Locale;
 
 // Same JNI names/signatures as the Android wrappers. No Android, network or model weights needed.
 final class WhisperJni {
@@ -26,6 +30,10 @@ public final class OfflineNativeSmoke {
     public static void main(String[] args) throws Exception {
         System.loadLibrary("video2_whisper");
         System.loadLibrary("video2_hymt");
+        if (args.length > 0) {
+            probe(args);
+            return;
+        }
         var model = Files.createTempFile("video2-invalid-وزن-🎞", ".bin");
         try {
             Files.write(model, new byte[128]);
@@ -50,6 +58,57 @@ public final class OfflineNativeSmoke {
             } finally { h.destroy(hHandle); }
             System.out.println("Both native libraries loaded; invalid-model and cancellation checks passed.");
         } finally { Files.deleteIfExists(model); }
+    }
+
+    // Optional probes use user-supplied verified weights and media; nothing is downloaded.
+    private static void probe(String[] args) throws Exception {
+        if (args.length < 4 || args.length > 5) throw new IllegalArgumentException(
+            "translate 1.8b|7b WEIGHTS PROMPT_UTF8 [THREADS] or speech|speech-fast WEIGHTS PCM16LE SOURCE [THREADS]");
+        int threads = args.length == 5 ? Integer.parseInt(args[4]) : 4;
+        if (threads < 1 || threads > 32) throw new IllegalArgumentException("Threads must be in 1..32");
+        if (args[0].equals("translate")) {
+            boolean compact = switch (args[1]) {
+                case "1.8b" -> true;
+                case "7b" -> false;
+                default -> throw new IllegalArgumentException("Expected 1.8b or 7b");
+            };
+            var prompt = Path.of(args[3]);
+            if (Files.size(prompt) > 8192) throw new IllegalArgumentException("Prompt too long");
+            byte[] input = Files.readAllBytes(prompt);
+            var engine = new HymtJni();
+            long handle = engine.create();
+            try {
+                long start = System.nanoTime();
+                engine.load(handle, args[2].getBytes(StandardCharsets.UTF_8), threads, compact);
+                elapsed("Model load", start);
+                start = System.nanoTime();
+                byte[] output = engine.translate(handle, input, 51);
+                elapsed("Translation (one prompt)", start);
+                if (output == null || output.length == 0) throw new IllegalStateException("No complete translation");
+                System.out.println(new String(output, StandardCharsets.UTF_8));
+            } finally { engine.destroy(handle); }
+        } else if (args[0].equals("speech") || args[0].equals("speech-fast")) {
+            var pcm = Path.of(args[2]);
+            long bytes = Files.size(pcm);
+            if (bytes <= 0 || bytes > 2L * 16000 * 75 || bytes % 2 != 0) throw new IllegalArgumentException("Expected up to 75 s of raw 16 kHz mono s16le");
+            short[] input = new short[(int) (bytes / 2)];
+            ByteBuffer.wrap(Files.readAllBytes(pcm)).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(input);
+            var engine = new WhisperJni();
+            long handle = engine.create();
+            try {
+                long start = System.nanoTime();
+                engine.load(handle, args[1].getBytes(StandardCharsets.UTF_8), threads);
+                elapsed("Model load", start);
+                start = System.nanoTime();
+                byte[][] output = engine.decode(handle, input, args[3].getBytes(StandardCharsets.UTF_8), new byte[0], args[0].equals("speech-fast"), null);
+                elapsed("Transcription (one window)", start);
+                for (byte[] line : output) System.out.println(new String(line, StandardCharsets.UTF_8));
+            } finally { engine.destroy(handle); }
+        } else throw new IllegalArgumentException("Unknown probe: " + args[0]);
+    }
+
+    private static void elapsed(String stage, long start) {
+        System.err.printf(Locale.ROOT, "%s: %.3f s%n", stage, (System.nanoTime() - start) / 1e9);
     }
 
     private static void mustFail(Runnable call, String expected) {

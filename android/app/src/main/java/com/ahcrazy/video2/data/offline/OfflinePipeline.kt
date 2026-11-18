@@ -65,7 +65,7 @@ internal class OfflinePipeline(
         if (language !in hymtSourceLanguages) throw OfflineFailure(OfflineIssue.LANGUAGE)
         if (language == target.code) return cues.map { it.copy(translated = it.original) }
         // If only the final SRT export was interrupted, don't require either runtime again.
-        val final = File(dir, "cues-translated-${target.code}.json")
+        val final = translatedCuesFile(dir, target.code, translator)
         if (hasCheckpoint(final)) {
             val saved = CueJson.read(final)
             if (matchesTranslation(cues, saved)) return saved
@@ -213,6 +213,10 @@ internal class OfflinePipeline(
 
     companion object {
         // Same directory as older 7B Q4 jobs; never mix their batches with 1.8B.
+        fun translatedCuesFile(dir: File, target: String, translator: OfflineModel?) = File(dir,
+            if (translator == null || translator == OfflineModel.HYMT_Q4) "cues-translated-$target.json"
+            else "cues-translated-${translator.id}-$target.json")
+
         fun translationCheckpoint(dir: File, target: SubLang, translator: OfflineModel = OfflineModel.HYMT_Q4) =
             File(dir, "offline-mt-${translator.id}-${target.code}")
     }

@@ -90,15 +90,18 @@ class TranslationManager internal constructor(
         return true
     }
 
-    internal fun canRetranslate(job: TranslationJob): Boolean = job.mode == TranslationMode.ON_DEVICE &&
-        job.phase !in ACTIVE && job.offlineModel != OfflineModel.HYMT_LITE.id &&
-        OfflineModel.speechForJob(job.offlineSpeechModel) != null &&
-        hasCheckpoint(File(root, "${job.id}/cues-original.json"))
+    internal fun alternateTranslator(job: TranslationJob): OfflineModel? {
+        if (job.mode != TranslationMode.ON_DEVICE || job.phase in ACTIVE || OfflineModel.speechForJob(job.offlineSpeechModel) == null) return null
+        val from = File(root, job.id)
+        if (listOf("cues-original.json", "offline-language.txt", "offline-source.json").any { !hasCheckpoint(File(from, it)) }) return null
+        return (if (job.offlineModel == OfflineModel.HYMT_LITE.id) OfflineModel.HYMT_Q4 else OfflineModel.HYMT_LITE)
+            .takeIf(offlineModels::compatible)
+    }
 
-    @Synchronized internal fun retranslateLight(id: String): Boolean {
-        val model = OfflineModel.HYMT_LITE
-        if (offlineWork.status.value != null || !offlineModels.ready(model) || !offlineModels.compatible(model)) return false
-        val previous = _jobs.value.firstOrNull { it.id == id && canRetranslate(it) } ?: return false
+    @Synchronized internal fun retranslate(id: String): Boolean {
+        if (offlineWork.status.value != null) return false
+        val previous = _jobs.value.firstOrNull { it.id == id } ?: return false
+        val model = alternateTranslator(previous)?.takeIf(offlineModels::ready) ?: return false
         val job = previous.copy(id = UUID.randomUUID().toString(), phase = TranslationPhase.QUEUED,
             progress = 0.0, cueCount = 0, message = null, createdAt = System.currentTimeMillis(), offlineIssue = null,
             offlineModel = model.id, offlineTranscriptFrom = previous.id)
@@ -197,7 +200,7 @@ class TranslationManager internal constructor(
                 }
                 signal.throwIfCanceled()
                 patch(job.id) { it.copy(phase = TranslationPhase.SAVING, progress = 0.97) }
-                CueJson.write(File(dir, "cues-translated-${target.code}.json"), cues)
+                CueJson.write(OfflinePipeline.translatedCuesFile(dir, target.code, model), cues)
                 signal.throwIfCanceled()
                 exportSubtitles(job, video.localPath, cues, target)
                 patch(job.id) { it.copy(phase = TranslationPhase.DONE, progress = 1.0, cueCount = cues.size) }
@@ -345,18 +348,21 @@ class TranslationManager internal constructor(
         return output
     }
 
+    private fun translatedCuesFile(dir: File, job: TranslationJob?) = OfflinePipeline.translatedCuesFile(dir, job?.targetLang ?: "ar",
+        if (job?.mode == TranslationMode.ON_DEVICE) OfflineModel.translatorForJob(job.offlineModel) else null)
+
     fun cuesFor(jobId: String): List<SubCue> {
         val dir = File(root, jobId)
         val job = _jobs.value.firstOrNull { it.id == jobId }
-        val f = File(dir, "cues-translated-${job?.targetLang ?: "ar"}.json")
-        val src = if (f.exists()) f else File(dir, "cues-refined.json").takeIf { it.exists() } ?: File(dir, "cues-original.json")
-        return if (src.exists()) runCatching { CueJson.read(src) }.getOrDefault(emptyList()) else emptyList()
+        val f = translatedCuesFile(dir, job)
+        val src = if (hasCheckpoint(f)) f else File(dir, "cues-refined.json").takeIf { it.exists() } ?: File(dir, "cues-original.json")
+        return if (hasCheckpoint(src)) runCatching { CueJson.read(src) }.getOrDefault(emptyList()) else emptyList()
     }
 
     fun saveCues(jobId: String, cues: List<SubCue>) {
         val job = _jobs.value.firstOrNull { it.id == jobId && it.phase == TranslationPhase.DONE } ?: return
         val dir = File(root, jobId).apply { mkdirs() }
-        CueJson.write(File(dir, "cues-translated-${job.targetLang}.json"), cues)
+        CueJson.write(translatedCuesFile(dir, job), cues)
         val owned = subtitleDirectory(job)
         val legacy = File(library.subtitlesDir, job.videoId)
         subtitleModes.forEach { (key, mode) ->

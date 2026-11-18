@@ -35,6 +35,9 @@ internal enum class OfflineModel(
     WHISPER_MEDIUM_Q5("whisper-medium-q5", "Whisper Medium · Q5_0",
         PinnedModel("$WHISPER/ggml-medium-q5_0.bin", 539_212_467, "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f"),
         "bin", 4_096 * MIB, 1_500 * MIB),
+    WHISPER_TURBO("whisper-large-v3-turbo-q5", "Whisper large-v3 Turbo · Q5_0",
+        PinnedModel("$WHISPER/ggml-large-v3-turbo-q5_0.bin", 574_041_195, "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"),
+        "bin", 5_120 * MIB, 2_100 * MIB),
     WHISPER_LARGE("whisper-large-v3", "Whisper large-v3 · F16",
         PinnedModel("$WHISPER/ggml-large-v3.bin", 3_095_033_483, "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2"),
         "bin", 7_168 * MIB, 4_300 * MIB),
@@ -46,17 +49,17 @@ internal enum class OfflineModel(
         "gguf", 7_168 * MIB, 3_072 * MIB);
 
     val memoryIssue: OfflineIssue get() = when (this) {
-        WHISPER_MEDIUM, WHISPER_MEDIUM_Q5 -> OfflineIssue.MEMORY
+        WHISPER_MEDIUM, WHISPER_MEDIUM_Q5, WHISPER_TURBO -> OfflineIssue.MEMORY
         WHISPER_LARGE -> OfflineIssue.LARGE_MODEL_MEMORY
         HYMT_LITE, HYMT_Q4 -> OfflineIssue.TRANSLATOR_MEMORY
     }
 
     val installedName get() = "$id-${spec.sha256.take(12)}.$extension"
     val publisherName get() = spec.url.substringAfterLast('/')
-    val supportsFastSpeech get() = this == WHISPER_MEDIUM || this == WHISPER_MEDIUM_Q5
+    val supportsFastSpeech get() = this == WHISPER_MEDIUM || this == WHISPER_MEDIUM_Q5 || this == WHISPER_TURBO
 
     companion object {
-        val speechModels = listOf(WHISPER_MEDIUM, WHISPER_MEDIUM_Q5, WHISPER_LARGE)
+        val speechModels = listOf(WHISPER_MEDIUM_Q5, WHISPER_TURBO, WHISPER_MEDIUM, WHISPER_LARGE)
         val translators = listOf(HYMT_LITE, HYMT_Q4)
         fun translatorForJob(id: String?) = translators.firstOrNull { it.id == id }
 
@@ -97,9 +100,9 @@ internal class OfflineModels(private val context: Context, private val work: Off
     private val _transferCount = MutableStateFlow<Int?>(null)
     val transferCount = _transferCount.asStateFlow()
 
-    // Keep existing installations usable without a new download. New users start at Medium.
+    // Prefer already-installed models to avoid unnecessary downloads.
     val defaultSpeech: OfflineModel
-        get() = OfflineModel.speechModels.firstOrNull { ready(it) && compatible(it) } ?: OfflineModel.WHISPER_MEDIUM
+        get() = OfflineModel.speechModels.firstOrNull { ready(it) && compatible(it) } ?: OfflineModel.WHISPER_MEDIUM_Q5
 
     val defaultTranslator: OfflineModel get() = OfflineModel.translators.firstOrNull { ready(it) && compatible(it) } ?: OfflineModel.HYMT_LITE
 
@@ -121,9 +124,12 @@ internal class OfflineModels(private val context: Context, private val work: Off
         if (translationUnderPressure(ram.availMem, ram.threshold, ram.lowMemory)) throw OfflineFailure(OfflineIssue.TRANSLATOR_MEMORY)
     }
 
-    fun downloadPack(speech: OfflineModel, translator: OfflineModel) {
-        val pack = OfflineModel.pack(speech, translator)
-        if (work.status.value != null) return
+    fun downloadPack(speech: OfflineModel, translator: OfflineModel) = download(OfflineModel.pack(speech, translator))
+
+    fun download(model: OfflineModel) = download(listOf(model))
+
+    private fun download(pack: List<OfflineModel>) {
+        if (work.status.value != null || pack.all(::ready)) return
         _issue.value = null
         _transferCount.value = null
         val backup = folder.value
@@ -131,7 +137,7 @@ internal class OfflineModels(private val context: Context, private val work: Off
         val bytes = pack.sumOf { it.spec.bytes }
         val total = bytes * (if (backup == null) 1 else 2)
         try {
-            work.submit(OfflineWorkKind.DOWNLOAD, "${speech.id}/${translator.id}", onFinish = { error ->
+            work.submit(OfflineWorkKind.DOWNLOAD, pack.joinToString("/") { it.id }, onFinish = { error ->
                 _models.value = status()
                 if (error != null && !OfflineWork.cancelled(error)) {
                     _issue.value = (error as? OfflineFailure)?.issue ?: OfflineIssue.DOWNLOAD
@@ -200,13 +206,16 @@ internal class OfflineModels(private val context: Context, private val work: Off
             return@transfer 0 // Everything in the selected folder was already installed.
         }
         val total = copies.sumOf { (model, _) -> model.spec.bytes }
-        if (root.usableSpace < total + 256 * MIB) throw OfflineFailure(OfflineIssue.STORAGE)
+        // Remove only our private staging files left by an interrupted import.
+        copies.forEach { (model, _) -> restoreStagingFile(file(model)).delete() }
         var done = 0L
         var restored = 0
         var corrupt = false
         for ((model, doc) in copies) {
             signal.throwIfCanceled()
             try {
+                if (doc.size?.let { it != model.spec.bytes } == true) throw OfflineFailure(OfflineIssue.CHECKSUM)
+                if (root.usableSpace < model.spec.bytes + 256 * MIB) throw OfflineFailure(OfflineIssue.STORAGE)
                 restoreVerifiedWeight(model.spec, file(model), signal, { folder.open(doc) }) { count ->
                     notify((done + count).toDouble() / total)
                 }
