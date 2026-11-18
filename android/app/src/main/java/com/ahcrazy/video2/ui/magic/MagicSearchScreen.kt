@@ -44,7 +44,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,6 +65,7 @@ import com.ahcrazy.video2.ui.components.ChipPreview
 import com.ahcrazy.video2.ui.components.EmptyState
 import com.ahcrazy.video2.ui.components.GlassCard
 import com.ahcrazy.video2.ui.theme.V2
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 val sourceLabels = mapOf(
@@ -74,34 +74,39 @@ val sourceLabels = mapOf(
     "vimeo" to ("فيميو" to "🎞"), "web" to ("كل الويب" to "🌐")
 )
 
+internal class MagicSearchState {
+    var text by mutableStateOf("")
+    var searching by mutableStateOf(false)
+    var ranOnce by mutableStateOf(false)
+    var deepHunt by mutableStateOf(true)
+    var autoPrepare by mutableStateOf(true)
+    var activeSource by mutableStateOf<String?>(null)
+    var toast by mutableStateOf<String?>(null)
+    val results = mutableStateMapOf<String, List<MagicResult>>()
+}
+
 @Composable
-fun MagicSearchScreen(ar: Boolean, onPlayStream: (String, String) -> Unit, onOpenInBrowser: (String) -> Unit) {
+internal fun MagicSearchScreen(
+    ar: Boolean, state: MagicSearchState, scope: CoroutineScope,
+    onPlayStream: (String, String) -> Unit, onOpenInBrowser: (String) -> Unit
+) {
     val app = (LocalContext.current as android.app.Activity).app()
-    val scope = rememberCoroutineScope()
     val jobs by app.downloads.jobs.collectAsState()
-    var text by remember { mutableStateOf("") }
-    var searching by remember { mutableStateOf(false) }
-    var ranOnce by remember { mutableStateOf(false) }
     var showSyntax by remember { mutableStateOf(false) }
-    var deepHunt by remember { mutableStateOf(true) }
-    var autoPrepare by remember { mutableStateOf(true) }
-    var activeSource by remember { mutableStateOf<String?>(null) }
-    var toast by remember { mutableStateOf<String?>(null) }
-    val results = remember { mutableStateMapOf<String, List<MagicResult>>() }
 
     fun runSearch() {
-        val q = MagicQuery.parse(text)
+        val q = MagicQuery.parse(state.text)
         if (q.directUrl != null) { onOpenInBrowser(q.directUrl); return }
-        if (q.isEmpty) return
-        results.clear(); searching = true; ranOnce = true
+        if (q.isEmpty || state.searching) return
+        state.results.clear(); state.searching = true; state.ranOnce = true
         scope.launch {
-            app.magic.searchAll(q) { src, list -> results[src] = list }
-            searching = false
+            try { app.magic.searchAll(q) { src, list -> state.results[src] = list } }
+            finally { state.searching = false }
         }
     }
 
-    val visible = results.filter { activeSource == null || it.key == activeSource }
-    val total = results.values.sumOf { it.size }
+    val visible = state.results.filter { state.activeSource == null || it.key == state.activeSource }
+    val total = state.results.values.sumOf { it.size }
 
     Column(Modifier.fillMaxSize().background(V2.Bg).padding(horizontal = 14.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -113,7 +118,7 @@ fun MagicSearchScreen(ar: Boolean, onPlayStream: (String, String) -> Unit, onOpe
             }
             IconButton(onClick = { showSyntax = true }) { Icon(Icons.Filled.HelpOutline, null, tint = V2.Gold) }
         }
-        OutlinedTextField(text, { text = it },
+        OutlinedTextField(state.text, { state.text = it },
             placeholder = { Text(if (ar) "اسم فيلم أو فيديو… أو الصق رابط" else "Movie or video name… or paste a link", fontSize = 12.sp) },
             leadingIcon = { Icon(Icons.Filled.Search, null) }, singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -122,13 +127,13 @@ fun MagicSearchScreen(ar: Boolean, onPlayStream: (String, String) -> Unit, onOpe
         Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
             listOf("+5د min:5", "+20د min:20", "+60د min:60", "HD جودة:1080").forEach { chip ->
                 Box(Modifier.clip(RoundedCornerShape(50)).background(V2.Card).clickable {
-                    text = (text.trim() + " " + chip.substringAfter(" ")).trim(); runSearch()
+                    state.text = (state.text.trim() + " " + chip.substringAfter(" ")).trim(); runSearch()
                 }.padding(horizontal = 11.dp, vertical = 6.dp)) {
                     Text(chip, fontSize = 11.sp, color = V2.Gold, fontWeight = FontWeight.Bold)
                 }
             }
             Spacer(Modifier.weight(1f))
-            Button(onClick = { runSearch() }, enabled = text.isNotBlank()) { Text(if (ar) "ابحث" else "Search", fontSize = 12.sp) }
+            Button(onClick = { runSearch() }, enabled = state.text.isNotBlank()) { Text(if (ar) "ابحث" else "Search", fontSize = 12.sp) }
         }
         Text(if (ar) "أوامر: مدة:1:36:00 · جودة:1080 · موقع:site.com · استبعد:trailer · سنة:1995 · مصدر:archive · ترتيب:views" else "Commands: duration:1:36:00 · quality:1080 · site:site.com · exclude:trailer · year:1995 · source:archive · sort:views",
             fontSize = 10.sp, color = V2.TextDim, modifier = Modifier.padding(top = 6.dp))
@@ -137,31 +142,31 @@ fun MagicSearchScreen(ar: Boolean, onPlayStream: (String, String) -> Unit, onOpe
                 Text(if (ar) "الصيد العميق" else "Deep Hunt", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 Text(if (ar) "بيفتح الصفحة في متصفح خفي ويدوس Play لحد ما الرابط يظهر" else "Hidden browser taps Play until the stream appears", fontSize = 10.sp, color = V2.TextDim)
             }
-            Switch(deepHunt, { deepHunt = it })
+            Switch(state.deepHunt, { state.deepHunt = it })
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(if (ar) "تحضير مبكر" else "Auto-prepare", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 Text(if (ar) "تحميل العناصر الكسولة فورًا" else "Eager-load lazy media", fontSize = 10.sp, color = V2.TextDim)
             }
-            Switch(autoPrepare, { autoPrepare = it })
+            Switch(state.autoPrepare, { state.autoPrepare = it })
         }
         // Source filter chips with live counts
-        if (results.isNotEmpty()) {
+        if (state.results.isNotEmpty()) {
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                SourceChip(if (ar) "الكل" else "All", total, activeSource == null) { activeSource = null }
-                results.forEach { (src, list) ->
-                    SourceChip("${sourceLabels[src]?.second ?: ""} ${list.size}", list.size, activeSource == src) {
-                        activeSource = if (activeSource == src) null else src
+                SourceChip(if (ar) "الكل" else "All", total, state.activeSource == null) { state.activeSource = null }
+                state.results.forEach { (src, list) ->
+                    SourceChip("${sourceLabels[src]?.second ?: ""} ${list.size}", list.size, state.activeSource == src) {
+                        state.activeSource = if (state.activeSource == src) null else src
                     }
                 }
             }
         }
-        if (searching) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 10.dp), color = V2.Accent)
-        toast?.let { Text(it, color = V2.Mint, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) }
+        if (state.searching) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 10.dp), color = V2.Accent)
+        state.toast?.let { Text(it, color = V2.Mint, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) }
 
-        if (!ranOnce) EmptyState(Icons.Filled.AutoAwesome, if (ar) "دور في كل حتة مرة واحدة" else "Search everywhere at once",
+        if (!state.ranOnce) EmptyState(Icons.Filled.AutoAwesome, if (ar) "دور في كل حتة مرة واحدة" else "Search everywhere at once",
             if (ar) "أرشيف الإنترنت (أفلام ملكية عامة) · يوتيوب · داليموشن · PeerTube · فيميو · الويب كله" else "Internet Archive · YouTube · Dailymotion · PeerTube · Vimeo · the whole web")
-        else if (!searching && total == 0) EmptyState(Icons.Filled.Search, if (ar) "مفيش نتائج" else "No results",
+        else if (!state.searching && total == 0) EmptyState(Icons.Filled.Search, if (ar) "مفيش نتائج" else "No results",
             if (ar) "جرب اسم تاني أو شيل فلاتر المدة/السنة" else "Try another name or drop duration/year filters")
 
         LazyColumn(Modifier.weight(1f)) {
@@ -172,15 +177,15 @@ fun MagicSearchScreen(ar: Boolean, onPlayStream: (String, String) -> Unit, onOpe
                         fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.padding(top = 14.dp, bottom = 8.dp))
                 }
                 items(list) { r ->
-                    ResultCard(r, ar, MagicQuery.parse(text),
+                    ResultCard(r, ar, MagicQuery.parse(state.text),
                         downloadProgress = jobs.firstOrNull { it.media.pageUrl == r.pageUrl || it.media.url == r.pageUrl },
                         onPlay = {
                             val direct = r.playableUrl
                             if (r.source == "archive" && direct != null) {
-                                toast = if (ar) "جارٍ جلب جودات الأرشيف…" else "Fetching archive qualities…"
+                                state.toast = if (ar) "جارٍ جلب جودات الأرشيف…" else "Fetching archive qualities…"
                                 onOpenInBrowser(direct)
-                            } else if (deepHunt || true) {
-                                toast = if (ar) "🕵️ الصيد العميق بيفتح الصفحة في المتصفح…" else "🕵️ Deep Hunt is opening the page…"
+                            } else if (state.deepHunt || true) {
+                                state.toast = if (ar) "🕵️ الصيد العميق بيفتح الصفحة في المتصفح…" else "🕵️ Deep Hunt is opening the page…"
                                 onOpenInBrowser(r.pageUrl)
                             }
                         },
@@ -188,8 +193,8 @@ fun MagicSearchScreen(ar: Boolean, onPlayStream: (String, String) -> Unit, onOpe
                         onDownload = {
                             val url = r.playableUrl ?: r.pageUrl
                             val kind = if (url.contains(".m3u8")) MediaKind.HLS else MediaKind.infer(url, null)
-                            app.downloads.enqueue(DetectedMedia(url, r.title, kind, pageUrl = r.pageUrl, extractionMethod = "magic:${r.source}"), null, MagicQuery.parse(text).preferredHeight)
-                            toast = if (ar) "بدأ التحميل — شوفه في تبويب التحميلات ⬇️" else "Download started — see Downloads tab ⬇️"
+                            app.downloads.enqueue(DetectedMedia(url, r.title, kind, pageUrl = r.pageUrl, extractionMethod = "magic:${r.source}"), null, MagicQuery.parse(state.text).preferredHeight)
+                            state.toast = if (ar) "بدأ التحميل — شوفه في تبويب التحميلات ⬇️" else "Download started — see Downloads tab ⬇️"
                         })
                 }
             }

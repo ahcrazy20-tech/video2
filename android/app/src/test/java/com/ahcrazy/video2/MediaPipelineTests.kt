@@ -11,10 +11,19 @@ import com.ahcrazy.video2.data.Hls
 import com.ahcrazy.video2.data.HlsDocument
 import com.ahcrazy.video2.data.ProtectedMedia
 import com.ahcrazy.video2.core.media.responseMediaKind
+import com.ahcrazy.video2.ui.browser.browserTarget
 import org.junit.Assert.*
 import org.junit.Test
 
 class MediaPipelineTests {
+    @Test fun addressBarAcceptsDomainsAndSearchButRejectsNonBrowserSchemes() {
+        assertEquals("https://example.net/watch?x=1", browserTarget(" example.net/watch?x=1 "))
+        assertEquals("https://www.google.com/search?q=video+sample", browserTarget("video sample"))
+        assertNull(browserTarget("   "))
+        assertNull(browserTarget("file:///test.html"))
+        assertNull(browserTarget("https://user:password@example.net"))
+    }
+
     @Test fun signedExtensionlessUrlsAndSafetyRules() {
         val url = "https://media.example/get?id=1&mime=audio%2Fmp4&sig=a%2Bb#ignored"
         assertEquals(MediaKind.M4A, MediaKind.infer(url, null))

@@ -48,6 +48,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -81,8 +82,8 @@ fun LibraryScreen(
     val videos by app.library.videos.collectAsState()
     val folders by app.library.folders.collectAsState()
     val scope = rememberCoroutineScope()
-    var query by remember { mutableStateOf("") }
-    var folderFilter by remember { mutableStateOf<String?>(null) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var folderFilter by rememberSaveable { mutableStateOf<String?>(null) }
     var renameTarget by remember { mutableStateOf<SavedVideo?>(null) }
     var renameText by remember { mutableStateOf("") }
     var newFolder by remember { mutableStateOf(false) }

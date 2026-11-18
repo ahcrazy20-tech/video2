@@ -3,16 +3,19 @@ package com.ahcrazy.video2.ui.browser
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -49,6 +52,8 @@ internal class BrowserSession {
     fun destroy() { tabs.forEach { it.destroy() } }
 }
 
+internal enum class BrowserPageError { LOAD_FAILED, WEBVIEW_UNAVAILABLE, RENDERER_STOPPED }
+
 /** The WebView and all callbacks belong to this tab, independent of Compose selecting another tab. */
 internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
     var title by mutableStateOf("تبويب جديد")
@@ -61,8 +66,13 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
     var drm by mutableStateOf(DRMKind.NONE)
         private set
     var hideDrmBanner by mutableStateOf(false)
-    var webView: WebView? = null
+    var failure by mutableStateOf<BrowserPageError?>(null)
         private set
+    var canGoBack by mutableStateOf(false)
+        private set
+    var canGoForward by mutableStateOf(false)
+        private set
+    @Volatile private var webView: WebView? = null
     private val main = Handler(Looper.getMainLooper())
     private val framesWithDrm = mutableSetOf<String>()
     private val urlsWithDrm = mutableMapOf<String, DRMKind>()
@@ -70,17 +80,27 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
     @Volatile private var pageEpoch = 0
     private var destroyed = false
 
-    fun open(raw: String) {
-        val input = raw.trim()
-        if (input.isEmpty()) return
-        val search = { "https://www.google.com/search?q=" + URLEncoder.encode(input, "UTF-8") }
-        val candidate = httpMediaUrl(input) ?: if (input.contains("://")) return
-            else if (input.contains('.') && input.none(Char::isWhitespace)) httpMediaUrl("https://$input") else httpMediaUrl(search())
-        candidate ?: return
-        val target = candidate.toString()
-        address = target
-        url = target
+    fun open(raw: String): Boolean {
+        val target = browserTarget(raw) ?: return false
+        startPage(target)
         webView?.loadUrl(target)
+        return true
+    }
+
+    fun goBack() { webView?.takeIf { it.canGoBack() }?.goBack() }
+
+    fun goForward() { webView?.takeIf { it.canGoForward() }?.goForward() }
+
+    fun reload() {
+        if (url.isBlank()) return
+        if (failure != null || webView == null) open(url) else webView?.reload()
+    }
+
+    fun goHome() {
+        startPage("")
+        loading = false
+        title = "تبويب جديد"
+        disposeWebView()
     }
 
     fun auth(media: DetectedMedia? = null) = DownloadAuth(
@@ -128,6 +148,7 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
         pageEpoch++
         url = target
         address = target
+        failure = null
         loading = true
         progress = 0f
         detected.clear()
@@ -138,15 +159,37 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
         nativeRequests.clear()
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
-    fun view(context: Context, script: String, adHosts: Set<String>, session: BrowserSession): WebView {
-        webView?.let {
-            (it.parent as? ViewGroup)?.removeView(it)
-            it.onResume()
-            return it
+    /** Attach the retained WebView inside a clipped native container for this viewport only. */
+    fun mount(container: FrameLayout, script: String, adHosts: Set<String>, session: BrowserSession) {
+        if (destroyed || url.isBlank() || failure == BrowserPageError.WEBVIEW_UNAVAILABLE || failure == BrowserPageError.RENDERER_STOPPED) return
+        val previous = webView
+        try {
+            val view = previous ?: createWebView(container.context, script, adHosts, session)
+            if (view.parent !== container) {
+                (view.parent as? ViewGroup)?.removeView(view)
+                container.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                view.onResume()
+            }
+            if (previous == null) view.loadUrl(url)
+        } catch (_: RuntimeException) {
+            disposeWebView()
+            loading = false
+            failure = BrowserPageError.WEBVIEW_UNAVAILABLE
         }
+    }
+
+    fun unmount(container: FrameLayout) {
+        webView?.takeIf { it.parent === container }?.let { view ->
+            view.onPause()
+            container.removeView(view)
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun createWebView(context: Context, script: String, adHosts: Set<String>, session: BrowserSession): WebView {
         val view = WebView(context)
         webView = view
+        view.setBackgroundColor(Color.WHITE)
         view.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -155,48 +198,78 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
             allowContentAccess = false
         }
         CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)
-        val bridge = WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)
-        val early = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
-        if (bridge) {
-            // This listener only accepts bounded observation data. It has no download or privileged command surface.
-            WebViewCompat.addWebMessageListener(view, "Video2Media", setOf("*")) { _, message, sourceOrigin, isMainFrame, _ ->
-                val origin = httpMediaUrl(sourceOrigin.toString()) ?: return@addWebMessageListener
-                if (isMainFrame && httpMediaUrl(view.url)?.origin() != origin.origin()) return@addWebMessageListener
-                message.data?.let { ingestMessage(it, origin) }
+        val bridge = runCatching {
+            if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) false else {
+                // Only bounded observation data; no download or privileged native commands.
+                WebViewCompat.addWebMessageListener(view, "Video2Media", setOf("*")) { _, message, sourceOrigin, isMainFrame, _ ->
+                    if (view !== webView) return@addWebMessageListener
+                    val origin = httpMediaUrl(sourceOrigin.toString()) ?: return@addWebMessageListener
+                    if (isMainFrame && httpMediaUrl(view.url)?.origin() != origin.origin()) return@addWebMessageListener
+                    message.data?.let { ingestMessage(it, origin) }
+                }
+                true
             }
-        }
-        if (early) WebViewCompat.addDocumentStartJavaScript(view, script, setOf("*"))
+        }.getOrDefault(false)
+        val early = runCatching {
+            if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) false else {
+                WebViewCompat.addDocumentStartJavaScript(view, script, setOf("*"))
+                true
+            }
+        }.getOrDefault(false)
         view.webChromeClient = object : WebChromeClient() {
-            override fun onProgressChanged(view: WebView?, newProgress: Int) { progress = newProgress / 100f }
-            override fun onReceivedTitle(view: WebView?, newTitle: String?) { if (!newTitle.isNullOrBlank()) title = newTitle }
+            override fun onProgressChanged(v: WebView?, newProgress: Int) { if (v === webView) progress = newProgress / 100f }
+            override fun onReceivedTitle(v: WebView?, newTitle: String?) {
+                if (v === webView && !newTitle.isNullOrBlank()) title = newTitle
+            }
         }
         view.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
                 request.isForMainFrame && httpMediaUrl(request.url.toString()) == null
 
-            override fun onPageStarted(view: WebView, target: String?, favicon: Bitmap?) { startPage(target.orEmpty()) }
+            override fun onPageStarted(view: WebView, target: String?, favicon: Bitmap?) {
+                if (view !== webView || httpMediaUrl(target) == null) return
+                startPage(target.orEmpty())
+                updateHistory(view)
+            }
 
             override fun onPageFinished(view: WebView, target: String?) {
-                if (target != view.url || destroyed) return
+                if (view !== webView || target != view.url) return
                 loading = false
-                if (httpMediaUrl(target) != null) {
+                updateHistory(view)
+                if (failure == null && httpMediaUrl(target) != null) {
                     if (!early) view.evaluateJavascript(script, null)
                     else rescan()
                 }
             }
 
             override fun doUpdateVisitedHistory(view: WebView, target: String?, isReload: Boolean) {
-                if (target == null || target == url) return
+                if (view !== webView) return
+                updateHistory(view)
+                if (target == null || target == url || httpMediaUrl(target) == null) return
                 val wasEditing = address != url
                 url = target
                 if (!wasEditing) address = target
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame) loading = false
+                if (view === webView && request.isForMainFrame) {
+                    loading = false
+                    failure = BrowserPageError.LOAD_FAILED
+                    updateHistory(view)
+                }
+            }
+
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                if (view === webView) {
+                    disposeWebView(rendererStopped = true)
+                    loading = false
+                    failure = BrowserPageError.RENDERER_STOPPED
+                }
+                return true // This WebView cannot be reused. Retry creates a new renderer without losing the UI.
             }
 
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                if (view !== webView) return null
                 val target = httpMediaUrl(request.url.toString()) ?: return null
                 val adHost = generateSequence(target.host) { h -> h.substringAfter('.', "").ifEmpty { null } }.any { it in adHosts }
                 if (session.adBlock && adHost && !request.isForMainFrame) return WebResourceResponse("text/plain", "utf-8", byteArrayOf().inputStream())
@@ -210,13 +283,14 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
                 val epoch = pageEpoch
                 if (nativeRequests.size < 450 && nativeRequests.add("$epoch|$target|${ref.orEmptyString()}")) {
                     main.post {
-                        if (!destroyed && epoch == pageEpoch) candidate(target, kind, accept, "webview-request", ref, origin, ad = adHost)
+                        if (view === webView && epoch == pageEpoch) candidate(target, kind, accept, "webview-request", ref, origin, ad = adHost)
                     }
                 }
                 return null // Do not proxy or execute a second request.
             }
         }
         view.setDownloadListener { target, _, disposition, mime, length ->
+            if (view !== webView) return@setDownloadListener
             val remote = httpMediaUrl(target) ?: return@setDownloadListener
             val filename = disposition?.let { android.webkit.URLUtil.guessFileName(target, it, mime) }
             val kind = MediaKind.infer(target, mime).takeIf { it != MediaKind.OTHER } ?: MediaKind.infer(filename.orEmpty(), mime)
@@ -225,12 +299,12 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
         }
         if (!bridge) main.postDelayed(object : Runnable {
             override fun run() {
-                if (destroyed) return
+                if (view !== webView) return
                 val origin = httpMediaUrl(view.url)
                 if (view.isAttachedToWindow && origin != null) {
                     val epoch = pageEpoch
                     view.evaluateJavascript("window.__v2Drain ? window.__v2Drain() : []") { result ->
-                        if (!destroyed && epoch == pageEpoch && result.length <= 600_000) runCatching {
+                        if (view === webView && epoch == pageEpoch && result.length <= 600_000) runCatching {
                             val arr = JSONArray(result)
                             for (i in 0 until minOf(80, arr.length())) ingestMessage(arr.optString(i), origin)
                         }
@@ -239,7 +313,6 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
                 main.postDelayed(this, 1600)
             }
         }, 1600)
-        if (url.isNotBlank()) view.loadUrl(url)
         return view
     }
 
@@ -288,19 +361,40 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
     private fun titleFor(url: HttpUrl) = title.takeUnless { it == "تبويب جديد" || it.isBlank() }
         ?: url.pathSegments.last().ifBlank { url.host }
 
-    fun destroy() {
-        destroyed = true
+    private fun updateHistory(view: WebView) {
+        canGoBack = view.canGoBack()
+        canGoForward = view.canGoForward()
+    }
+
+    private fun disposeWebView(rendererStopped: Boolean = false) {
+        val view = webView
+        webView = null
         main.removeCallbacksAndMessages(null)
-        webView?.let { view ->
+        canGoBack = false
+        canGoForward = false
+        if (view != null) {
             (view.parent as? ViewGroup)?.removeView(view)
-            view.stopLoading()
+            if (!rendererStopped) view.stopLoading()
             view.destroy()
         }
-        webView = null
+    }
+
+    fun destroy() {
+        destroyed = true
+        disposeWebView()
     }
 
     private fun Map<String, String>.header(name: String) = entries.firstOrNull { it.key.equals(name, true) }?.value
     private fun HttpUrl?.orEmptyString() = this?.toString().orEmpty()
+}
+
+/** Explicit URLs are validated; a search term or bare host becomes a safe HTTP(S) target. */
+internal fun browserTarget(raw: String): String? {
+    val text = raw.trim().takeIf { it.isNotEmpty() && it.length <= 16_384 } ?: return null
+    httpMediaUrl(text)?.let { return it.toString() }
+    if (text.contains("://")) return null
+    if (text.contains('.') && text.none(Char::isWhitespace)) return httpMediaUrl("https://$text")?.toString()
+    return httpMediaUrl("https://www.google.com/search?q=${URLEncoder.encode(text, "UTF-8")}")?.toString()
 }
 
 internal fun mediaScore(item: DetectedMedia): Int =

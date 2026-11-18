@@ -1,11 +1,16 @@
 package com.ahcrazy.video2.ui.browser
 
+import android.widget.FrameLayout
+import androidx.activity.compose.BackHandler
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -15,18 +20,20 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.ahcrazy.video2.app
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.model.DetectedMedia
-import com.ahcrazy.video2.core.model.DownloadState
 import com.ahcrazy.video2.core.model.HlsVariant
 import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.util.L10n
@@ -58,6 +65,7 @@ internal fun BrowserScreen(ar: Boolean, session: BrowserSession, openUrl: String
     val detected = tab.detected.filter { !filterAds || !it.fromAd }.sortedByDescending(::mediaScore)
 
     SideEffect { session.adBlock = adBlock }
+    BackHandler(enabled = tab.canGoBack) { tab.goBack() }
     LaunchedEffect(openUrl) {
         if (!openUrl.isNullOrBlank()) { session.current.open(openUrl); onConsumeOpenUrl() }
     }
@@ -90,16 +98,36 @@ internal fun BrowserScreen(ar: Boolean, session: BrowserSession, openUrl: String
         onPlayStream(BrowserStream(current, tab.auth(current)))
     }
 
+    fun submitAddress() {
+        if (tab.address.isBlank()) return
+        focus.clearFocus()
+        if (!tab.open(tab.address)) scope.launch {
+            snackbars.showSnackbar(if (ar) "اكتب رابط HTTP أو HTTPS صالح، أو كلمة للبحث." else "Enter a valid HTTP or HTTPS URL, or a search term.")
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(V2.Bg)) {
         Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { tab.webView?.goBack() }) { Icon(Icons.Filled.ArrowBack, if (ar) "رجوع" else "Back", tint = Color.White) }
-                IconButton(onClick = { tab.webView?.goForward() }) { Icon(Icons.Filled.ArrowForward, if (ar) "للأمام" else "Forward", tint = Color.White) }
+                IconButton(onClick = tab::goBack, enabled = tab.canGoBack) {
+                    Icon(Icons.Filled.ArrowBack, if (ar) "رجوع" else "Back", tint = if (tab.canGoBack) Color.White else V2.TextDim)
+                }
+                IconButton(onClick = tab::goForward, enabled = tab.canGoForward) {
+                    Icon(Icons.Filled.ArrowForward, if (ar) "للأمام" else "Forward", tint = if (tab.canGoForward) Color.White else V2.TextDim)
+                }
                 OutlinedTextField(tab.address, { tab.address = it },
                     placeholder = { Text(if (ar) "ابحث أو اكتب رابط" else "Search or type a URL", fontSize = 12.sp) },
-                    singleLine = true, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(onGo = { focus.clearFocus(); tab.open(tab.address) }))
-                IconButton(onClick = { tab.webView?.reload() }) { Icon(Icons.Filled.Refresh, if (ar) "تحديث" else "Reload", tint = Color.White) }
+                    singleLine = true, modifier = Modifier.weight(1f).testTag("browser.address"),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                    keyboardActions = KeyboardActions(onGo = { submitAddress() }),
+                    trailingIcon = {
+                        IconButton(onClick = { submitAddress() }, enabled = tab.address.isNotBlank(), modifier = Modifier.testTag("browser.go")) {
+                            Icon(Icons.Filled.Search, if (ar) "فتح الرابط أو البحث" else "Open URL or search")
+                        }
+                    })
+                IconButton(onClick = tab::reload, enabled = tab.url.isNotBlank()) {
+                    Icon(Icons.Filled.Refresh, if (ar) "تحديث" else "Reload", tint = if (tab.url.isNotBlank()) Color.White else V2.TextDim)
+                }
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                 BadgedBox(badge = { if (detected.isNotEmpty()) Badge(containerColor = V2.Accent) { Text("${detected.size}") } }) {
@@ -124,9 +152,21 @@ internal fun BrowserScreen(ar: Boolean, session: BrowserSession, openUrl: String
                     TextButton(onClick = { tab.hideDrmBanner = true }) { Text(if (ar) "إخفاء" else "Hide") }
                 }
             }
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                key(tab.id) {
-                    AndroidView(factory = { c -> tab.view(c, extractor, adHosts, session) }, modifier = Modifier.fillMaxSize())
+            Box(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
+                if (tab.url.isBlank()) {
+                    BrowserStart(ar, onSearch = { focus.clearFocus(); tab.open("https://www.google.com/") }, onDirect = { shown = "paste" })
+                } else {
+                    // The native view is clipped to the page; it never covers Compose's toolbars or tab buttons.
+                    key(tab.id) {
+                        AndroidView(
+                            factory = { c -> FrameLayout(c).apply { clipChildren = true; clipToPadding = true } },
+                            modifier = Modifier.fillMaxSize().testTag("browser.viewport"),
+                            onReset = null,
+                            onRelease = tab::unmount,
+                            update = { tab.mount(it, extractor, adHosts, session) }
+                        )
+                    }
+                    tab.failure?.let { BrowserFailure(ar, it, onRetry = tab::reload, onHome = tab::goHome) }
                 }
             }
         }
@@ -231,6 +271,50 @@ internal fun BrowserScreen(ar: Boolean, session: BrowserSession, openUrl: String
                 }
             }) { Text(if (ar) "تحميل" else "Download") } },
             dismissButton = { TextButton(onClick = { shown = "" }) { Text(if (ar) "إلغاء" else "Cancel") } })
+    }
+}
+
+@Composable
+private fun BrowserStart(ar: Boolean, onSearch: () -> Unit, onDirect: () -> Unit) {
+    BrowserPanel(Modifier.testTag("browser.start")) {
+        Icon(Icons.Filled.Explore, null, Modifier.size(46.dp), tint = V2.Mint)
+        Text(if (ar) "متصفح فيديو ٢" else "Video2 Browser", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text(if (ar) "اكتب رابط أو كلمة للبحث في الشريط فوق. شغّل الفيديو على الصفحة، وبعدها افتح «الوسائط المكتشفة»."
+            else "Enter a URL or search above. Play the video on the page, then open Detected media.",
+            color = V2.TextDim, textAlign = TextAlign.Center, fontSize = 13.sp)
+        Button(onClick = onSearch) { Text(if (ar) "افتح Google" else "Open Google") }
+        TextButton(onClick = onDirect, modifier = Modifier.testTag("browser.start.direct")) {
+            Text(if (ar) "عندي رابط تحميل مباشر" else "I have a direct download URL")
+        }
+    }
+}
+
+@Composable
+private fun BrowserFailure(ar: Boolean, failure: BrowserPageError, onRetry: () -> Unit, onHome: () -> Unit) {
+    val (title, details) = when (failure) {
+        BrowserPageError.LOAD_FAILED -> if (ar) "الصفحة ما اتفتحتش" to "اتأكد من الاتصال بالإنترنت أو جرّب رابط تاني."
+            else "Couldn't open the page" to "Check your connection or try a different URL."
+        BrowserPageError.WEBVIEW_UNAVAILABLE -> if (ar) "محرك المتصفح غير متاح" to "حدّث Android System WebView أو Chrome، وجرب تاني."
+            else "Browser engine unavailable" to "Update Android System WebView or Chrome, then try again."
+        BrowserPageError.RENDERER_STOPPED -> if (ar) "عرض الصفحة اتوقف" to "جرب تفتح الصفحة من جديد."
+            else "Page rendering stopped" to "Try opening the page again."
+    }
+    BrowserPanel(Modifier.testTag("browser.error")) {
+        Icon(Icons.Filled.ErrorOutline, null, Modifier.size(42.dp), tint = V2.Gold)
+        Text(title, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+        Text(details, color = V2.TextDim, textAlign = TextAlign.Center, fontSize = 13.sp)
+        Button(onClick = onRetry) { Text(if (ar) "حاول تاني" else "Retry") }
+        TextButton(onClick = onHome) { Text(if (ar) "صفحة البداية" else "Start page") }
+    }
+}
+
+@Composable
+private fun BrowserPanel(modifier: Modifier, content: @Composable ColumnScope.() -> Unit) {
+    Box(modifier.fillMaxSize().background(V2.Bg), contentAlignment = Alignment.Center) {
+        Column(Modifier.widthIn(max = 390.dp).verticalScroll(rememberScrollState()).padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            content = content)
     }
 }
 
