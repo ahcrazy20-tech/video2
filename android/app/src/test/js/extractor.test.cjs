@@ -143,3 +143,20 @@ test('recognizes extensionless manifest paths but does not mistake a lookalike h
   await sandbox.fetch(fake);
   assert.deepEqual(messages.map(m => m.item?.url), [manifest]);
 });
+
+test('preserves the YouTube embed frame URL for watch-link recovery, never a different prefetched ID', () => {
+  const id = 'AbCdEfG_123';
+  const frame = `https://www.youtube-nocookie.com/embed/${id}?autoplay=1`;
+  const { sandbox, messages } = webFrame(frame);
+  const direct = 'https://edge.googlevideo.com/videoplayback?itag=18&sig=ephemeral';
+  const player = (videoId) => ({ videoDetails: { videoId }, streamingData: { formats: [{ url: direct, mimeType: 'video/mp4', height: 360 }] } });
+  sandbox.ytInitialPlayerResponse = player('ZyXwVu65432');
+  sandbox.__v2Scan();
+  assert.equal(messages.filter(m => m.type === 'media').length, 0);
+  sandbox.ytInitialPlayerResponse = player(id);
+  sandbox.performance.now = () => 700;
+  sandbox.__v2Scan();
+  const media = messages.find(m => m.type === 'media');
+  assert.equal(media?.page, frame);
+  assert.equal(media?.item.url, direct);
+});

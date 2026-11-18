@@ -4,6 +4,7 @@ import com.ahcrazy.video2.core.media.ContentRange
 import com.ahcrazy.video2.core.media.DASH_ROOT
 import com.ahcrazy.video2.core.media.MediaDownloadException
 import com.ahcrazy.video2.core.media.MediaHttp
+import com.ahcrazy.video2.core.media.externalHttpsUrl
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.isMediaFragment
 import com.ahcrazy.video2.core.media.isExpiredPlayerLink
@@ -35,6 +36,7 @@ internal class MediaProbe(private val http: MediaHttp) {
         return try {
             withTimeoutOrNull(12_000) {
                 val known = if (media.kind == MediaKind.HLS || media.kind == MediaKind.DASH) media else sniff(media, url, auth)
+                if (auth.externalHttpsOnly && !known.kind.isCompleteVideo) throw notMedia()
                 when (known.kind) {
                     MediaKind.HLS -> checkHls(known, url, auth, preferredHeight)
                     MediaKind.DASH -> checkDash(known, url, auth)
@@ -79,6 +81,8 @@ internal class MediaProbe(private val http: MediaHttp) {
         val selection = selectHlsSource(master, preferredHeight = preferredHeight) { asset ->
             http.read(http.request(asset, auth).build(), ::checkedPlaylist)
         }
+        if (auth.externalHttpsOnly && (selection.video.resources.asSequence() + selection.audio?.resources.orEmpty().asSequence())
+                .any { externalHttpsUrl(it.url.toString()) == null }) throw notMedia()
         val chosen = selection.variant
         return media.copy(kind = MediaKind.HLS, variants = variants, byteSize = null,
             durationSec = media.durationSec ?: selection.video.duration.takeIf { it > 0 },

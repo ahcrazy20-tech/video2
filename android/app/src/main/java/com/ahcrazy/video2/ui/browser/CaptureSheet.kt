@@ -52,7 +52,7 @@ internal data class CaptureGroup(val key: Pair<String, String>, val items: List<
 
 /** Like the iOS radar, rank sources from the same page together instead of grouping by rotating CDN host. */
 internal fun captureGroups(sources: List<DetectedMedia>): List<CaptureGroup> = sources.sortedByDescending(::mediaScore)
-    .groupBy { (it.pageUrl ?: it.requestReferer ?: it.url) to it.title.trim().replace(Regex("\\s+"), " ").lowercase() }
+    .groupBy { (it.publicPageUrl ?: it.pageUrl ?: it.requestReferer ?: it.url) to it.title.trim().replace(Regex("\\s+"), " ").lowercase() }
     .map { (key, rows) -> CaptureGroup(key, rows) }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -134,7 +134,7 @@ internal fun CaptureSheet(
                             }
                         }
                     }
-                    if (onExternal != null) TextButton(onClick = { onExternal(null) }) {
+                    if (onExternal != null) OutlinedButton(onClick = { onExternal(null) }, modifier = Modifier.testTag("browser.capture.external")) {
                         Icon(Icons.Filled.CloudDownload, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp))
                         Text(if (ar) "تحميل عبر خادم خارجي" else "Download via external server")
                     }

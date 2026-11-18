@@ -43,8 +43,8 @@ import com.ahcrazy.video2.core.media.manifestKind
 import com.ahcrazy.video2.core.media.YouTubeVideo
 import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.DownloadJob
-import com.ahcrazy.video2.core.model.DownloadAuth
 import com.ahcrazy.video2.core.model.HlsVariant
+import com.ahcrazy.video2.data.ResolverType
 import com.ahcrazy.video2.ui.theme.V2
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -88,12 +88,20 @@ internal fun BrowserScreen(
     }
     LaunchedEffect(recoverFrom) {
         val job = recoverFrom ?: return@LaunchedEffect
+        val provider = ResolverType.forMedia(job.media)
+        val watch = YouTubeVideo.fromMedia(job.media)
+        if (provider != null && watch != null && !job.media.drm.isProtected) {
+            shown = ""
+            external = ExternalVideoChoice(watch, job.media.title, provider)
+            onConsumeRecovery()
+            return@LaunchedEffect
+        }
         val page = job.media.pageUrl ?: job.media.requestReferer
         val sourceTab = page?.let(session::reopenSource)
         if (sourceTab != null) {
             // A manually selected HLS variant failing does not make the parent master unavailable.
             if (job.preferredVariantUrl == null) sourceTab.noteDownloadFailure(job.media.url, job.problem, job.httpStatus)
-            if (sourceTab.detected.isNotEmpty()) {
+            if (sourceTab.detected.isNotEmpty() || watch != null) {
                 recovering = true
                 shown = "capture"
                 sourceTab.rescan()
@@ -262,9 +270,7 @@ internal fun BrowserScreen(
                 shown = ""; checkingUrls = emptyList()
                 session.add(); session.current.open("https://support.google.com/youtube/answer/56100")
             }, onExternal = if (tab.drm.isProtected) null else { item ->
-                val selected = item?.let(YouTubeVideo::fromMedia)
-                    ?: YouTubeVideo.parse(tab.url)
-                    ?: detected.mapNotNull(YouTubeVideo::fromMedia).distinct().singleOrNull()
+                val selected = YouTubeVideo.forCapture(tab.url, detected, item)
                 shown = ""
                 qualityFor = null
                 checkingUrls = emptyList()
@@ -274,9 +280,10 @@ internal fun BrowserScreen(
 
     external?.let { choice ->
         ExternalDownloadSheet(ar, choice, preferredHeight, onClose = { external = null; shown = "capture" }, onDownload = { media ->
-            val job = app.downloads.enqueue(media, DownloadAuth.external, preferredHeight.takeIf { it > 0 })
+            val job = app.downloads.enqueue(media, maxHeight = preferredHeight.takeIf { it > 0 })
             external = null
             shown = ""
+            recovering = false
             if (job.state.isBusy) queued() else onOpenDownloads()
         })
     }

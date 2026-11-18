@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.Dispatcher
 import okhttp3.HttpUrl
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -34,7 +35,6 @@ internal class MediaHttp(private val cookies: (HttpUrl) -> String? = { CookieMan
             val auth = incoming.tag(DownloadAuth::class.java)
             if (auth != null) {
                 request.removeHeader("Origin").removeHeader("Referer").removeHeader("Accept")
-                if (auth.externalHttpsOnly) request.removeHeader("Authorization")
                 val original = chain.call().request().url
                 val downgrade = !incoming.url.isHttps && (original.isHttps || httpMediaUrl(auth.referer)?.isHttps == true)
                 auth.headersFor(incoming.url, original).forEach { (name, value) -> request.header(name, value) }
@@ -53,16 +53,38 @@ internal class MediaHttp(private val cookies: (HttpUrl) -> String? = { CookieMan
         chain.proceed(request.build())
     }.build()
 
-    private val external = client.newBuilder().dns(publicMediaDns).followSslRedirects(false)
-        .readTimeout(60, TimeUnit.SECONDS).build()
+    private val external = OkHttpClient.Builder().externalTransport().addInterceptor(PublicMediaReads)
+        .connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
+        .dispatcher(Dispatcher().apply { maxRequestsPerHost = 8 }).build()
 
     suspend fun <T> read(request: Request, consume: suspend (Response) -> T): T {
-        val transport = if (request.tag(DownloadAuth::class.java)?.externalHttpsOnly == true) {
-            if (externalHttpsUrl(request.url.toString()) == null) throw MediaDownloadException(MediaProblem.NOT_MEDIA.ar, MediaProblem.NOT_MEDIA)
-            external
-        } else client
+        val transport = if (request.tag(DownloadAuth::class.java)?.externalHttpsOnly == true) external else client
         return transport.readMedia(request, consume)
     }
+}
+
+/** Validate each URL before connecting, including redirects for playlists, segments and ranged resumes. */
+internal object PublicMediaReads : Interceptor {
+    private val redirects = setOf(301, 302, 303, 307, 308)
+
+    override fun intercept(chain: Interceptor.Chain): Response {
+        var request = chain.request().newBuilder()
+            .removeHeader("Cookie").removeHeader("Authorization").removeHeader("Proxy-Authorization")
+            .removeHeader("Referer").removeHeader("Origin").removeHeader("Accept")
+            .removeHeader("Host").header("User-Agent", DownloadAuth.CHROME_UA).build()
+        val seen = hashSetOf<HttpUrl>()
+        repeat(6) { hop ->
+            if (externalHttpsUrl(request.url.toString()) == null || !seen.add(request.url)) throw invalidTarget()
+            val response = chain.proceed(request)
+            if (response.code !in redirects) return response
+            val next = response.use { it.header("Location")?.let(it.request.url::resolve) } ?: throw invalidTarget()
+            if (hop == 5) throw invalidTarget()
+            request = request.newBuilder().url(next).build()
+        }
+        throw invalidTarget()
+    }
+
+    private fun invalidTarget() = MediaDownloadException(MediaProblem.NOT_MEDIA.ar, MediaProblem.NOT_MEDIA)
 }
 
 // Keep the cancellation watcher alive until the response body has been consumed, not just until headers arrive.

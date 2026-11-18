@@ -25,6 +25,7 @@ import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.model.DownloadJob
 import com.ahcrazy.video2.core.model.DownloadState
 import com.ahcrazy.video2.core.util.L10n
+import com.ahcrazy.video2.data.ResolverType
 import com.ahcrazy.video2.ui.components.GlassCard
 import com.ahcrazy.video2.ui.theme.V2
 
@@ -71,6 +72,7 @@ fun DownloadsScreen(ar: Boolean, onOpenSource: (DownloadJob) -> Unit, onOpenLibr
 @Composable
 private fun JobRow(job: DownloadJob, ar: Boolean, onPause: () -> Unit, onResume: () -> Unit, onRemove: () -> Unit,
                    onOpenSource: (() -> Unit)?, onOpenLibrary: () -> Unit) {
+    val resolver = ResolverType.forMedia(job.media)
     val (icon, tint) = when (job.state) {
         DownloadState.COMPLETED -> Icons.Filled.CheckCircle to V2.Mint
         DownloadState.PAUSED -> Icons.Filled.PauseCircle to V2.Gold
@@ -86,6 +88,7 @@ private fun JobRow(job: DownloadJob, ar: Boolean, onPause: () -> Unit, onResume:
                 Column(Modifier.weight(1f)) {
                     Text(job.media.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(stateText(job, ar), style = MaterialTheme.typography.bodySmall, color = tint)
+                    resolver?.let { Text((if (ar) "الخادم: " else "Server: ") + it.label, style = MaterialTheme.typography.bodySmall, color = V2.TextDim) }
                 }
                 IconButton(onClick = onRemove) { Icon(Icons.Filled.Close, if (ar) "إزالة من القائمة" else "Remove from queue", tint = V2.TextDim) }
             }
@@ -112,8 +115,11 @@ private fun JobRow(job: DownloadJob, ar: Boolean, onPause: () -> Unit, onResume:
                     Text(if (job.state == DownloadState.FAILED) (if (ar) "حاول تاني" else "Try again") else (if (ar) "استئناف" else "Resume"))
                 }
                 if (onOpenSource != null && job.state == DownloadState.FAILED) TextButton(onClick = onOpenSource) {
-                    Text(if (job.problem?.needsNewLink == true) (if (ar) "ارجع للمصدر وافحص البدائل" else "Return to source and check alternatives")
-                        else (if (ar) "افتح صفحة المصدر" else "Open source page"))
+                    Text(when {
+                        resolver != null -> if (ar) "اطلب رابط جديد من خادم" else "Get a new link from a server"
+                        job.problem?.needsNewLink == true -> if (ar) "ارجع للمصدر وافحص البدائل" else "Return to source and check alternatives"
+                        else -> if (ar) "افتح صفحة المصدر" else "Open source page"
+                    })
                 }
                 if (job.state == DownloadState.COMPLETED) TextButton(onClick = onOpenLibrary) { Text(if (ar) "افتح المكتبة" else "Open Library") }
             }

@@ -1,6 +1,9 @@
 package com.ahcrazy.video2
 
+import com.ahcrazy.video2.core.media.MediaDownloadException
+import com.ahcrazy.video2.core.media.PublicMediaReads
 import com.ahcrazy.video2.core.media.YouTubeVideo
+import com.ahcrazy.video2.core.media.externalTransport
 import com.ahcrazy.video2.core.media.externalHttpsUrl
 import com.ahcrazy.video2.core.media.isPublicMediaAddress
 import com.ahcrazy.video2.core.media.resolverEndpoint
@@ -45,6 +48,12 @@ class ExternalResolverTest {
         val embedded = DetectedMedia("https://r1.googlevideo.com/videoplayback?sig=secret", "Video", MediaKind.MP4,
             pageUrl = "https://www.google.com/search?q=not-a-video", requestReferer = "https://www.youtube.com/embed/$id?session=private")
         assertEquals(canonical, YouTubeVideo.fromMedia(embedded)?.watchUrl)
+        val search = requireNotNull(embedded.pageUrl)
+        val other = embedded.copy(url = "https://r2.googlevideo.com/videoplayback?sig=other", requestReferer = "https://www.youtube.com/embed/ZyXwVu65432")
+        assertEquals(video, YouTubeVideo.forCapture(search, listOf(embedded, other.copy(fromAd = true))))
+        assertNull(YouTubeVideo.forCapture(search, listOf(embedded, other)))
+        assertEquals(video, YouTubeVideo.forCapture(search, listOf(embedded, other), selected = embedded))
+        assertNull(YouTubeVideo.forCapture(search, emptyList()))
     }
 
     @Test fun cobaltSendsJustTheCanonicalPageAndAcceptsPreparedFileFromTheSelectedServer() = runBlocking<Unit> {
@@ -61,6 +70,7 @@ class ExternalResolverTest {
         val json = JSONObject(body)
         assertEquals(canonical, json.getString("url"))
         assertEquals("720", json.getString("videoQuality"))
+        assertTrue(json.getBoolean("alwaysProxy"))
         assertEquals("Api-Key test-key", request.header("Authorization"))
         assertNull(request.header("Cookie"))
         assertNull(request.header("Referer"))
@@ -96,14 +106,16 @@ class ExternalResolverTest {
     @Test fun invidiousIgnoresAdaptiveAndPrivateTargetsAndKeepsPlayableContainers() = runBlocking<Unit> {
         val resolver = ExternalResolver(fakeHttp { request ->
             assertEquals("/api/api/v1/videos/$id", request.url.encodedPath)
+            assertEquals("true", request.url.queryParameter("local"))
             200 to """{"videoId":"$id", "adaptiveFormats":[{"url":"https://host.example.net/video-only.mp4"}],
-               "formatStreams":[{"url":"https://host.example.net/full","container":"webm","qualityLabel":"480p"},
+               "formatStreams":[{"url":"/videoplayback?sig=a%2Bb","container":"webm","qualityLabel":"480p"},
                {"url":"https://localhost/watch.mp4","container":"mp4"},
                {"url":"http://host.example.net/insecure.mp4","container":"mp4"}]}"""
         })
         val found = resolver.resolve(ResolverType.INVIDIOUS, server, video, 0, null, null).single()
         assertEquals(MediaKind.WEBM, found.kind)
         assertEquals(480, found.height)
+        assertEquals("https://media.example.net/videoplayback?sig=a%2Bb", found.url)
     }
 
     @Test fun accessDenialsDoNotFanOutOrParseErrorPagesAsVideo() = runBlocking<Unit> {
@@ -118,7 +130,7 @@ class ExternalResolverTest {
         assertNull(externalHttpsUrl("https://127.0.0.1/private"))
         assertNull(externalHttpsUrl("https://internal.local/private"))
         assertNull(resolverEndpoint("https://media.example.net/?key=private"))
-        listOf("10.0.0.1", "169.254.169.254", "192.168.0.1", "100.64.1.1", "::1", "fc00::1").forEach {
+        listOf("10.0.0.1", "169.254.169.254", "192.168.0.1", "100.64.1.1", "::1", "fc00::1", "2002:7f00:1::", "2001:0::1").forEach {
             assertFalse(it, isPublicMediaAddress(InetAddress.getByName(it)))
         }
         assertThrows(ResolverFailure::class.java) {
@@ -126,6 +138,43 @@ class ExternalResolverTest {
                 JSONObject("""{"status":"tunnel","url":"https://unselected.example.net/tunnel","filename":"sample.mp4"}"""), null, 720)
         }
     }
+
+    @Test fun noExternalResultCanCarryBrowserCredentialsToMediaOrRedirects() {
+        val requests = mutableListOf<Request>()
+        val http = OkHttpClient.Builder().externalTransport().addInterceptor(PublicMediaReads).addInterceptor { chain ->
+            val request = chain.request()
+            requests += request
+            if (requests.size == 1) fixture(request, 302).header("Location", "https://cdn.example.net/a?sig=a%2Bb").build()
+            else fixture(request, 200).build()
+        }.build()
+        val request = Request.Builder().url("https://media.example.net/file")
+            .header("Authorization", "Api-Key secret").header("Cookie", "session=private")
+            .header("Proxy-Authorization", "private").header("Referer", "https://example.net/secret")
+            .header("Origin", "https://example.net").header("Range", "bytes=12-").build()
+        http.newCall(request).execute().use { assertEquals(200, it.code) }
+        assertEquals(2, requests.size)
+        assertEquals("https://cdn.example.net/a?sig=a%2Bb", requests.last().url.toString())
+        requests.forEach { seen ->
+            listOf("Authorization", "Cookie", "Proxy-Authorization", "Referer", "Origin").forEach { assertNull(it, seen.header(it)) }
+            assertEquals("bytes=12-", seen.header("Range"))
+        }
+    }
+
+    @Test fun publicHttpsChecksApplyBeforeFollowingAnyMediaRedirect() {
+        for (location in listOf("http://media.example.net/insecure", "https://127.0.0.1/private", "https://auth@media.example.net/file", "https://tools.internal/")) {
+            var requests = 0
+            val http = OkHttpClient.Builder().externalTransport().addInterceptor(PublicMediaReads).addInterceptor { chain ->
+                requests++
+                fixture(chain.request(), 302).header("Location", location).build()
+            }.build()
+            val request = Request.Builder().url("https://media.example.net/file").build()
+            assertThrows(location, MediaDownloadException::class.java) { http.newCall(request).execute().close() }
+            assertEquals(location, 1, requests)
+        }
+    }
+
+    private fun fixture(request: Request, code: Int) = Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+        .code(code).message("fixture").body("".toResponseBody())
 
     private fun fakeHttp(reply: (Request) -> Pair<Int, String>) = OkHttpClient.Builder().addInterceptor { chain ->
         val request = chain.request()

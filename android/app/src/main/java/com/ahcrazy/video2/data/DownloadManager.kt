@@ -77,8 +77,13 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
 
     @Synchronized
     fun enqueue(media: DetectedMedia, auth: DownloadAuth? = null, maxHeight: Int? = null, variantUrl: String? = null): DownloadJob {
-        _jobs.value.firstOrNull { it.media.url == media.url && it.state.isBusy && !media.drm.isProtected }?.let { return it }
-        val job = DownloadJob(media = media, auth = auth, preferredMaxHeight = maxHeight, preferredVariantUrl = variantUrl).let {
+        val external = ResolverType.forMedia(media) != null
+        val requestAuth = if (external) DownloadAuth.external else auth
+        _jobs.value.firstOrNull {
+            it.media.url == media.url && it.state.isBusy && !media.drm.isProtected &&
+                (it.auth?.externalHttpsOnly == true || ResolverType.forMedia(it.media) != null) == (requestAuth?.externalHttpsOnly == true)
+        }?.let { return it }
+        val job = DownloadJob(media = media, auth = requestAuth, preferredMaxHeight = maxHeight, preferredVariantUrl = variantUrl).let {
             when {
                 media.drm.isProtected -> it.copy(state = DownloadState.BLOCKED_DRM, errorMessage = ProtectedMedia(media.drm).message)
                 !media.canDownload -> it.copy(state = DownloadState.FAILED, errorMessage = media.probeProblem?.ar ?: unsupported(media).message, problem = media.probeProblem, httpStatus = media.probeHttpStatus)
@@ -183,7 +188,8 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
         task.start()
     }
 
-    internal suspend fun probe(media: DetectedMedia, auth: DownloadAuth, preferredHeight: Int? = null): DetectedMedia = mediaProbe.check(media, auth, preferredHeight)
+    internal suspend fun probe(media: DetectedMedia, auth: DownloadAuth, preferredHeight: Int? = null): DetectedMedia =
+        mediaProbe.check(media, if (ResolverType.forMedia(media) != null) DownloadAuth.external else auth, preferredHeight)
 
     private suspend fun perform(job: DownloadJob, progress: (Double, Long) -> Unit): SavedVideo {
         val media = job.media
@@ -191,7 +197,7 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
         if (!media.canDownload) throw unsupported(media)
         val url = httpMediaUrl(media.url) ?: throw unsupported(media)
         if (url.isExpiredPlayerLink()) throw MediaDownloadException(MediaProblem.EXPIRED.ar, MediaProblem.EXPIRED)
-        val auth = if (media.extractionMethod.startsWith("external-")) DownloadAuth.external
+        val auth = if (ResolverType.forMedia(media) != null) DownloadAuth.external
             else job.auth ?: DownloadAuth.default.copy(referer = media.requestReferer ?: media.pageUrl)
         val work = workDir(job.id).apply { mkdirs() }
         if (media.kind == MediaKind.HLS) return downloadHls(job, playlist(url, auth), auth, work, progress)
@@ -241,7 +247,9 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
                     if (response.peekBody(64 * 1024).string().contains("ContentProtection", true)) throw ProtectedMedia(DRMKind.UNKNOWN_PROTECTED)
                     throw unsupported(job.media.copy(kind = kind))
                 }
-                if (kind.isLikelyFragment) throw unsupported(job.media.copy(kind = kind))
+                if (kind.isLikelyFragment || auth.externalHttpsOnly && !kind.isCompleteVideo) {
+                    throw MediaDownloadException(MediaProblem.NOT_MEDIA.ar, MediaProblem.NOT_MEDIA)
+                }
                 val total = range?.total ?: body.contentLength().takeIf { it > 0 }
                 if (!append) {
                     part.outputStream().close()
@@ -436,7 +444,7 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
                         put("duration", j.media.durationSec)
                     })
                     // Auth configuration only. Session cookies are never serialized into this file.
-                    j.auth?.let { put("auth", JSONObject().put("ua", it.userAgent).put("referer", it.referer)
+                    j.auth?.takeUnless { it.externalHttpsOnly }?.let { put("auth", JSONObject().put("ua", it.userAgent).put("referer", it.referer)
                         .put("origin", it.origin).put("browser", it.useBrowserCookies).put("accept", it.accept)
                         .put("observed", it.observedResource == j.media.url)) }
                 })

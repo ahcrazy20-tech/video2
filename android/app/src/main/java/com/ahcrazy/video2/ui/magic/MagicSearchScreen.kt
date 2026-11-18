@@ -20,6 +20,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Link
@@ -56,11 +57,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.ahcrazy.video2.app
+import com.ahcrazy.video2.core.media.YouTubeVideo
 import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.util.MagicDuration
 import com.ahcrazy.video2.core.util.MagicQuery
 import com.ahcrazy.video2.data.MagicResult
+import com.ahcrazy.video2.ui.browser.ExternalDownloadSheet
+import com.ahcrazy.video2.ui.browser.ExternalVideoChoice
 import com.ahcrazy.video2.ui.components.ChipPreview
 import com.ahcrazy.video2.ui.components.EmptyState
 import com.ahcrazy.video2.ui.components.GlassCard
@@ -93,6 +97,8 @@ internal fun MagicSearchScreen(
     val app = (LocalContext.current as android.app.Activity).app()
     val jobs by app.downloads.jobs.collectAsState()
     var showSyntax by remember { mutableStateOf(false) }
+    var external by remember { mutableStateOf<ExternalVideoChoice?>(null) }
+    val preferredHeight by app.settings.downloadMaxHeight.collectAsState(initial = 0)
 
     fun runSearch() {
         val q = MagicQuery.parse(state.text)
@@ -177,7 +183,9 @@ internal fun MagicSearchScreen(
                         fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.padding(top = 14.dp, bottom = 8.dp))
                 }
                 items(list) { r ->
+                    val watch = YouTubeVideo.parse(r.pageUrl)
                     ResultCard(r, ar, MagicQuery.parse(state.text),
+                        externalDownload = watch != null,
                         downloadProgress = jobs.firstOrNull { it.media.pageUrl == r.pageUrl || it.media.url == r.pageUrl },
                         onPlay = {
                             val direct = r.playableUrl
@@ -191,15 +199,27 @@ internal fun MagicSearchScreen(
                         },
                         onOpen = { onOpenInBrowser(r.pageUrl) },
                         onDownload = {
-                            val url = r.playableUrl ?: r.pageUrl
-                            val kind = if (url.contains(".m3u8")) MediaKind.HLS else MediaKind.infer(url, null)
-                            app.downloads.enqueue(DetectedMedia(url, r.title, kind, pageUrl = r.pageUrl, extractionMethod = "magic:${r.source}"), null, MagicQuery.parse(state.text).preferredHeight)
-                            state.toast = if (ar) "بدأ التحميل — شوفه في تبويب التحميلات ⬇️" else "Download started — see Downloads tab ⬇️"
+                            if (watch != null) external = ExternalVideoChoice(watch, r.title)
+                            else {
+                                val url = r.playableUrl ?: r.pageUrl
+                                val kind = if (url.contains(".m3u8")) MediaKind.HLS else MediaKind.infer(url, null)
+                                app.downloads.enqueue(DetectedMedia(url, r.title, kind, pageUrl = r.pageUrl, extractionMethod = "magic:${r.source}"), null, MagicQuery.parse(state.text).preferredHeight)
+                                state.toast = if (ar) "بدأ التحميل — شوفه في تبويب التحميلات ⬇️" else "Download started — see Downloads tab ⬇️"
+                            }
                         })
                 }
             }
             item { Spacer(Modifier.height(90.dp)) }
         }
+    }
+
+    external?.let { choice ->
+        val height = MagicQuery.parse(state.text).preferredHeight ?: preferredHeight
+        ExternalDownloadSheet(ar, choice, height, onClose = { external = null }, onDownload = { media ->
+            app.downloads.enqueue(media, maxHeight = height.takeIf { it > 0 })
+            state.toast = if (ar) "اتضاف لقائمة التحميلات" else "Added to Downloads"
+            external = null
+        })
     }
 
     if (showSyntax) AlertDialog(onDismissRequest = { showSyntax = false },
@@ -222,7 +242,7 @@ internal fun MagicSearchScreen(
 
 @Composable
 private fun ResultCard(r: MagicResult, ar: Boolean, q: MagicQuery,
-                       downloadProgress: com.ahcrazy.video2.core.model.DownloadJob?,
+                       downloadProgress: com.ahcrazy.video2.core.model.DownloadJob?, externalDownload: Boolean,
                        onPlay: () -> Unit, onOpen: () -> Unit, onDownload: () -> Unit) {
     val match = MagicDuration.matchOf(r.durationSec, q)
     GlassCard(Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
@@ -245,9 +265,16 @@ private fun ResultCard(r: MagicResult, ar: Boolean, q: MagicQuery,
                 r.snippet?.let { Text(it, fontSize = 11.sp, color = V2.TextDim, maxLines = 2, modifier = Modifier.padding(top = 5.dp)) }
                 Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Button(onClick = onPlay) { Icon(Icons.Filled.PlayArrow, null, Modifier.width(15.dp)); Text(if (ar) "تشغيل" else "Play", fontSize = 11.sp) }
-                    OutlinedButton(onClick = onDownload) { Icon(Icons.Filled.Download, null, Modifier.width(15.dp)); Text(if (ar) "تحميل" else "Get", fontSize = 11.sp) }
+                    if (!externalDownload) OutlinedButton(onClick = onDownload) {
+                        Icon(Icons.Filled.Download, null, Modifier.width(15.dp)); Text(if (ar) "تحميل" else "Get", fontSize = 11.sp)
+                    }
                     IconButton(onClick = onOpen) { Icon(Icons.Filled.OpenInBrowser, null, tint = V2.TextDim) }
                     IconButton(onClick = onOpen) { Icon(Icons.Filled.Radar, null, tint = V2.Mint) }
+                }
+                if (externalDownload) TextButton(onClick = onDownload) {
+                    Icon(Icons.Filled.CloudDownload, null, Modifier.width(17.dp), tint = V2.Mint)
+                    Spacer(Modifier.width(5.dp))
+                    Text(if (ar) "تحميل عبر خادم" else "Download via server")
                 }
                 downloadProgress?.let { j ->
                     LinearProgressIndicator(progress = { j.progress.toFloat() }, Modifier.fillMaxWidth().padding(top = 6.dp), color = V2.Mint)

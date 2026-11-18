@@ -457,7 +457,8 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
         if (httpMediaUrl(url) == null) return
         ingest(DetectedMedia(target.toString(), label?.take(250)?.ifBlank { titleFor(target) } ?: titleFor(target), kind,
             mime = mime, pageUrl = url, extractionMethod = method, byteSize = size,
-            requestReferer = ref?.toString(), fromAd = ad || target.isVideoAd()))
+            requestReferer = ref?.toString(), publicPageUrl = YouTubeVideo.parse(ref?.toString())?.watchUrl,
+            fromAd = ad || target.isVideoAd()))
     }
 
     private fun titleFor(url: HttpUrl) = title.takeUnless { it == "تبويب جديد" || it.isBlank() }
