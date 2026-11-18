@@ -178,7 +178,7 @@ class DownloadManager(private val ctx: Context, private val library: LibraryStor
         if (media.drm.isProtected) return media
         return try {
             withTimeoutOrNull(12_000) {
-                if (media.kind == MediaKind.HLS) return@withTimeout probeHls(media, playlist(url, auth), auth)
+                if (media.kind == MediaKind.HLS) return@withTimeoutOrNull probeHls(media, playlist(url, auth), auth)
                 val item = http.read(http.request(url, auth).head().build()) { response ->
                     response.requireMediaSuccess()
                     val type = response.header("Content-Type")
