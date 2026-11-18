@@ -226,8 +226,8 @@ internal class SmartDownloads(
                     available.filterNot { it.url in attempted }.map { SmartCandidate(it, auth) })
                 is SmartResult.Unavailable -> {
                     failure = result
-                    if (failure.protected || failure.httpStatus in setOf(401, 403, 429)) break
                     if (failure.media?.needsNewLink == true) onRejectedUrl(media.url)
+                    if (failure.protected || failure.httpStatus in setOf(401, 403, 429)) break
                 }
             }
         }

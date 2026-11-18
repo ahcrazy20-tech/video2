@@ -68,6 +68,9 @@ class PeerTubeDownloadsTest {
     @Test fun mp4HeaderMustContainBothTracks() {
         val picture = javaClass.getResourceAsStream("/media/fixture-picture.mp4")!!.use { it.readBytes() }
         val audio = javaClass.getResourceAsStream("/media/fixture-sound.m4a")!!.use { it.readBytes() }
+        val complete = javaClass.getResourceAsStream("/media/fixture-av.mp4")!!.use { it.readBytes() }
+        assertTrue(validPeerTubeMp4(MediaKind.MP4, complete, complete.size.toLong(), complete.size.toLong()))
+        assertFalse(validPeerTubeMp4(MediaKind.MP4, complete, complete.size.toLong(), complete.size + 1L))
         assertFalse(validPeerTubeMp4(MediaKind.MP4, picture, picture.size.toLong(), null))
         assertFalse(validPeerTubeMp4(MediaKind.MP4, audio, audio.size.toLong(), null))
     }

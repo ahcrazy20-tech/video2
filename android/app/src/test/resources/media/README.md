@@ -4,3 +4,9 @@ These one-second synthetic clips (solid color and a 440 Hz sine wave) are fixtur
 ffmpeg -f lavfi -i 'color=c=teal:s=64x48:r=10:d=1' -an -c:v libx264 -pix_fmt yuv420p -movflags +frag_keyframe+empty_moov fixture-picture.mp4
 ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=16000:duration=1' -vn -c:a aac -b:a 20k -movflags +frag_keyframe+empty_moov fixture-sound.m4a
 ```
+
+The combined `fixture-av.mp4` is generated from the same two clips and verifies that publisher MP4 downloads contain both tracks:
+
+```sh
+ffmpeg -i fixture-picture.mp4 -i fixture-sound.m4a -map 0:v:0 -map 1:a:0 -c copy -movflags +faststart fixture-av.mp4
+```

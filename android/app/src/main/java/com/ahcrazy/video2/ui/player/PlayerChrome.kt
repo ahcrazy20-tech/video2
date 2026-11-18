@@ -76,7 +76,7 @@ internal fun PlayerHeader(ar: Boolean, title: String, kind: String?, status: Str
     Surface(Modifier.widthIn(max = 860.dp).fillMaxWidth().testTag("player.header"), shape = RoundedCornerShape(20.dp),
         color = Chrome, border = BorderStroke(1.dp, ChromeLine), contentColor = V2.Text) {
         Row(Modifier.padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack, modifier = Modifier.testTag("player.back")) {
+            IconButton(onClick = onBack, modifier = Modifier.size(48.dp).testTag("player.back")) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, if (ar) "رجوع" else "Back", tint = V2.Text)
             }
             Column(Modifier.weight(1f).padding(horizontal = 6.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -94,7 +94,7 @@ internal fun PlayerHeader(ar: Boolean, title: String, kind: String?, status: Str
                     }
                 }
             }
-            IconButton(onClick = onTools, modifier = Modifier.testTag("player.tools")) {
+            IconButton(onClick = onTools, modifier = Modifier.size(48.dp).testTag("player.tools")) {
                 Icon(Icons.Filled.MoreVert, if (ar) "أدوات المشغّل" else "Player tools", tint = V2.Text)
             }
         }
@@ -172,22 +172,22 @@ internal fun PlayerDeck(
                 HorizontalDivider(color = ChromeLine)
                 Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onSpeed, modifier = Modifier.testTag("player.speed").semantics {
+                    IconButton(onClick = onSpeed, modifier = Modifier.size(48.dp).testTag("player.speed").semantics {
                         contentDescription = if (ar) "سرعة التشغيل" else "Playback speed"
                         stateDescription = rate
                     }) {
                         Text(rate, maxLines = 1, color = V2.Mint, style = MaterialTheme.typography.labelMedium)
                     }
-                    IconButton(onClick = onMute, modifier = Modifier.testTag("player.mute")) {
+                    IconButton(onClick = onMute, modifier = Modifier.size(48.dp).testTag("player.mute")) {
                         Icon(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
                             if (muted) (if (ar) "تشغيل الصوت" else "Unmute") else (if (ar) "كتم الصوت" else "Mute"),
                             tint = if (muted) V2.Mint else V2.Text)
                     }
-                    IconButton(onClick = onCaptions, enabled = hasCaptions, modifier = Modifier.testTag("player.captions")) {
+                    IconButton(onClick = onCaptions, enabled = hasCaptions, modifier = Modifier.size(48.dp).testTag("player.captions")) {
                         Icon(Icons.Filled.ClosedCaption, if (ar) "الترجمة" else "Captions",
                             tint = if (!hasCaptions) V2.TextDim.copy(alpha = .55f) else if (captionsOn) V2.Mint else V2.Text)
                     }
-                    IconButton(onClick = onRotate, modifier = Modifier.testTag("player.rotate")) {
+                    IconButton(onClick = onRotate, modifier = Modifier.size(48.dp).testTag("player.rotate")) {
                         Icon(if (landscape) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
                             if (landscape) (if (ar) "عرض رأسي" else "Portrait") else (if (ar) "عرض أفقي" else "Landscape"), tint = V2.Text)
                     }

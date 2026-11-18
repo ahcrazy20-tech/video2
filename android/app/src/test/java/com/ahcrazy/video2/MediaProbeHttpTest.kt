@@ -12,6 +12,7 @@ import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.DownloadAuth
 import com.ahcrazy.video2.core.model.JoinedTracks
 import com.ahcrazy.video2.core.model.MediaKind
+import com.ahcrazy.video2.core.model.HlsVariant
 import com.ahcrazy.video2.core.model.MediaProblem
 import com.ahcrazy.video2.data.MediaProbe
 import kotlinx.coroutines.runBlocking
@@ -152,6 +153,25 @@ class MediaProbeHttpTest {
             assertEquals(360, checked.height)
             assertEquals(listOf("/master", "/high?sig=test", "/low?sig=test"), List(3) { server.nextRequest().path })
             assertEquals(3, server.requestCount)
+        }
+    }
+
+    @Test fun exactHlsQualityDoesNotTryAnotherRenditionIfTheSelectedOneIsDenied() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            val master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1920x1080\nhigh\n" +
+                "#EXT-X-STREAM-INF:BANDWIDTH=700000,RESOLUTION=640x360\nlow\n"
+            server.dispatchWith { r -> when (r.path) {
+                "/master" -> MockResponse().setBody(master)
+                "/high" -> MockResponse().setResponseCode(403)
+                else -> MockResponse().setResponseCode(404)
+            } }
+            val media = DetectedMedia(server.url("/master").toString(), "sample", MediaKind.HLS)
+            val exact = HlsVariant(server.url("/high").toString(), height = 1080)
+            val checked = MediaProbe(MediaHttp { null }).check(media, DownloadAuth.default, automatic = true, exactVariant = exact)
+            assertEquals(MediaProblem.ACCESS, checked.probeProblem)
+            assertFalse(checked.downloadChecked())
+            assertEquals(listOf("/master", "/high"), List(2) { server.nextRequest().path })
+            assertEquals(2, server.requestCount)
         }
     }
 

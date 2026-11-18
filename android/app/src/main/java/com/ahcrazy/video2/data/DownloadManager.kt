@@ -133,11 +133,13 @@ class DownloadManager internal constructor(private val ctx: Context, private val
     @Synchronized internal fun enqueueSmart(candidate: SmartCandidate, request: SmartDownloadRequest, height: Int?): DownloadJob {
         val media = candidate.media
         // Carry a sampled HLS rendition into the real download, including a site-provided stream.
-        val canonical = media.publicPageUrl?.let(PeerTubeVideo::parse)?.takeIf { request.peerTube != null }
-        val job = activeSmartJob(request) ?: canonical?.let { activeSmartJob(request.copy(peerTube = it)) }
+        val canonical = if (request.peerTube != null) PeerTubeVideo.parse(media.publicPageUrl) else null
+        val identity = canonical?.let { request.copy(peerTube = it) } ?: request
+        val job = activeSmartJob(request) ?: canonical?.let { activeSmartJob(identity) }
             ?: enqueue(media, candidate.auth, height, media.checkedVariantUrl, media.checkedAudioGroup)
         if (job.state.isBusy) request.replaceFailedId?.let { id ->
-            if (_jobs.value.any { it.id == id && it.state == DownloadState.FAILED && (it.media.matchesSource(request) || canonical != null && it.media.matchesSource(request.copy(peerTube = canonical))) }) {
+            if (_jobs.value.any { it.id == id && it.state == DownloadState.FAILED &&
+                    (it.media.matchesSource(request) || it.media.matchesSource(identity)) }) {
                 remove(id) // Only after a fresh, independently verified source was queued.
             }
         }
@@ -397,8 +399,17 @@ class DownloadManager internal constructor(private val ctx: Context, private val
     }
 
     private suspend fun downloadHls(job: DownloadJob, master: HlsDocument, auth: DownloadAuth, work: File, progress: (Double, Long) -> Unit): SavedVideo {
+        val pinnedHeight = job.preferredVariantUrl?.let { url ->
+            job.media.variants.firstOrNull {
+                it.url == url && (job.preferredAudioGroup == null || it.audioGroup.orEmpty() == job.preferredAudioGroup)
+            }?.height
+        }
         val (variant, video, audioTrack, audio) = selectHlsSource(master, job.preferredVariantUrl, job.preferredMaxHeight,
-            preferredAudioGroup = job.preferredAudioGroup) { playlist(it, auth) }
+            preferredAudioGroup = job.preferredAudioGroup, validateSelection = { selection ->
+                if (pinnedHeight != null && pinnedHeight != selection.variant?.height) {
+                    throw MediaDownloadException(MediaProblem.EXPIRED.ar, MediaProblem.EXPIRED)
+                }
+            }) { playlist(it, auth) }
         val resources = video.resources + audio?.resources.orEmpty()
         val localMaster = if (audio != null && audioTrack != null && variant != null) Hls.localMaster(variant, audioTrack) else video.text
         val folder = File(work, "hls")

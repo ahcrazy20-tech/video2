@@ -1,5 +1,7 @@
 package com.ahcrazy.video2.data
 
+import com.ahcrazy.video2.core.media.httpMediaUrl
+import com.ahcrazy.video2.core.media.isExpiredPlayerLink
 import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.HlsVariant
 import com.ahcrazy.video2.core.model.MediaKind
@@ -16,7 +18,8 @@ internal data class SmartQuality(val candidate: SmartCandidate, val rendition: H
         (rendition == null || checked.checkedVariantUrl == rendition.url && checked.checkedAudioGroup == rendition.audioGroup.orEmpty()) &&
         (height == null || height == checked.height)
 
-    fun isChecked(): Boolean = media.checkedAtMs != null && matches(media)
+    fun isChecked(): Boolean = media.checkedAtMs != null && matches(media) &&
+        httpMediaUrl(rendition?.url ?: media.url)?.isExpiredPlayerLink() == false
 }
 
 internal fun smartQualities(verified: SmartCandidate, others: List<SmartCandidate>): List<SmartQuality> =

@@ -49,7 +49,8 @@ class PlayerLayoutTest {
         assertTrue(compose.onNodeWithText("سطر ترجمة").getUnclippedBoundsInRoot().bottom <= deck.top)
         for (tag in listOf("player.speed", "player.mute", "player.captions", "player.rotate")) {
             compose.onNodeWithTag(tag).assertIsDisplayed()
-            assertTrue(bounds(tag).width >= 48.dp)
+            val target = bounds(tag)
+            assertTrue("$tag must be at least 48 dp wide", target.right - target.left >= 48.dp)
         }
         compose.onNodeWithTag("player.rewind").performClick()
         compose.runOnIdle { assertEquals(1, backJumps); shown.value = false }
