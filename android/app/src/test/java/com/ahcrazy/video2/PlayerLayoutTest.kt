@@ -4,12 +4,15 @@ import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.material3.Text
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import com.ahcrazy.video2.ui.player.PlayerDeck
 import com.ahcrazy.video2.ui.player.PlayerFrame
@@ -34,7 +37,8 @@ class PlayerLayoutTest {
     @Test fun arabicPortraitReservesSystemSpaceAndOnlyMirrorsNavigation() {
         val shown = mutableStateOf(true)
         var backJumps = 0
-        showPlayer(ar = true, chrome = { shown.value }, onBackTen = { backJumps++ })
+        var seeked = 0f
+        showPlayer(ar = true, chrome = { shown.value }, onBackTen = { backJumps++ }, onScrub = { seeked = it })
 
         val root = bounds("player.root")
         val video = bounds("player.video")
@@ -44,8 +48,12 @@ class PlayerLayoutTest {
         assertTrue(deck.bottom <= root.bottom - 28.dp)
         assertTrue(bounds("player.back").left > bounds("player.tools").left)
         assertTrue(bounds("player.rewind").right <= bounds("player.forward").left)
-        assertTrue(bounds("player.elapsed").right <= bounds("player.seek").left)
-        assertTrue(bounds("player.seek").right <= bounds("player.duration").left)
+        val timeline = bounds("player.timeline") // Slider semantics can extend beyond its actual layout slot.
+        val elapsed = bounds("player.elapsed")
+        val duration = bounds("player.duration")
+        assertTrue("Timeline must read left to right: $elapsed, $timeline, $duration", elapsed.right <= timeline.left && timeline.right <= duration.left)
+        compose.onNodeWithTag("player.seek").performTouchInput { click(Offset(width * .75f, center.y)) }
+        compose.runOnIdle { assertTrue("A touch on the right should set later progress: $seeked", seeked > .5f) }
         assertTrue(compose.onNodeWithText("سطر ترجمة").getUnclippedBoundsInRoot().bottom <= deck.top)
         for (tag in listOf("player.speed", "player.mute", "player.captions", "player.rotate")) {
             compose.onNodeWithTag(tag).assertIsDisplayed()
@@ -78,7 +86,7 @@ class PlayerLayoutTest {
 
     private fun bounds(tag: String) = compose.onNodeWithTag(tag).getUnclippedBoundsInRoot()
 
-    private fun showPlayer(ar: Boolean, chrome: () -> Boolean = { true }, onBackTen: () -> Unit = {}) {
+    private fun showPlayer(ar: Boolean, chrome: () -> Boolean = { true }, onBackTen: () -> Unit = {}, onScrub: (Float) -> Unit = {}) {
         compose.setContent {
             Video2Theme(rtl = ar) {
                 PlayerFrame(chromeVisible = chrome(), insets = WindowInsets(left = 20.dp, top = 32.dp, right = 12.dp, bottom = 28.dp),
@@ -86,7 +94,7 @@ class PlayerLayoutTest {
                     center = { if (chrome()) PlayerTransport(ar, true, false, true, false, onBackTen, {}, {}) },
                     captions = { Text(if (ar) "سطر ترجمة" else "Caption line") },
                     deck = { compact -> PlayerDeck(ar, compact, 1_000, 64_000, .4f, true, false, "1×", false, true, true,
-                        !ar, {}, {}, {}, {}, {}, {}) })
+                        !ar, onScrub, {}, {}, {}, {}, {}) })
             }
         }
     }

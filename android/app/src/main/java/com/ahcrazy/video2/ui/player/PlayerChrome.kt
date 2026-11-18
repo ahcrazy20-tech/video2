@@ -149,22 +149,24 @@ internal fun PlayerDeck(
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(elapsedText, Modifier.testTag("player.elapsed"), style = timeStyle, color = V2.Text, maxLines = 1)
-                    Slider(value = fraction, onValueChange = onScrub, onValueChangeFinished = onScrubEnd, enabled = seekable,
-                        modifier = Modifier.weight(1f).testTag("player.seek").semantics {
-                            contentDescription = if (ar) "موضع التشغيل" else "Playback position"
-                            stateDescription = "$elapsedText / $durationText"
-                        },
-                        thumb = { Box(Modifier.size(12.dp).background(if (seekable) V2.Mint else V2.Outline, CircleShape)) },
-                        track = {
-                            Canvas(Modifier.fillMaxWidth().height(4.dp)) {
-                                val y = size.height / 2f
-                                drawLine(V2.Outline, Offset(0f, y), Offset(size.width, y), size.height, StrokeCap.Round)
-                                if (seekable) {
-                                    drawLine(V2.Sky.copy(alpha = .52f), Offset(0f, y), Offset(size.width * buffered.coerceIn(0f, 1f), y), size.height, StrokeCap.Round)
-                                    drawLine(V2.Mint, Offset(0f, y), Offset(size.width * fraction, y), size.height, StrokeCap.Round)
+                    Box(Modifier.weight(1f).testTag("player.timeline")) {
+                        Slider(value = fraction, onValueChange = onScrub, onValueChangeFinished = onScrubEnd, enabled = seekable,
+                            modifier = Modifier.fillMaxWidth().testTag("player.seek").semantics {
+                                contentDescription = if (ar) "موضع التشغيل" else "Playback position"
+                                stateDescription = "$elapsedText / $durationText"
+                            },
+                            thumb = { Box(Modifier.size(12.dp).background(if (seekable) V2.Mint else V2.Outline, CircleShape)) },
+                            track = {
+                                Canvas(Modifier.fillMaxWidth().height(4.dp)) {
+                                    val y = size.height / 2f
+                                    drawLine(V2.Outline, Offset(0f, y), Offset(size.width, y), size.height, StrokeCap.Round)
+                                    if (seekable) {
+                                        drawLine(V2.Sky.copy(alpha = .52f), Offset(0f, y), Offset(size.width * buffered.coerceIn(0f, 1f), y), size.height, StrokeCap.Round)
+                                        drawLine(V2.Mint, Offset(0f, y), Offset(size.width * fraction, y), size.height, StrokeCap.Round)
+                                    }
                                 }
-                            }
-                        })
+                            })
+                    }
                     Text(durationText, Modifier.testTag("player.duration"), style = timeStyle, color = if (live) V2.Mint else V2.TextDim, maxLines = 1)
                 }
             }
