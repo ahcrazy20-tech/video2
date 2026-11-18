@@ -30,6 +30,8 @@ case "$mode" in
     ;;
   *) echo "error: Unknown native build mode: $mode" >&2; exit 1 ;;
 esac
+jobs=2
+if [[ "${GITHUB_ACTIONS:-}" == true ]]; then jobs=4; fi
 mkdir -p "$work" "$out"
 work=$(cd "$work" && pwd)
 out=$(cd "$out" && pwd)
@@ -48,7 +50,7 @@ build() {
   fi
   "$cmake" -S "$root/native/$engine" -B "$work/$engine-build" "${args[@]}" \
     -DCMAKE_BUILD_TYPE=Release "-DVIDEO2_SOURCES=$source" "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$out"
-  "$cmake" --build "$work/$engine-build" --target "video2_$engine" --parallel "${VIDEO2_NATIVE_JOBS:-2}"
+  "$cmake" --build "$work/$engine-build" --target "video2_$engine" --parallel "${VIDEO2_NATIVE_JOBS:-$jobs}"
 }
 
 # whisper.cpp v1.9.5 and llama.cpp b12503: separate static ggml builds, no servers/tools.
@@ -59,9 +61,17 @@ if [[ "$mode" == android ]]; then
   # Android 15+ devices can use 16 KiB pages; reject a misaligned engine before packaging.
   readelf="$sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
   for so in "$out/libvideo2_whisper.so" "$out/libvideo2_hymt.so"; do
-    "$readelf" -lW "$so" | awk '$1 == "LOAD" { n++; if (($NF + 0) < 16384) bad = 1 } END { exit (!n || bad) }' || {
+    loads=$("$readelf" -lW "$so")
+    # Pass numeric comparison to bash: awk implementations differ on coercing hexadecimal text.
+    mapfile -t alignments < <(awk '$1 == "LOAD" { print $NF }' <<< "$loads")
+    aligned=${#alignments[@]}
+    for align in "${alignments[@]}"; do
+      if ((align < 16384)); then aligned=0; fi
+    done
+    if ((aligned == 0)); then
       echo "error: ${so##*/} does not have 16 KiB-aligned LOAD segments" >&2
+      printf '%s\n' "$loads" >&2
       exit 1
-    }
+    fi
   done
 fi

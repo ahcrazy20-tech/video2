@@ -2,12 +2,14 @@ package com.ahcrazy.video2.core.util
 
 import com.ahcrazy.video2.core.model.SubCue
 import java.io.File
+import java.util.Locale
+import kotlin.math.roundToLong
 
 /** SRT parse/write — port of SubtitleCodec.swift. */
 object SrtCodec {
     fun srtTime(sec: Double): String {
-        val ms = (sec.coerceAtLeast(0.0) * 1000).toLong()
-        return String.format("%02d:%02d:%02d,%03d", ms / 3_600_000, (ms / 60_000) % 60, (ms / 1000) % 60, ms % 1000)
+        val ms = (sec.coerceAtLeast(0.0) * 1000).roundToLong()
+        return String.format(Locale.ROOT, "%02d:%02d:%02d,%03d", ms / 3_600_000, (ms / 60_000) % 60, (ms / 1000) % 60, ms % 1000)
     }
 
     private fun parseTime(s: String): Double {

@@ -33,6 +33,7 @@ import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
+import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -90,6 +91,17 @@ class OfflineSubtitleTest {
         assertEquals(50.2, cues[0].startSec, 0.001)
         assertEquals(51.8, cues[0].endSec, 0.001)
         assertEquals(2, cues.last().index)
+    }
+
+    @Test fun arabicSystemLocaleStillWritesPortableSrtTimecodes() {
+        val previous = Locale.getDefault()
+        try {
+            Locale.setDefault(Locale.forLanguageTag("ar-SA"))
+            val cue = SubCue(0, 1.001, 2.02, "hello", "مرحبًا")
+            val srt = SrtCodec.write(listOf(cue), "bilingual")
+            assertTrue(srt.contains("00:00:01,001 --> 00:00:02,020"))
+            assertEquals(cue.startSec, SrtCodec.parse(srt).single().startSec, 0.00001)
+        } finally { Locale.setDefault(previous) }
     }
 
     @Test fun translationRequiresAlignedDelimitersAndDoesNotSubstituteUntranslatedText() {
