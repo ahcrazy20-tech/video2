@@ -1,294 +1,521 @@
 package com.ahcrazy.video2.data
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.Context
+import android.content.Intent
+import android.media.MediaExtractor
 import android.media.MediaMetadataRetriever
+import android.os.IBinder
+import android.os.SystemClock
+import android.util.AtomicFile
+import androidx.core.content.ContextCompat
+import com.ahcrazy.video2.MainActivity
+import com.ahcrazy.video2.Video2Application
+import com.ahcrazy.video2.core.media.ContentRange
+import com.ahcrazy.video2.core.media.MediaDownloadException
+import com.ahcrazy.video2.core.media.MediaHttp
+import com.ahcrazy.video2.core.media.httpMediaUrl
+import com.ahcrazy.video2.core.media.requireMediaSuccess
+import com.ahcrazy.video2.core.media.responseMediaKind
+import com.ahcrazy.video2.core.model.DRMKind
 import com.ahcrazy.video2.core.model.DetectedMedia
 import com.ahcrazy.video2.core.model.DownloadAuth
 import com.ahcrazy.video2.core.model.DownloadJob
 import com.ahcrazy.video2.core.model.DownloadState
-import com.ahcrazy.video2.core.model.HlsVariant
 import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.model.SavedVideo
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import okhttp3.OkHttpClient
-import okhttp3.Request
+import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.HttpUrl
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.InputStream
+import java.security.MessageDigest
 import java.util.UUID
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
-/** HLS playlist helpers — port of HLSInspector. */
-object Hls {
-    fun parseMaster(text: String, baseUrl: String): List<HlsVariant> {
-        val out = mutableListOf<HlsVariant>(); val lines = text.lines()
-        var i = 0
-        while (i < lines.size) {
-            val l = lines[i]
-            if (l.startsWith("#EXT-X-STREAM-INF")) {
-                val bw = Regex("BANDWIDTH=(\\d+)").find(l)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                val res = Regex("RESOLUTION=(\\d+)x(\\d+)").find(l)
-                val uri = lines.getOrNull(i + 1)?.trim().orEmpty()
-                if (uri.isNotEmpty()) out += HlsVariant(resolve(baseUrl, uri), bw,
-                    res?.groupValues?.get(1)?.toIntOrNull(), res?.groupValues?.get(2)?.toIntOrNull())
-                i++
-            }
-            i++
-        }
-        return out
-    }
-    fun parseMediaSegments(text: String, baseUrl: String): Pair<List<String>, String?> {
-        val segs = mutableListOf<String>(); var keyUri: String? = null
-        for (l in text.lines()) {
-            if (l.startsWith("#EXT-X-KEY")) Regex("URI=\"([^\"]+)\"").find(l)?.let { keyUri = resolve(baseUrl, it.groupValues[1]) }
-            else if (l.isNotBlank() && !l.startsWith("#")) segs += resolve(baseUrl, l.trim())
-        }
-        return segs to keyUri
-    }
-    fun resolve(base: String, rel: String): String = try {
-        java.net.URL(java.net.URL(base), rel).toString()
-    } catch (e: Exception) { rel }
-    fun pickVariant(variants: List<HlsVariant>, maxHeight: Int?): HlsVariant? {
-        if (variants.isEmpty()) return null
-        val sorted = variants.sortedByDescending { it.height ?: 0 }
-        if (maxHeight == null || maxHeight == 0) return sorted.first()
-        return sorted.firstOrNull { (it.height ?: 0) <= maxHeight } ?: sorted.last()
-    }
-    fun isEncrypted(text: String) = text.contains("#EXT-X-KEY") && !text.contains("METHOD=NONE")
-    fun looksProtected(url: String, text: String) =
-        url.lowercase().let { it.contains("drm") || it.contains("cbcs") || it.contains("license") } ||
-            text.contains("cbcs", true) || text.contains("SAMPLE-AES", true)
-}
-
-/**
- * Download engine: direct files + parallel HLS, resumable queue persisted to disk —
- * the Android twin of DownloadManager.swift + HLSDownloader.swift.
- */
-class DownloadManager(
-    private val ctx: Context, private val library: LibraryStore,
-    private val http: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).build()
-) {
+/** Direct and HLS queue. Work files are private and never appear in the library before validation. */
+class DownloadManager(private val ctx: Context, private val library: LibraryStore) {
+    internal val http = MediaHttp()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val running = mutableMapOf<String, Job>()
-    private val jobsFile = File(ctx.filesDir, "download-jobs.json")
-
+    private val slots = Semaphore(2)
+    private val jobsFile = AtomicFile(File(ctx.filesDir, "download-jobs.json"))
+    private val workRoot = File(ctx.filesDir, "DownloadParts")
     private val _jobs = MutableStateFlow<List<DownloadJob>>(emptyList())
     val jobs: StateFlow<List<DownloadJob>> = _jobs
 
     init { loadJobs() }
 
-    fun enqueue(media: DetectedMedia, auth: DownloadAuth? = null, maxHeight: Int? = null): DownloadJob {
-        val job = if (media.drm.isProtected)
-            DownloadJob(media = media, state = DownloadState.BLOCKED_DRM, auth = auth, preferredMaxHeight = maxHeight,
-                errorMessage = "محتوى محمي بـ DRM (${media.drm.titleAr}) — التطبيق لا يكسر الحماية.")
-        else DownloadJob(media = media, auth = auth, preferredMaxHeight = maxHeight)
-        _jobs.value = listOf(job) + _jobs.value; persist()
-        if (job.state != DownloadState.BLOCKED_DRM) pump(job.id)
+    @Synchronized
+    fun enqueue(media: DetectedMedia, auth: DownloadAuth? = null, maxHeight: Int? = null, variantUrl: String? = null): DownloadJob {
+        _jobs.value.firstOrNull { it.media.url == media.url && it.state.isBusy && !media.drm.isProtected }?.let { return it }
+        val job = DownloadJob(media = media, auth = auth, preferredMaxHeight = maxHeight, preferredVariantUrl = variantUrl).let {
+            when {
+                media.drm.isProtected -> it.copy(state = DownloadState.BLOCKED_DRM, errorMessage = ProtectedMedia(media.drm).message)
+                !media.canDownload -> it.copy(state = DownloadState.FAILED, errorMessage = unsupported(media).message)
+                else -> it
+            }
+        }
+        _jobs.value = listOf(job) + _jobs.value
+        persist()
+        if (job.state == DownloadState.QUEUED) {
+            pump(job.id)
+            startService()
+        }
         return job
     }
 
     fun enqueueManual(url: String, title: String, pageUrl: String?, auth: DownloadAuth? = null, maxHeight: Int? = null): DownloadJob {
         val kind = MediaKind.infer(url, null)
-        val clean = title.ifBlank { url.substringAfterLast("/").substringBefore("?").ifBlank { "فيديو" } }
+        val clean = title.ifBlank { httpMediaUrl(url)?.pathSegments?.lastOrNull()?.ifBlank { "فيديو" } ?: "فيديو" }
         return enqueue(DetectedMedia(url, clean, kind, pageUrl = pageUrl, extractionMethod = "manual"), auth, maxHeight)
     }
 
-    fun jobMatching(url: String): DownloadJob? = _jobs.value.firstOrNull { it.media.url == url }
+    @Synchronized fun cancel(id: String) {
+        if (_jobs.value.none { it.id == id && it.state.isBusy }) return
+        patch(id) { it.copy(state = DownloadState.PAUSED, errorMessage = null) }
+        running[id]?.cancel()
+    }
 
-    fun cancel(id: String) { running.remove(id)?.cancel(); patch(id) { it.copy(state = DownloadState.PAUSED, errorMessage = null) } }
-    fun resume(id: String) { patch(id) { it.copy(state = DownloadState.QUEUED, errorMessage = null) }; pump(id) }
-    fun remove(id: String) { running.remove(id)?.cancel(); _jobs.value = _jobs.value.filter { it.id != id }; persist() }
+    @Synchronized fun resume(id: String) {
+        val job = _jobs.value.firstOrNull { it.id == id } ?: return
+        if (!job.media.canDownload || job.state !in setOf(DownloadState.PAUSED, DownloadState.FAILED)) return
+        patch(id) { it.copy(state = DownloadState.QUEUED, errorMessage = null) }
+        pump(id)
+        startService()
+    }
 
-    private fun pump(id: String) {
+    @Synchronized fun remove(id: String) {
+        val job = _jobs.value.firstOrNull { it.id == id } ?: return
+        _jobs.value = _jobs.value.filterNot { it.id == id }
+        persist()
+        val active = running[id]
+        if (active != null) active.cancel()
+        else if (job.state != DownloadState.COMPLETED) scope.launch { cleanUnfinished(id) }
+    }
+
+    private fun startService() {
+        // The app also works in the foreground if Android disallows starting a service from this state.
+        runCatching { ContextCompat.startForegroundService(ctx, Intent(ctx, DownloadService::class.java)) }
+    }
+
+    @Synchronized private fun pump(id: String) {
         if (running.containsKey(id)) return
-        running[id] = scope.launch {
-            patch(id) { it.copy(state = DownloadState.RUNNING) }
+        val task = scope.launch(start = CoroutineStart.LAZY) {
             try {
-                val job = _jobs.value.first { it.id == id }
-                val video = perform(job) { p, bytes -> patch(id) { it.copy(progress = p, bytesWritten = bytes) } }
-                library.add(video)
-                patch(id) { it.copy(state = DownloadState.COMPLETED, progress = 1.0, destPath = video.localPath) }
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) patch(id) { it.copy(state = DownloadState.PAUSED) }
-                else patch(id) { it.copy(state = DownloadState.FAILED, errorMessage = e.message ?: "فشل التحميل") }
-            } finally { running.remove(id) }
-        }
-    }
-
-    private suspend fun perform(job: DownloadJob, onProgress: (Double, Long) -> Unit): SavedVideo {
-        val media = job.media; val auth = job.auth ?: DownloadAuth.default
-        return when (media.kind) {
-            MediaKind.HLS -> downloadHls(job, auth, onProgress)
-            else -> downloadFile(job, auth, onProgress)
-        }
-    }
-
-    private fun request(url: String, auth: DownloadAuth): Request {
-        val b = Request.Builder().url(url)
-        auth.headers().forEach { (k, v) -> b.header(k, v) }
-        return b.build()
-    }
-
-    private suspend fun downloadFile(job: DownloadJob, auth: DownloadAuth, onProgress: (Double, Long) -> Unit): SavedVideo {
-        val media = job.media
-        val ext = media.kind.ext.takeIf { it != "bin" } ?: "mp4"
-        val dest = File(library.videosDir, "${job.id}.$ext")
-        http.newCall(request(media.url, auth)).execute().use { res ->
-            if (!res.isSuccessful) throw IllegalStateException("HTTP ${res.code}")
-            val body = res.body ?: throw IllegalStateException("رد فارغ")
-            val total = body.contentLength()
-            body.byteStream().use { input ->
-                dest.outputStream().use { out ->
-                    val buf = ByteArray(64 * 1024); var read: Long = 0; var n: Int
-                    while (input.read(buf).also { n = it } >= 0) {
-                        if (n == 0) continue
-                        out.write(buf, 0, n); read += n
-                        onProgress(if (total > 0) read.toDouble() / total else 0.0, read)
+                slots.withPermit {
+                    val job = synchronized(this@DownloadManager) {
+                        val queued = _jobs.value.firstOrNull { it.id == id && it.state == DownloadState.QUEUED } ?: return@withPermit
+                        patch(id) { it.copy(state = DownloadState.RUNNING) }
+                        queued
                     }
-                }
-            }
-        }
-        return register(dest, job, dest.length())
-    }
-
-    private suspend fun downloadHls(job: DownloadJob, auth: DownloadAuth, onProgress: (Double, Long) -> Unit): SavedVideo {
-        val media = job.media
-        val masterText = getText(media.url, auth)
-        if (Hls.looksProtected(media.url, masterText))
-            throw IllegalStateException("بث محمي بـ DRM — لن يتم التحميل.")
-        val variants = Hls.parseMaster(masterText, media.url)
-        val chosen = Hls.pickVariant(variants, job.preferredMaxHeight)
-        val mediaUrl = chosen?.url ?: media.url
-        val mediaText = if (chosen != null) getText(mediaUrl, auth) else masterText
-        val (segments, _) = Hls.parseMediaSegments(mediaText, mediaUrl)
-        if (segments.isEmpty()) throw IllegalStateException("قائمة HLS فاضية")
-
-        val folder = File(library.videosDir, job.id).apply { mkdirs() }
-        val semaphore = Semaphore(4)
-        val done = java.util.concurrent.atomic.AtomicInteger(0)
-        val written = java.util.concurrent.atomic.AtomicLong(0)
-        kotlinx.coroutines.coroutineScope {
-            segments.forEachIndexed { idx, segUrl ->
-                launch {
-                    semaphore.withPermit {
-                        val out = File(folder, "seg-%05d.ts".format(idx))
-                        if (!out.exists() || out.length() == 0L) {
-                            http.newCall(request(segUrl, auth)).execute().use { res ->
-                                if (!res.isSuccessful) throw IllegalStateException("HTTP ${res.code} لجزء $idx")
-                                res.body!!.byteStream().use { it.copyTo(out.outputStream()) }
-                            }
+                    val gate = AtomicLong(0)
+                    val video = perform(job) { progress, bytes ->
+                        val now = SystemClock.elapsedRealtime()
+                        val last = gate.get()
+                        if (now - last >= 300 && gate.compareAndSet(last, now)) {
+                            patch(id, save = false) { if (it.state == DownloadState.RUNNING) it.copy(progress = progress, bytesWritten = bytes) else it }
                         }
-                        written.addAndGet(out.length())
-                        onProgress(done.incrementAndGet().toDouble() / segments.size, written.get())
+                    }
+                    ensureActive()
+                    synchronized(this@DownloadManager) {
+                        if (_jobs.value.any { it.id == id && it.state == DownloadState.RUNNING }) {
+                            library.add(video)
+                            patch(id) { it.copy(state = DownloadState.COMPLETED, progress = 1.0, bytesWritten = video.fileSize, destPath = video.localPath) }
+                        }
+                    }
+                    workDir(id).deleteRecursively()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (isActive) {
+                    if (e is ProtectedMedia) cleanUnfinished(id)
+                    patch(id) { if (it.state != DownloadState.RUNNING) it else if (e is ProtectedMedia)
+                        it.copy(state = DownloadState.BLOCKED_DRM, media = it.media.copy(drm = e.drm), errorMessage = e.message)
+                    else it.copy(state = DownloadState.FAILED, errorMessage = (e.message ?: "فشل التحميل").take(300)) }
+                }
+            }
+        }
+        running[id] = task
+        task.invokeOnCompletion {
+            val removed = synchronized(this@DownloadManager) {
+                running.remove(id)
+                val job = _jobs.value.firstOrNull { it.id == id }
+                if (job?.state == DownloadState.QUEUED && scope.isActive) pump(id)
+                job == null
+            }
+            if (removed) scope.launch { cleanUnfinished(id) }
+        }
+        task.start()
+    }
+
+    /** Only explicitly probed items trigger a network request; there is no crawler behind the WebView. */
+    suspend fun probe(media: DetectedMedia, auth: DownloadAuth): DetectedMedia {
+        val url = httpMediaUrl(media.url) ?: return media
+        if (media.drm.isProtected) return media
+        return try {
+            withTimeoutOrNull(12_000) {
+                if (media.kind == MediaKind.HLS) return@withTimeout probeHls(media, playlist(url, auth), auth)
+                val item = http.read(http.request(url, auth).head().build()) { response ->
+                    response.requireMediaSuccess()
+                    val type = response.header("Content-Type")
+                    val kind = MediaKind.infer(response.request.url.toString(), type).takeIf { it != MediaKind.OTHER } ?: media.kind
+                    media.copy(kind = kind, mime = type ?: media.mime, byteSize = response.header("Content-Length")?.toLongOrNull()?.takeIf { it > 0 }, probed = true)
+                }
+                if (item.kind == MediaKind.HLS) probeHls(item, playlist(url, auth), auth) else item
+            } ?: media
+        } catch (e: ProtectedMedia) {
+            media.copy(drm = e.drm, probed = true)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) { media }
+    }
+
+    private suspend fun probeHls(media: DetectedMedia, doc: HlsDocument, auth: DownloadAuth): DetectedMedia {
+        val variants = Hls.parseMaster(doc.text, doc.url.toString()).sortedWith(compareByDescending<com.ahcrazy.video2.core.model.HlsVariant> { it.height ?: 0 }.thenByDescending { it.bandwidth })
+        val top = variants.firstOrNull()
+        val representative = if (top != null) playlist(httpMediaUrl(top.url)!!, auth) else doc
+        return media.copy(kind = MediaKind.HLS, probed = true, variants = variants,
+            durationSec = media.durationSec ?: Hls.duration(representative.text).takeIf { it > 0 },
+            height = media.height ?: top?.height, width = media.width ?: top?.width)
+    }
+
+    private suspend fun perform(job: DownloadJob, progress: (Double, Long) -> Unit): SavedVideo {
+        val media = job.media
+        if (media.drm.isProtected) throw ProtectedMedia(media.drm)
+        if (!media.canDownload) throw unsupported(media)
+        val url = httpMediaUrl(media.url) ?: throw unsupported(media)
+        val auth = job.auth ?: DownloadAuth.default.copy(referer = media.requestReferer ?: media.pageUrl)
+        val work = workDir(job.id).apply { mkdirs() }
+        if (media.kind == MediaKind.HLS) return downloadHls(job, playlist(url, auth), auth, work, progress)
+        return when (val file = downloadDirect(job, url, auth, work, progress)) {
+            is DirectResult.Playlist -> downloadHls(job, file.document, auth, work, progress)
+            is DirectResult.FileReady -> finalizeDirect(job, file.part, file.kind)
+        }
+    }
+
+    private sealed interface DirectResult {
+        data class Playlist(val document: HlsDocument) : DirectResult
+        data class FileReady(val part: File, val kind: MediaKind) : DirectResult
+    }
+
+    private suspend fun downloadDirect(job: DownloadJob, url: HttpUrl, auth: DownloadAuth, work: File, progress: (Double, Long) -> Unit): DirectResult {
+        val part = File(work, "file.part")
+        val metadata = File(work, "resume.json")
+        val resume = runCatching { JSONObject(metadata.readText()) }.getOrNull()
+        val validator = resume?.text("validator")
+        val savedKind = resume?.text("kind")?.let { runCatching { MediaKind.valueOf(it) }.getOrNull() }
+        val offset = part.length().takeIf { validator != null && savedKind != null } ?: 0L
+        for (from in listOf(offset, 0L).distinct()) {
+            val request = http.request(url, auth).header("Accept-Encoding", "identity")
+            if (from > 0) request.header("Range", "bytes=$from-").header("If-Range", validator!!)
+            val result = http.read(request.build()) { response ->
+                if (response.code == 416 && from > 0) return@read null
+                response.requireMediaSuccess()
+                val range = ContentRange.parse(response.header("Content-Range"))
+                val append = from > 0 && response.code == 206
+                // If a redirect now points at a different resource or the range is inconsistent, start over.
+                if (append && (range?.start != from || resume?.text("url") != response.request.url.toString() ||
+                        (response.validator() != null && response.validator() != validator))) return@read null
+                if (response.code == 206 && !append && range?.start != 0L) {
+                    throw MediaDownloadException("الخادم أرسل جزءًا غير صالح من الملف.")
+                }
+                val body = response.body ?: throw MediaDownloadException("المصدر رجّع ردًا فاضيًا.")
+                val kind = if (append) savedKind!! else responseMediaKind(response.request.url.toString(), response.header("Content-Type"), response.peekBody(1024).bytes(), job.media.kind)
+                if (kind == MediaKind.HLS) return@read DirectResult.Playlist(parsePlaylist(response))
+                if (kind == MediaKind.DASH) {
+                    if (response.peekBody(64 * 1024).string().contains("ContentProtection", true)) throw ProtectedMedia(DRMKind.UNKNOWN_PROTECTED)
+                    throw unsupported(job.media.copy(kind = kind))
+                }
+                if (kind.isLikelyFragment) throw unsupported(job.media.copy(kind = kind))
+                if (!append) {
+                    part.outputStream().close()
+                    metadata.delete()
+                    response.validator()?.let { v ->
+                        metadata.writeText(JSONObject().put("kind", kind.name).put("validator", v).put("url", response.request.url.toString()).toString())
+                    }
+                }
+                var written = if (append) from else 0L
+                val total = range?.total ?: if (response.code == 206) null else body.contentLength().takeIf { it > 0 }
+                val size = copyBody(body.byteStream(), part, append, range?.length ?: body.contentLength().takeIf { it >= 0 }) { count ->
+                    written = (if (append) from else 0L) + count
+                    progress(if (total != null) (written.toDouble() / total).coerceIn(0.0, 1.0) else 0.0, written)
+                }
+                if (size == 0L || (response.code == 206 && (total == null || written != total))) {
+                    throw MediaDownloadException("الملف ناقص؛ جرّب الاستئناف.")
+                }
+                DirectResult.FileReady(part, kind)
+            }
+            if (result != null) return result
+        }
+        throw MediaDownloadException("تعذّر استئناف الملف من الخادم.")
+    }
+
+    private fun Response.validator(): String? = header("ETag")?.takeUnless { it.startsWith("W/", true) || it.isBlank() }
+        ?: header("Last-Modified")?.takeIf { it.isNotBlank() }
+
+    private fun parsePlaylist(response: Response): HlsDocument {
+        val source = response.body?.source() ?: throw MediaDownloadException("قائمة HLS فاضية.")
+        if (source.request(2L * 1024 * 1024 + 1)) throw MediaDownloadException("قائمة HLS أكبر من الحد المسموح.")
+        val text = source.readUtf8()
+        Hls.validate(text)
+        return HlsDocument(response.request.url, text)
+    }
+
+    private suspend fun playlist(url: HttpUrl, auth: DownloadAuth): HlsDocument = http.read(http.request(url, auth).build()) { response ->
+        response.requireMediaSuccess()
+        parsePlaylist(response)
+    }
+
+    private suspend fun downloadHls(job: DownloadJob, master: HlsDocument, auth: DownloadAuth, work: File, progress: (Double, Long) -> Unit): SavedVideo {
+        val variants = Hls.parseMaster(master.text, master.url.toString())
+        if (Hls.isMaster(master.text) && variants.isEmpty()) throw MediaDownloadException("مفيش جودة صالحة في قائمة HLS.")
+        val variant = variants.firstOrNull { it.url == job.preferredVariantUrl } ?: Hls.pickVariant(variants, job.preferredMaxHeight)
+        val video = Hls.plan(variant?.let { playlist(httpMediaUrl(it.url)!!, auth) } ?: master, "video")
+        val audioTrack = variant?.let { Hls.selectAudio(master, it) }
+        val audio = audioTrack?.url?.let { Hls.plan(playlist(it, auth), "audio") }
+        val resources = video.resources + audio?.resources.orEmpty()
+        val localMaster = if (audio != null && audioTrack != null && variant != null) Hls.localMaster(variant, audioTrack) else video.text
+        val folder = File(work, "hls")
+        val stablePlan = File(folder, ".plan")
+        // Do not reuse positional filenames when a live window, rendition, URL or byte range changes.
+        val fingerprint = MessageDigest.getInstance("SHA-256").run {
+            update(video.text.toByteArray()); update(audio?.text.orEmpty().toByteArray()); update(localMaster.toByteArray())
+            resources.forEach { update("${it.name}\t${it.url}\t${it.range}\n".toByteArray()) }
+            digest().joinToString("") { "%02x".format(it) }
+        }
+        if (runCatching { stablePlan.readText() }.getOrNull() != fingerprint) {
+            folder.deleteRecursively()
+            check(folder.mkdirs()) { "تعذّر إنشاء مجلد التحميل." }
+            stablePlan.writeText(fingerprint)
+        }
+        val next = AtomicInteger(0)
+        val done = AtomicInteger(0)
+        val bytes = AtomicLong(0)
+        coroutineScope {
+            repeat(minOf(resources.size, 6)) {
+                launch {
+                    while (true) {
+                        val item = resources.getOrNull(next.getAndIncrement()) ?: break
+                        ensureActive()
+                        val dest = File(folder, item.name)
+                        if (!dest.exists() || dest.length() <= 0L) {
+                            val tmp = File(folder, "${item.name}.part")
+                            val r = http.request(item.url, auth)
+                            item.range?.let { r.header("Range", it.header).header("Accept-Encoding", "identity") }
+                            http.read(r.build()) { response ->
+                                response.requireMediaSuccess()
+                                val body = response.body ?: throw MediaDownloadException("أحد أجزاء البث فاضي.")
+                                val received = ContentRange.parse(response.header("Content-Range"))
+                                if (item.range != null && (response.code != 206 || received?.start != item.range.offset || received.end != item.range.last)) {
+                                    throw MediaDownloadException("خادم HLS لم يُرسل نطاق البيانات المطلوب.")
+                                }
+                                if (item.range == null && response.code != 200) throw MediaDownloadException("الخادم أرسل جزء HLS غير مكتمل.")
+                                if (response.header("Content-Type")?.contains("text/html", true) == true) throw MediaDownloadException("أحد أجزاء HLS رجع صفحة بدل الفيديو.")
+                                val expected = if (item.key) 16L else item.range?.length ?: body.contentLength().takeIf { it >= 0 }
+                                if (copyBody(body.byteStream(), tmp, false, expected) <= 0) throw MediaDownloadException("أحد أجزاء البث فاضي.")
+                            }
+                            ensureActive()
+                            if (!tmp.renameTo(dest)) throw MediaDownloadException("تعذّر حفظ جزء HLS.")
+                        }
+                        val totalBytes = bytes.addAndGet(dest.length())
+                        progress(done.incrementAndGet().toDouble() / resources.size, totalBytes)
                     }
                 }
             }
         }
-        // Local playable playlist (ExoPlayer plays it offline; original headers no longer needed)
-        val local = buildString {
-            append("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXT-X-MEDIA-SEQUENCE:0\n")
-            segments.indices.forEach { append("#EXTINF:10.0,\nseg-%05d.ts\n".format(it)) }
-            append("#EXT-X-ENDLIST\n")
+        currentCoroutineContext().ensureActive()
+        if (audio != null) {
+            File(folder, "video.m3u8").writeText(video.text)
+            File(folder, "audio.m3u8").writeText(audio.text)
         }
-        val playlist = File(folder, "index.m3u8").apply { writeText(local) }
-        val total = folder.walkTopDown().filter { it.isFile }.sumOf { it.length() }
-        return register(playlist, job.copy(media = media.copy(kind = MediaKind.HLS)), total)
+        File(folder, "index.m3u8").writeText(localMaster)
+        stablePlan.delete()
+        val final = File(library.videosDir, job.id).apply { if (exists()) deleteRecursively() }
+        if (!folder.renameTo(final)) throw MediaDownloadException("تعذّر نقل بث HLS للمكتبة.")
+        return saved(File(final, "index.m3u8"), job, MediaKind.HLS, bytes.get(), video.duration)
     }
 
-    private fun getText(url: String, auth: DownloadAuth): String =
-        http.newCall(request(url, auth)).execute().use { res ->
-            if (!res.isSuccessful) throw IllegalStateException("HTTP ${res.code}")
-            res.body?.string() ?: throw IllegalStateException("رد فارغ")
-        }
-
-    private fun register(file: File, job: DownloadJob, size: Long): SavedVideo {
-        var duration: Double? = null; var thumb: String? = null
-        runCatching {
-            val r = MediaMetadataRetriever(); r.setDataSource(file.absolutePath)
-            duration = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toDoubleOrNull()?.div(1000)
-            r.getFrameAtTime(1_000_000)?.let { bmp ->
-                val tf = File(library.thumbsDir, "${job.id}.jpg")
-                tf.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, it) }
-                thumb = tf.absolutePath
+    private suspend fun copyBody(input: InputStream, file: File, append: Boolean, expected: Long?, progress: (Long) -> Unit = {}): Long {
+        var count = 0L
+        input.use { source -> file.outputStream(append).use { output ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                val read = source.read(buffer)
+                if (read < 0) break
+                if (expected != null && read > expected - count) throw MediaDownloadException("حجم البيانات لا يطابق رد الخادم.")
+                output.write(buffer, 0, read)
+                count += read
+                progress(count)
             }
-            r.release()
-        }
-        return SavedVideo(
-            id = job.id, title = job.media.title, sourceUrl = job.media.url, pageUrl = job.media.pageUrl,
-            localPath = file.absolutePath, thumbnailPath = thumb,
-            kind = if (file.extension == "m3u8") MediaKind.HLS else job.media.kind,
-            durationSec = duration, fileSize = size, extractionMethod = job.media.extractionMethod
-        )
+        } }
+        if (expected != null && count != expected) throw MediaDownloadException("الرد ناقص؛ جرّب الاستئناف.")
+        return count
     }
 
-    @Synchronized private fun patch(id: String, f: (DownloadJob) -> DownloadJob) {
-        _jobs.value = _jobs.value.map { if (it.id == id) f(it) else it }; persist()
-    }
+    private fun File.outputStream(append: Boolean) = java.io.FileOutputStream(this, append).buffered()
 
-    @Synchronized private fun persist() {
+    private fun finalizeDirect(job: DownloadJob, part: File, kind: MediaKind): SavedVideo {
+        val extractor = MediaExtractor()
+        val protected = try {
+            extractor.setDataSource(part.absolutePath)
+            extractor.drmInitData != null
+        } catch (_: Exception) { false } finally { extractor.release() }
+        if (protected) throw ProtectedMedia(DRMKind.UNKNOWN_PROTECTED)
+        val dest = File(library.videosDir, "${job.id}.${kind.ext}")
+        if (!part.renameTo(dest)) throw MediaDownloadException("تعذّر نقل الملف للمكتبة.")
+        var duration: Double? = null
+        var thumb: String? = null
         runCatching {
-            val arr = JSONArray()
+            val r = MediaMetadataRetriever()
+            try {
+                r.setDataSource(dest.absolutePath)
+                duration = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toDoubleOrNull()?.div(1000)
+                r.getFrameAtTime(1_000_000)?.let { bmp ->
+                    val tf = File(library.thumbsDir, "${job.id}.jpg")
+                    try { tf.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, it) } }
+                    finally { bmp.recycle() }
+                    thumb = tf.absolutePath
+                }
+            } finally { r.release() }
+        }
+        return saved(dest, job, kind, dest.length(), duration, thumb)
+    }
+
+    private fun saved(file: File, job: DownloadJob, kind: MediaKind, size: Long, duration: Double?, thumb: String? = null) = SavedVideo(
+        id = job.id, title = job.media.title, sourceUrl = job.media.url, pageUrl = job.media.pageUrl,
+        localPath = file.absolutePath, thumbnailPath = thumb, kind = kind,
+        durationSec = duration?.takeIf { it > 0 } ?: job.media.durationSec, fileSize = size, extractionMethod = job.media.extractionMethod
+    )
+
+    private fun unsupported(media: DetectedMedia) = MediaDownloadException(when {
+        media.kind == MediaKind.DASH -> "DASH متاح للتشغيل فقط؛ الحفظ بدون إنترنت غير مدعوم."
+        media.isFragment -> "ده جزء من الفيديو، مش ملف كامل. حمّل رابط ملف الفيديو أو قائمة HLS."
+        else -> "استخدم رابط فيديو أو صوت HTTP أو HTTPS صالح."
+    })
+
+    private fun workDir(id: String) = File(workRoot, id)
+
+    private fun cleanUnfinished(id: String) {
+        workDir(id).deleteRecursively()
+        if (library.byId(id) == null) {
+            library.videosDir.listFiles()?.filter { it.name == id || it.nameWithoutExtension == id }?.forEach { it.deleteRecursively() }
+            File(library.thumbsDir, "$id.jpg").delete()
+        }
+    }
+
+    @Synchronized private fun patch(id: String, save: Boolean = true, transform: (DownloadJob) -> DownloadJob) {
+        _jobs.value = _jobs.value.map { if (it.id == id) transform(it) else it }
+        if (save) persist()
+    }
+
+    private fun persist() {
+        runCatching {
+            val list = JSONArray()
             _jobs.value.forEach { j ->
-                arr.put(JSONObject().apply {
+                list.put(JSONObject().apply {
                     put("id", j.id); put("state", j.state.name); put("progress", j.progress)
                     put("bytesWritten", j.bytesWritten); put("createdAt", j.createdAt)
-                    put("errorMessage", j.errorMessage ?: JSONObject.NULL)
-                    put("preferredMaxHeight", j.preferredMaxHeight ?: JSONObject.NULL)
-                    put("destPath", j.destPath ?: JSONObject.NULL)
+                    put("errorMessage", j.errorMessage); put("preferredMaxHeight", j.preferredMaxHeight)
+                    put("preferredVariantUrl", j.preferredVariantUrl); put("destPath", j.destPath)
                     put("media", JSONObject().apply {
                         put("url", j.media.url); put("title", j.media.title); put("kind", j.media.kind.name)
-                        put("pageUrl", j.media.pageUrl ?: JSONObject.NULL); put("method", j.media.extractionMethod)
+                        put("pageUrl", j.media.pageUrl); put("method", j.media.extractionMethod); put("drm", j.media.drm.name)
+                        put("duration", j.media.durationSec)
                     })
+                    // Auth configuration only. Session cookies are never serialized into this file.
+                    j.auth?.let { put("auth", JSONObject().put("ua", it.userAgent).put("referer", it.referer)
+                        .put("origin", it.origin).put("browser", it.useBrowserCookies)) }
                 })
             }
-            jobsFile.writeText(arr.toString())
+            val out = jobsFile.startWrite()
+            try { out.write(list.toString().toByteArray()); jobsFile.finishWrite(out) }
+            catch (e: Exception) { jobsFile.failWrite(out); throw e }
         }
     }
 
     private fun loadJobs() {
-        if (!jobsFile.exists()) return
         runCatching {
-            val arr = JSONArray(jobsFile.readText())
-            _jobs.value = (0 until arr.length()).map {
-                val o = arr.getJSONObject(it); val m = o.getJSONObject("media")
-                DownloadJob(
-                    id = o.getString("id"),
-                    state = runCatching { DownloadState.valueOf(o.getString("state")) }.getOrDefault(DownloadState.QUEUED)
-                        .let { s -> if (s == DownloadState.RUNNING) DownloadState.PAUSED else s },
-                    progress = o.optDouble("progress"), bytesWritten = o.optLong("bytesWritten"),
-                    createdAt = o.optLong("createdAt"),
-                    errorMessage = if (o.isNull("errorMessage")) null else o.optString("errorMessage"),
-                    media = DetectedMedia(
-                        url = m.getString("url"), title = m.getString("title"),
-                        kind = runCatching { MediaKind.valueOf(m.getString("kind")) }.getOrDefault(MediaKind.OTHER),
-                        pageUrl = if (m.isNull("pageUrl")) null else m.optString("pageUrl"),
-                        extractionMethod = m.optString("method", "manual")
+            val list = JSONArray(jobsFile.readFully().toString(Charsets.UTF_8))
+            _jobs.value = (0 until list.length()).mapNotNull { i ->
+                runCatching {
+                    val j = list.getJSONObject(i); val m = j.getJSONObject("media")
+                    val state = DownloadState.valueOf(j.getString("state"))
+                    DownloadJob(
+                        id = UUID.fromString(j.getString("id")).toString(),
+                        state = if (state.isBusy) DownloadState.PAUSED else state,
+                        progress = j.optDouble("progress", 0.0), bytesWritten = j.optLong("bytesWritten"),
+                        createdAt = j.optLong("createdAt"), errorMessage = j.text("errorMessage"), destPath = j.text("destPath"),
+                        preferredMaxHeight = j.optInt("preferredMaxHeight").takeIf { it > 0 }, preferredVariantUrl = j.text("preferredVariantUrl"),
+                        media = DetectedMedia(m.getString("url"), m.getString("title"), MediaKind.valueOf(m.getString("kind")),
+                            pageUrl = m.text("pageUrl"), extractionMethod = m.optString("method", "manual"),
+                            drm = runCatching { DRMKind.valueOf(m.optString("drm")) }.getOrDefault(DRMKind.NONE),
+                            durationSec = m.optDouble("duration").takeIf { it.isFinite() && it > 0 }),
+                        auth = j.optJSONObject("auth")?.let { DownloadAuth(it.optString("ua", DownloadAuth.CHROME_UA), it.text("referer"), it.text("origin"), it.optBoolean("browser")) }
                     )
-                )
+                }.getOrNull()
             }
         }
     }
+
+    private fun JSONObject.text(key: String): String? = if (isNull(key)) null else optString(key).ifBlank { null }
 }
 
-/** Foreground-service shell so long downloads survive the UI being swiped away. */
-class DownloadService : android.app.Service() {
-    override fun onBind(intent: android.content.Intent?): android.os.IBinder? = null
-    override fun onStartCommand(intent: android.content.Intent?, flags: Int, startId: Int): Int {
-        val channel = android.app.NotificationChannel("downloads", "التحميلات", android.app.NotificationManager.IMPORTANCE_LOW)
-        getSystemService(android.app.NotificationManager::class.java).createNotificationChannel(channel)
-        val n = android.app.Notification.Builder(this, "downloads")
-            .setContentTitle("فيديو ٢").setContentText("جارٍ التحميل في الخلفية…")
-            .setSmallIcon(android.R.drawable.stat_sys_download).build()
-        startForeground(42, n)
-        return START_STICKY
+class DownloadService : Service() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var observer: Job? = null
+    private val channelId = "downloads"
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(NotificationChannel(channelId, "التحميلات", NotificationManager.IMPORTANCE_LOW))
+        startForeground(42, notification())
+        if (observer?.isActive != true) observer = scope.launch {
+            (application as Video2Application).downloads.jobs.collect { jobs ->
+                val active = jobs.filter { it.state.isBusy }
+                if (active.isEmpty()) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                } else manager.notify(42, notification(active.size, active.first().progress))
+            }
+        }
+        return START_NOT_STICKY
     }
+
+    private fun notification(count: Int = 0, progress: Double = 0.0): Notification {
+        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        return Notification.Builder(this, channelId).setContentTitle("فيديو ٢")
+            .setContentText(if (count <= 1) "جارٍ التحميل في الخلفية…" else "جارٍ تحميل $count ملفات…")
+            .setSmallIcon(android.R.drawable.stat_sys_download).setOnlyAlertOnce(true).setOngoing(true)
+            .setProgress(100, (progress * 100).toInt().coerceIn(0, 100), count != 1 || progress == 0.0)
+            .setContentIntent(open).build()
+    }
+
+    override fun onDestroy() { scope.coroutineContext[Job]?.cancel(); super.onDestroy() }
 }

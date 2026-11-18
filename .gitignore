@@ -4,3 +4,8 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 *.ipa
+
+# Local Android build / delivery artifacts
+/android/.gradle/
+/android/local.properties
+/artifacts/*.apk

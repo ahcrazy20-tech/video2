@@ -1,5 +1,8 @@
 package com.ahcrazy.video2.core.model
 
+import com.ahcrazy.video2.core.media.httpMediaUrl
+import com.ahcrazy.video2.core.media.isMediaFragment
+import com.ahcrazy.video2.core.media.origin
 import java.util.UUID
 
 /** Faithful Android port of iOS Models.swift (MediaKind / DRMKind / media / jobs). */
@@ -8,7 +11,8 @@ enum class MediaKind(val ext: String, val titleAr: String, val titleEn: String) 
     THREE_GP("3gp", "3GP", "3GP"), HLS("m3u8", "HLS (m3u8)", "HLS (m3u8)"),
     DASH("mpd", "DASH", "DASH"), WEBM("webm", "WebM", "WebM"), TS("ts", "جزء TS", "TS segment"),
     AAC("aac", "AAC", "AAC"), MP3("mp3", "MP3", "MP3"), WAV("wav", "WAV", "WAV"),
-    MKV("mkv", "MKV", "MKV"), AVI("avi", "AVI", "AVI"), OTHER("bin", "أخرى", "Other");
+    MKV("mkv", "MKV", "MKV"), AVI("avi", "AVI", "AVI"), M4A("m4a", "M4A", "M4A"),
+    OGG("ogg", "OGG", "OGG"), FLAC("flac", "FLAC", "FLAC"), OTHER("bin", "أخرى", "Other");
 
     val isCompleteVideo: Boolean get() = this in setOf(MP4, MOV, M4V, THREE_GP, HLS, WEBM, MKV, AVI, DASH)
     val isLikelyFragment: Boolean get() = this == TS
@@ -17,22 +21,29 @@ enum class MediaKind(val ext: String, val titleAr: String, val titleEn: String) 
 
     companion object {
         fun infer(url: String, mime: String?): MediaKind {
-            val u = url.substringBefore("?").lowercase()
-            val m = (mime ?: "").lowercase()
+            val parsed = httpMediaUrl(url)
+            val path = (parsed?.encodedPath ?: url.substringBefore('?').substringBefore('#')).lowercase()
+            val type = (mime?.takeIf { it.isNotBlank() } ?: parsed?.queryParameter("mime"))
+                .orEmpty().substringBefore(';').trim().lowercase()
             return when {
-                u.contains(".m3u8") || m.contains("mpegurl") -> HLS
-                u.contains(".mpd") || m.contains("dash") -> DASH
-                u.endsWith(".webm") || m.contains("webm") -> WEBM
-                u.endsWith(".mkv") || m.contains("matroska") -> MKV
-                u.endsWith(".avi") -> AVI
-                u.endsWith(".mov") -> MOV
-                u.endsWith(".m4v") -> M4V
-                u.endsWith(".3gp") || u.endsWith(".3gpp") -> THREE_GP
-                u.endsWith(".ts") -> TS
-                u.endsWith(".aac") || m.contains("aac") -> AAC
-                u.endsWith(".mp3") || (m.contains("mpeg") && m.contains("audio")) -> MP3
-                u.endsWith(".wav") -> WAV
-                u.endsWith(".mp4") || m.contains("mp4") || m.contains("video") -> MP4
+                type.contains("mpegurl") -> HLS
+                type == "application/dash+xml" -> DASH
+                path.endsWith(".m3u8") -> HLS
+                path.endsWith(".mpd") -> DASH
+                path.endsWith(".webm") || type.endsWith("/webm") -> WEBM
+                path.endsWith(".mkv") || type.contains("matroska") -> MKV
+                path.endsWith(".avi") || type == "video/x-msvideo" -> AVI
+                path.endsWith(".mov") || type == "video/quicktime" -> MOV
+                path.endsWith(".m4v") -> M4V
+                path.endsWith(".3gp") || path.endsWith(".3gpp") || type.endsWith("/3gpp") -> THREE_GP
+                path.endsWith(".ts") || type == "video/mp2t" -> TS
+                path.endsWith(".aac") || type == "audio/aac" -> AAC
+                path.endsWith(".mp3") || type == "audio/mpeg" -> MP3
+                path.endsWith(".wav") || type in setOf("audio/wav", "audio/x-wav") -> WAV
+                path.endsWith(".m4a") || type == "audio/mp4" -> M4A
+                path.endsWith(".ogg") || path.endsWith(".opus") || type.endsWith("/ogg") -> OGG
+                path.endsWith(".flac") || type == "audio/flac" -> FLAC
+                path.endsWith(".mp4") || type == "video/mp4" -> MP4
                 else -> OTHER
             }
         }
@@ -52,7 +63,7 @@ enum class DRMKind(val titleAr: String, val titleEn: String) {
 
 data class HlsVariant(
     val url: String, val bandwidth: Int = 0, val width: Int? = null,
-    val height: Int? = null, val codecs: String? = null
+    val height: Int? = null, val codecs: String? = null, val audioGroup: String? = null
 ) {
     val id: String get() = url
     val qualityLabel: String
@@ -63,21 +74,21 @@ data class HlsVariant(
         }
 }
 
-data class DownloadAuth(val userAgent: String, val referer: String? = null, val cookie: String? = null) {
+data class DownloadAuth(
+    val userAgent: String,
+    val referer: String? = null,
+    val origin: String? = null,
+    val useBrowserCookies: Boolean = false
+) {
     companion object {
         const val CHROME_UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
         val default = DownloadAuth(CHROME_UA)
     }
+
     fun headers(): Map<String, String> = buildMap {
         put("User-Agent", userAgent)
-        if (!referer.isNullOrEmpty()) {
-            put("Referer", referer)
-            runCatching {
-                val u = java.net.URL(referer)
-                put("Origin", "${u.protocol}://${u.host}")
-            }
-        }
-        if (!cookie.isNullOrEmpty()) put("Cookie", cookie)
+        httpMediaUrl(referer)?.let { put("Referer", it.toString()) }
+        httpMediaUrl(origin ?: referer)?.let { put("Origin", it.origin()) }
     }
 }
 
@@ -86,11 +97,13 @@ data class DetectedMedia(
     val qualityLabel: String? = null, val drm: DRMKind = DRMKind.NONE, val pageUrl: String? = null,
     val extractionMethod: String = "html5", val durationSec: Double? = null, val byteSize: Long? = null,
     val width: Int? = null, val height: Int? = null, val probed: Boolean = false,
-    val variants: List<HlsVariant> = emptyList()
+    val variants: List<HlsVariant> = emptyList(),
+    val requestReferer: String? = null, val requestOrigin: String? = null,
+    val fromAd: Boolean = false
 ) {
     val id: String get() = url
-    val canDownload: Boolean get() = !drm.isProtected && !url.startsWith("blob:") && !url.startsWith("data:")
-    val isFragment: Boolean get() = kind.isLikelyFragment || url.lowercase().contains(".m4s")
+    val canDownload: Boolean get() = !drm.isProtected && !isFragment && kind != MediaKind.DASH && httpMediaUrl(url) != null
+    val isFragment: Boolean get() = kind.isLikelyFragment || httpMediaUrl(url)?.isMediaFragment() == true
     val durationText: String
         get() {
             val d = durationSec
@@ -131,5 +144,6 @@ data class DownloadJob(
     val state: DownloadState = DownloadState.QUEUED, val progress: Double = 0.0,
     val bytesWritten: Long = 0L, val errorMessage: String? = null,
     val createdAt: Long = System.currentTimeMillis(), val destPath: String? = null,
-    val preferredMaxHeight: Int? = null, val auth: DownloadAuth? = null
+    val preferredMaxHeight: Int? = null, val auth: DownloadAuth? = null,
+    val preferredVariantUrl: String? = null
 )

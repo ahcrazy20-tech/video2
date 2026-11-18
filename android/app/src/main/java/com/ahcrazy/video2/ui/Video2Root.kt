@@ -25,6 +25,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -46,10 +47,15 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ahcrazy.video2.app
+import com.ahcrazy.video2.core.model.DetectedMedia
+import com.ahcrazy.video2.core.model.DownloadAuth
+import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.model.SavedVideo
 import com.ahcrazy.video2.core.model.TranslationJob
 import com.ahcrazy.video2.core.util.L10n
 import com.ahcrazy.video2.ui.browser.BrowserScreen
+import com.ahcrazy.video2.ui.browser.BrowserSession
+import com.ahcrazy.video2.ui.browser.BrowserStream
 import com.ahcrazy.video2.ui.downloads.DownloadsScreen
 import com.ahcrazy.video2.ui.library.LibraryScreen
 import com.ahcrazy.video2.ui.magic.MagicSearchScreen
@@ -74,7 +80,9 @@ fun Video2Root() {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var locked by remember { mutableStateOf(app.settings.hasAppPassword()) }
     var playingVideo by remember { mutableStateOf<SavedVideo?>(null) }
-    var playingStream by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var playingStream by remember { mutableStateOf<BrowserStream?>(null) }
+    val browser = remember { BrowserSession() }
+    DisposableEffect(browser) { onDispose { browser.destroy() } }
     var browserUrl by remember { mutableStateOf<String?>(null) }
     var translatePreselect by remember { mutableStateOf<SavedVideo?>(null) }
     var reviewJob by remember { mutableStateOf<TranslationJob?>(null) }
@@ -95,16 +103,15 @@ fun Video2Root() {
         Box(Modifier.fillMaxSize().background(V2.Bg)) {
             when {
                 playingVideo != null || playingStream != null -> PlayerScreen(
-                    video = playingVideo, streamUrl = playingStream?.first, streamTitle = playingStream?.second, ar = ar,
+                    video = playingVideo, streamUrl = playingStream?.media?.url, streamTitle = playingStream?.media?.title, ar = ar,
+                    streamKind = playingStream?.media?.kind, streamAuth = playingStream?.auth,
                     onBack = { playingVideo = null; playingStream = null })
                 reviewJob != null -> SubtitleReviewScreen(reviewJob!!, ar) { reviewJob = null }
                 showConvert -> ConversionScreen(ar) { showConvert = false }
                 else -> {
                     Box(Modifier.fillMaxSize().padding(bottom = 62.dp)) {
                         // Keep every tab alive (like the iOS custom tab bar) — only visibility toggles.
-                        TabHost(visible = tab == 0) {
-                            BrowserScreen(ar, browserUrl, { browserUrl = null }, onPlayStream = { u, t -> playingStream = u to t })
-                        }
+                        if (tab == 0) BrowserScreen(ar, browser, browserUrl, { browserUrl = null }, onPlayStream = { playingStream = it })
                         TabHost(visible = tab == 1) {
                             LibraryScreen(ar,
                                 onPlay = { playingVideo = it },
@@ -125,7 +132,7 @@ fun Video2Root() {
                         }
                         TabHost(visible = tab == 5) {
                             MagicSearchScreen(ar,
-                                onPlayStream = { u, t -> playingStream = u to t },
+                                onPlayStream = { u, t -> playingStream = BrowserStream(DetectedMedia(u, t, MediaKind.infer(u, null)), DownloadAuth.default) },
                                 onOpenInBrowser = { u -> browserUrl = u; tab = 0 })
                         }
                     }

@@ -71,11 +71,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.ahcrazy.video2.app
 import com.ahcrazy.video2.core.model.SavedVideo
+import com.ahcrazy.video2.core.model.DownloadAuth
+import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.model.SubCue
 import com.ahcrazy.video2.core.util.MagicDuration
 import com.ahcrazy.video2.core.util.SrtCodec
@@ -96,7 +102,10 @@ enum class SubMode(val ar: String, val en: String) {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PlayerScreen(video: SavedVideo?, streamUrl: String?, streamTitle: String?, ar: Boolean, onBack: () -> Unit) {
+fun PlayerScreen(
+    video: SavedVideo?, streamUrl: String?, streamTitle: String?, ar: Boolean,
+    streamKind: MediaKind? = null, streamAuth: DownloadAuth? = null, onBack: () -> Unit
+) {
     val ctx = LocalContext.current
     val activity = ctx as Activity
     val app = activity.app()
@@ -104,10 +113,20 @@ fun PlayerScreen(video: SavedVideo?, streamUrl: String?, streamTitle: String?, a
     val uri = video?.localPath?.let { android.net.Uri.fromFile(File(it)) } ?: streamUrl?.let { android.net.Uri.parse(it) }
     val title = video?.title ?: streamTitle ?: "فيديو"
 
-    val player = remember(uri) {
-        ExoPlayer.Builder(ctx).build().apply {
+    val player = remember(uri, streamAuth, streamKind) {
+        val builder = ExoPlayer.Builder(ctx)
+        if (streamUrl != null && streamAuth != null) {
+            val network = OkHttpDataSource.Factory(app.downloads.http.playerClient(streamAuth))
+            builder.setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(ctx, network)))
+        }
+        builder.build().apply {
             if (uri != null) {
-                setMediaItem(MediaItem.fromUri(uri))
+                val mime = when (streamKind ?: video?.kind) {
+                    MediaKind.HLS -> MimeTypes.APPLICATION_M3U8
+                    MediaKind.DASH -> MimeTypes.APPLICATION_MPD
+                    else -> null
+                }
+                setMediaItem(MediaItem.Builder().setUri(uri).setMimeType(mime).build())
                 if (video != null && video.lastPositionSec > 5) seekTo((video.lastPositionSec * 1000).toLong())
                 prepare(); playWhenReady = true
             }

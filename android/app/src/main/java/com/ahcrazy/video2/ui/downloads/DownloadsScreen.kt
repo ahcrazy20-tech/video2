@@ -40,7 +40,7 @@ fun DownloadsScreen(ar: Boolean) {
     Column(Modifier.fillMaxSize().background(V2.Bg).padding(14.dp)) {
         Text(if (ar) "التحميلات" else "Downloads", fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp, bottom = 12.dp))
         if (jobs.isEmpty()) EmptyState(Icons.Filled.CloudDownload, L10n.t(if (ar) "ar" else "en", "dl.empty"),
-            if (ar) "أي تحميل من المتصفح أو البحث السحري هييجي هنا، وبيكمل حتى لو قفلت التطبيق." else "Downloads from Browser or Magic Search land here and resume after restart.")
+            if (ar) "التحميلات بتكمل في الخلفية. لو النظام وقف التطبيق، تقدر تستأنف من هنا." else "Downloads continue in the background. If Android stops the app, reopen it and tap Resume.")
         LazyColumn {
             items(jobs) { job -> JobRow(job, ar,
                 onPause = { app.downloads.cancel(job.id) },

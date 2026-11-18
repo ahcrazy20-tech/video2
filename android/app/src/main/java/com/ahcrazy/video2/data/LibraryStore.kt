@@ -49,7 +49,7 @@ class LibraryStore(ctx: Context) {
         indexFile.writeText(root.toString())
     }
 
-    fun add(video: SavedVideo) { _videos.value = (listOf(video) + _videos.value); save() }
+    @Synchronized fun add(video: SavedVideo) { _videos.value = listOf(video) + _videos.value.filterNot { it.id == video.id }; save() }
     fun update(video: SavedVideo) { _videos.value = _videos.value.map { if (it.id == video.id) video else it }; save() }
     fun byId(id: String): SavedVideo? = _videos.value.firstOrNull { it.id == id }
 
