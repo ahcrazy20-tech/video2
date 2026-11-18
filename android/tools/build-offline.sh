@@ -7,7 +7,8 @@ if [[ "${GITHUB_ACTIONS:-}" == true && "${VIDEO2_NATIVE_DIAGNOSTICS:-}" != 1 ]];
   log=$(mktemp)
   trap 'rm -f "$log"' EXIT
   if VIDEO2_NATIVE_DIAGNOSTICS=1 bash "$0" "$@" 2>&1 | tee "$log"; then exit 0; fi
-  detail=$( { grep -iE -A 6 'CMake Error|fatal error:|error:|failed to compile|^FAILED:' "$log" || tail -40 "$log"; } | tail -50 | head -c 2300)
+  detail=$( { grep -aiE 'CMake Error|fatal error:|error:|failed to compile|^FAILED:' "$log" || tail -16 "$log"; } | cut -c1-300 | tail -12)
+  detail=${detail:0:3400}
   detail=${detail//%/%25}; detail=${detail//$'\r'/%0D}; detail=${detail//$'\n'/%0A}
   printf '::error title=Video2 native build::%s\n' "$detail"
   exit 1
@@ -84,9 +85,12 @@ build() {
     variant_args+=("-DVIDEO2_WHISPER_FP16=$([[ "$variant" == whisper_fp16 ]] && echo ON || echo OFF)")
     if [[ "$variant" == whisper_vulkan ]]; then
       vulkan_tools
-      variant_args+=(-DVIDEO2_WHISPER_VULKAN=ON "-DVulkan_GLSLC_EXECUTABLE=$glslc"
+      # Unlike the API 26 CPU variants, this links Vulkan 1.1 core loader symbols.
+      # Keep in sync with OfflineModels.supportsVulkan. Never load this library below 29.
+      local vulkan_api=29
+      variant_args+=("-DANDROID_PLATFORM=android-$vulkan_api" -DVIDEO2_WHISPER_VULKAN=ON "-DVulkan_GLSLC_EXECUTABLE=$glslc"
                      "-DVulkan_INCLUDE_DIR=$vulkan_headers/include"
-                     "-DVulkan_LIBRARY=$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/26/libvulkan.so"
+                     "-DVulkan_LIBRARY=$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/$vulkan_api/libvulkan.so"
                      "-DVIDEO2_SPIRV_INCLUDE=$spirv_source/include"
                      "-DSPIRV-Headers_DIR=$spirv_prefix/share/cmake/SPIRV-Headers")
     else

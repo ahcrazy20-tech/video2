@@ -115,6 +115,18 @@ extern "C" JNIEXPORT void JNICALL HYMT_JNI(load)(JNIEnv * env, jobject, jlong ha
     });
 }
 
+// Ordered by the one MT worker between calls; raise its CPU budget after Whisper exits.
+extern "C" JNIEXPORT void JNICALL HYMT_JNI(setThreads)(JNIEnv * env, jobject, jlong handle, jint threads) {
+    video2::guarded(env, [&] {
+        auto & s = video2::session<Hymt>(handle);
+        s.check();
+        if (!s.engine) throw std::runtime_error("Hy-MT2 model is not loaded");
+        const int n = std::clamp<int>(threads, 1, 6);
+        llama_set_n_threads(s.engine.get(), n, n);
+        return true;
+    });
+}
+
 extern "C" JNIEXPORT jbyteArray JNICALL HYMT_JNI(translate)(
         JNIEnv * env, jobject, jlong handle, jbyteArray input, jint seed) {
     return video2::guarded(env, [&]() -> jbyteArray {
