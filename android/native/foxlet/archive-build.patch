@@ -1,0 +1,10 @@
+--- a/engine/marian-fork/src/CMakeLists.txt
++++ b/engine/marian-fork/src/CMakeLists.txt
+@@ -149,0 +150,5 @@
++# Kadr builds a verified source archive without vendoring a Git repository.
++if(DEFINED VIDEO2_FOXLET_REVISION)
++  file(CONFIGURE OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/common/git_revision.h"
++       CONTENT "#define GIT_REVISION \"Foxlet ${VIDEO2_FOXLET_REVISION}\"\n")
++else()
+@@ -178,0 +184 @@
++endif()

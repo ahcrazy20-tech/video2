@@ -7,7 +7,7 @@ if [[ "${GITHUB_ACTIONS:-}" == true && "${VIDEO2_NATIVE_DIAGNOSTICS:-}" != 1 ]];
   log=$(mktemp)
   trap 'rm -f "$log"' EXIT
   if VIDEO2_NATIVE_DIAGNOSTICS=1 bash "$0" "$@" 2>&1 | tee "$log"; then exit 0; fi
-  detail=$( { grep -aiE 'CMake Error|fatal error:|error:|failed to compile|^FAILED:' "$log" || tail -16 "$log"; } | cut -c1-300 | tail -12)
+  detail=$( { grep -aiEA3 'CMake Error|fatal error:|error:|failed to compile|^FAILED:' "$log" || tail -16 "$log"; } | cut -c1-300 | tail -12)
   detail=${detail:0:3400}
   detail=${detail//%/%25}; detail=${detail//$'\r'/%0D}; detail=${detail//$'\n'/%0A}
   printf '::error title=Video2 native build::%s\n' "$detail"
@@ -106,6 +106,38 @@ build() {
   "$cmake" --build "$work/$variant-build" --target "video2_$variant" --parallel "${VIDEO2_NATIVE_JOBS:-$jobs}"
 }
 
+build_foxlet() {
+  # Foxlet v0.5.0 is an ARM-optimized build of Mozilla's Bergamot/Marian engine.
+  # Build only the native batch runtime; Kadr owns model files and job lifetimes.
+  foxlet_rev=0eff2a15032362115848a496ce1df8ed9fc68650
+  foxlet="$work/foxlet-$foxlet_rev"
+  verified_source foxlet "$foxlet" "https://codeload.github.com/yinvoke/foxlet-translate/tar.gz/$foxlet_rev" \
+    0f4a0f1bca29ed60c877895f2092bbcb9f6c383565ee8d175feb6ef66e9e582b
+  archive_patch="$root/native/foxlet/archive-build.patch"
+  if ! patch --dry-run --batch -s -R -p1 -d "$foxlet" < "$archive_patch" >/dev/null 2>&1; then
+    patch --batch -p1 -d "$foxlet" --fuzz=0 < "$archive_patch"
+  fi
+  "$cmake" -S "$foxlet" -B "$work/foxlet-build" "${args[@]}" -DANDROID_PLATFORM=android-28 \
+    -DCMAKE_BUILD_TYPE=Release -DBUILD_ARCH=armv8-a -DCOMPILE_TESTS=OFF -DGIT_SUBMODULE=OFF \
+    "-DVIDEO2_FOXLET_REVISION=$foxlet_rev" "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$out"
+  "$cmake" --build "$work/foxlet-build" --target foxlet --parallel "${VIDEO2_NATIVE_JOBS:-$jobs}"
+  notices="$1/licenses"
+  mkdir -p "$notices"
+  cp "$archive_patch" "$notices/foxlet-archive-build.patch"
+  python3 - "$foxlet" "$notices" "$foxlet_rev" <<'PYNOTICE'
+import pathlib, runpy, sys
+source, out = map(pathlib.Path, sys.argv[1:3])
+text = runpy.run_path(str(source / 'tools/distribution/package_notices.py'))['notices']()
+(out / 'foxlet-THIRD-PARTY.txt').write_text(text, encoding='utf-8')
+(out / 'foxlet-NOTICE.txt').write_bytes((source / 'NOTICE').read_bytes())
+(out / 'foxlet-SOURCE.txt').write_text(
+    'MPL-covered Foxlet/Bergamot source, with the archive build patch in this directory:\n'
+    f'https://github.com/yinvoke/foxlet-translate/tree/{sys.argv[3]}\n', encoding='utf-8')
+PYNOTICE
+}
+
+if [[ "$mode" == android ]]; then build_foxlet "${5:-$work/assets}"; fi
+
 # whisper.cpp v1.9.5 and llama.cpp b12503: separate static ggml builds, no servers/tools.
 whisper=(whisper whisper.cpp d1be6fde11ac6e0407606b4e42fe72d34add8037 645445da884df6dbd52b30f82d7be7c01d1767c938714e477e786b88d529e9f4)
 build "${whisper[@]}"
@@ -119,29 +151,6 @@ build "${hymt[@]}"
 if [[ "$mode" == android ]]; then build "${hymt[@]}" hymt_dotprod; fi
 
 if [[ "$mode" == android ]]; then
-  # Foxlet v0.5.0 is an ARM-optimized build of Mozilla's Bergamot/Marian engine.
-  # Build only the native batch runtime; Kadr owns model files and job lifetimes.
-  foxlet_rev=0eff2a15032362115848a496ce1df8ed9fc68650
-  foxlet="$work/foxlet-$foxlet_rev"
-  verified_source foxlet "$foxlet" "https://codeload.github.com/yinvoke/foxlet-translate/tar.gz/$foxlet_rev" \
-    0f4a0f1bca29ed60c877895f2092bbcb9f6c383565ee8d175feb6ef66e9e582b
-  "$cmake" -S "$foxlet" -B "$work/foxlet-build" "${args[@]}" -DANDROID_PLATFORM=android-28 \
-    -DCMAKE_BUILD_TYPE=Release -DBUILD_ARCH=armv8-a -DCOMPILE_TESTS=OFF -DGIT_SUBMODULE=OFF \
-    "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$out"
-  "$cmake" --build "$work/foxlet-build" --target foxlet --parallel "${VIDEO2_NATIVE_JOBS:-$jobs}"
-  notices="${5:-$work/assets}/licenses"
-  mkdir -p "$notices"
-  python3 - "$foxlet" "$notices" "$foxlet_rev" <<'PYNOTICE'
-import pathlib, runpy, sys
-source, out = map(pathlib.Path, sys.argv[1:3])
-text = runpy.run_path(str(source / 'tools/distribution/package_notices.py'))['notices']()
-(out / 'foxlet-THIRD-PARTY.txt').write_text(text, encoding='utf-8')
-(out / 'foxlet-NOTICE.txt').write_bytes((source / 'NOTICE').read_bytes())
-(out / 'foxlet-SOURCE.txt').write_text(
-    'MPL-covered Foxlet/Bergamot source at the exact Kadr build commit:\n'
-    f'https://github.com/yinvoke/foxlet-translate/tree/{sys.argv[3]}\n', encoding='utf-8')
-PYNOTICE
-
   # Android 15+ devices can use 16 KiB pages; reject a misaligned engine before packaging.
   readelf="$sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
   for so in "$out/libvideo2_whisper.so" "$out/libvideo2_whisper_fp16.so" "$out/libvideo2_whisper_fp16_dotprod.so" "$out/libvideo2_whisper_vulkan.so" "$out/libvideo2_hymt.so" "$out/libvideo2_hymt_dotprod.so" "$out/libfoxlet.so"; do
