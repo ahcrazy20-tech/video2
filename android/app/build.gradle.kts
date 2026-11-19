@@ -28,8 +28,8 @@ android {
         applicationId = "com.ahcrazy.video2"
         minSdk = 26
         targetSdk = 34
-        versionCode = 20
-        versionName = "2.5"
+        versionCode = 21
+        versionName = "2.6"
         // Keep the same ABI as the existing offline APK. The Moonshine AAR also
         // ships other ABIs, but they don't have the rest of Kadr's local runtimes.
         ndk { abiFilters += "arm64-v8a" }

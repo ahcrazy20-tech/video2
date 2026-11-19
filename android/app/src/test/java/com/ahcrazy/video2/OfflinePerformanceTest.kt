@@ -378,6 +378,9 @@ class OfflinePerformanceTest {
         assertEquals(2_150L, report.elapsedMs)
         assertEquals(report, readOfflinePerformance(JSONObject(report.toJson().toString())))
         assertNull(readOfflinePerformance(JSONObject())?.firstBatchMs)
+        assertEquals(0L, readOfflinePerformance(JSONObject())?.vadMs)
+        val gated = report.copy(vadMs = 300, vadSavedAudioMs = 12_345, vadWindows = 2, vadRetriedWindows = 1, vadUnavailable = true)
+        assertEquals(gated, readOfflinePerformance(JSONObject(gated.toJson().toString())))
         assertEquals(OfflinePreset.CPU, OfflinePreset.fromStored("unknown"))
         assertEquals(OfflinePreset.OVERLAP, OfflinePreset.fromStored("OVERLAP"))
     }

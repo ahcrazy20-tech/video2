@@ -6,7 +6,7 @@ enum class SubLang(val code: String, val nameAr: String, val englishName: String
     AR("ar", "العربية", "Arabic"), EN("en", "الإنجليزية", "English"),
     HI("hi", "الهندية", "Hindi"), UR("ur", "الأردية", "Urdu"),
     FR("fr", "الفرنسية", "French"), TR("tr", "التركية", "Turkish"),
-    DE("de", "الألمانية", "German"), ES("es", "الإسبانية", "Spanish"),
+    DE("de", "الألمانية", "German"), ES("es", "الإسبانية", "Spanish"), IT("it", "الإيطالية", "Italian"),
     RU("ru", "الروسية", "Russian"), FA("fa", "الفارسية", "Persian"),
     ID("id", "الإندونيسية", "Indonesian");
     val bcp47: String? get() = if (this == AUTO) null else code
@@ -108,5 +108,6 @@ data class TranslationJob(
     val mode: TranslationMode = TranslationMode.CLOUD, val offlineModel: String? = null, val offlineIssue: String? = null,
     val offlineSpeechModel: String? = null, val offlineFastSpeech: Boolean = false,
     val offlineTranscriptFrom: String? = null,
-    val offlinePreset: OfflinePreset = OfflinePreset.CPU, val offlinePerformance: OfflinePerformance? = null
+    val offlinePreset: OfflinePreset = OfflinePreset.CPU, val offlinePerformance: OfflinePerformance? = null,
+    val offlineSilenceGate: Boolean = false
 )

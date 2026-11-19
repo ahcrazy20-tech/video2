@@ -4,6 +4,8 @@ package com.ahcrazy.video2.data.offline
 // A different weights revision gets a different ID, not an in-place replacement.
 internal const val MOONSHINE_ID = "moonshine-small-en-260821"
 internal const val FIREFOX_ID = "firefox-en-ar-22"
+internal const val FIREFOX_ES_ID = "firefox-es-en-ar-20-22"
+internal const val FIREFOX_IT_ID = "firefox-it-en-ar-20-22"
 private const val MOONSHINE_EN = "https://download.moonshine.ai/model/small-streaming-en/quantized_26_08_21"
 private const val FIREFOX_CDN = "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/translations-models"
 
@@ -32,7 +34,25 @@ internal val firefoxAssets = listOf(
     firefox("vocab.enar.spm", "793d9667-7929-4375-855d-96bbed2f113d.spm", 863_591, "8d93c54aa5e2044c416ec680b5ff9af0227bd698521666e8b1a1ea1b041fbae8")
 )
 
-private fun firefox(name: String, attachment: String, bytes: Long, sha: String) = pinnedAsset(FIREFOX_ID, name, "$FIREFOX_CDN/$attachment", bytes, sha)
+// Each pivot route installs its first leg only. The second leg is the existing EN→AR bundle.
+internal val firefoxSpanishAssets = listOf(
+    firefox("model.esen.intgemm.alphas.bin", "d7256ea9-7731-4f15-866c-62998eef93b9.bin", 31_561_787, "4aed7734152ae0045d1a69ae49c86cfda18f53c61f90e95e1d1de1c7c7c3b033", FIREFOX_ES_ID),
+    firefox("lex.50.50.esen.s2t.bin", "a55a9cf2-8a8c-4942-a528-91e93d081746.bin", 4_636_248, "e2610211d3b9577d012638fe7e7e74ed7b4b708ce96b9e792e67c282a6492daa", FIREFOX_ES_ID),
+    firefox("vocab.esen.spm", "8695cc3d-7897-4c29-808b-bc983a93d1cd.spm", 816_054, "5ae254fa9b15aa182e70fd2a6186b1333c63a29a48043a9224c6aa4fcac058ad", FIREFOX_ES_ID)
+)
+
+internal val firefoxItalianAssets = listOf(
+    firefox("model.iten.intgemm.alphas.bin", "a6e3de84-6612-4546-a4ef-b658ee23ca08.bin", 31_561_787, "21b70978ce2f3b4da7a06b5de86a09abe3acd30b9eee1b2ebb3582b9bad790bf", FIREFOX_IT_ID),
+    firefox("lex.50.50.iten.s2t.bin", "122ac310-0f7b-40d5-b49d-bcee81077c85.bin", 4_713_616, "0700d6d70b30490e68ff9deca0b45b80310745b491855bde3a13e1692d0cbce1", FIREFOX_IT_ID),
+    firefox("vocab.iten.spm", "51b5a437-9daa-481e-a9bc-311f2b3f490c.spm", 812_724, "3ef0211d4ae6db21440892f180f2019fe2bfc110a330ffa9d2eca9665e4f2bc5", FIREFOX_IT_ID)
+)
+
+private fun firefox(name: String, attachment: String, bytes: Long, sha: String, id: String = FIREFOX_ID) =
+    pinnedAsset(id, name, "$FIREFOX_CDN/$attachment", bytes, sha)
 
 internal fun supportsLocalPair(source: String, target: String, speech: OfflineModel, translator: OfflineModel): Boolean =
-    (!speech.isMoonshine || source == "en") && (!translator.isFirefox || (source == "en" && target == "ar"))
+    (!speech.isMoonshine || source == "en") &&
+        (translator.firefoxSource?.let { it == source && target == "ar" } ?: true)
+
+internal fun supportsSilenceGate(source: String, speech: OfflineModel) =
+    source in hymtSourceLanguages && speech in OfflineModel.speechModels && !speech.isMoonshine

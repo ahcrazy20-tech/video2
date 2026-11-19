@@ -14,6 +14,7 @@ final class WhisperJni {
     native void destroy(long h);
     native void load(long h, byte[] path, int threads);
     native boolean supportsFp16();
+    native int[] speechBounds(long h, short[] samples, byte[] path);
     native byte[][] decode(long h, short[] samples, byte[] lang, byte[] prompt, boolean fast, Object progress);
 }
 
@@ -44,8 +45,10 @@ public final class OfflineNativeSmoke {
             try {
                 mustFail(() -> w.load(wHandle, bad, 1), "Whisper could not load its model");
                 mustFail(() -> w.decode(wHandle, new short[16000], new byte[0], new byte[0], false, null), "Whisper model is not loaded");
+                mustFail(() -> w.speechBounds(wHandle, new short[16000], bad), "Could not open Silero VAD");
                 w.cancel(wHandle);
                 mustFail(() -> w.load(wHandle, bad, 1), "On-device work cancelled");
+                mustFail(() -> w.speechBounds(wHandle, new short[16000], bad), "On-device work cancelled");
             } finally { w.destroy(wHandle); }
             var h = new HymtJni();
             if (h.supportsDotprod()) throw new AssertionError("Host smoke build must use the generic translator");
@@ -62,8 +65,22 @@ public final class OfflineNativeSmoke {
 
     // Optional probes use user-supplied verified weights and media; nothing is downloaded.
     private static void probe(String[] args) throws Exception {
+        if (args.length == 3 && args[0].equals("vad")) {
+            var input = readPcm(args[2]);
+            var engine = new WhisperJni();
+            long handle = engine.create();
+            try {
+                long start = System.nanoTime();
+                int[] bounds = engine.speechBounds(handle, input, args[1].getBytes(StandardCharsets.UTF_8));
+                elapsed("Voice activity detection (one window)", start);
+                for (int i = 0; i < bounds.length; i += 2) {
+                    System.out.printf(Locale.ROOT, "%.2f\t%.2f%n", bounds[i] / 100.0, bounds[i + 1] / 100.0);
+                }
+            } finally { engine.destroy(handle); }
+            return;
+        }
         if (args.length < 4 || args.length > 5) throw new IllegalArgumentException(
-            "translate 1.8b|7b WEIGHTS PROMPT_UTF8 [THREADS] or speech|speech-fast WEIGHTS PCM16LE SOURCE [THREADS]");
+            "vad WEIGHTS PCM16LE or translate 1.8b|7b WEIGHTS PROMPT_UTF8 [THREADS] or speech|speech-fast WEIGHTS PCM16LE SOURCE [THREADS]");
         int threads = args.length == 5 ? Integer.parseInt(args[4]) : 4;
         if (threads < 1 || threads > 32) throw new IllegalArgumentException("Threads must be in 1..32");
         if (args[0].equals("translate")) {
@@ -88,11 +105,7 @@ public final class OfflineNativeSmoke {
                 System.out.println(new String(output, StandardCharsets.UTF_8));
             } finally { engine.destroy(handle); }
         } else if (args[0].equals("speech") || args[0].equals("speech-fast")) {
-            var pcm = Path.of(args[2]);
-            long bytes = Files.size(pcm);
-            if (bytes <= 0 || bytes > 2L * 16000 * 75 || bytes % 2 != 0) throw new IllegalArgumentException("Expected up to 75 s of raw 16 kHz mono s16le");
-            short[] input = new short[(int) (bytes / 2)];
-            ByteBuffer.wrap(Files.readAllBytes(pcm)).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(input);
+            var input = readPcm(args[2]);
             var engine = new WhisperJni();
             long handle = engine.create();
             try {
@@ -105,6 +118,17 @@ public final class OfflineNativeSmoke {
                 for (byte[] line : output) System.out.println(new String(line, StandardCharsets.UTF_8));
             } finally { engine.destroy(handle); }
         } else throw new IllegalArgumentException("Unknown probe: " + args[0]);
+    }
+
+    private static short[] readPcm(String path) throws Exception {
+        var pcm = Path.of(path);
+        long bytes = Files.size(pcm);
+        if (bytes <= 0 || bytes > 2L * 16000 * 75 || bytes % 2 != 0) {
+            throw new IllegalArgumentException("Expected up to 75 s of raw 16 kHz mono s16le");
+        }
+        short[] input = new short[(int) (bytes / 2)];
+        ByteBuffer.wrap(Files.readAllBytes(pcm)).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(input);
+        return input;
     }
 
     private static void elapsed(String stage, long start) {

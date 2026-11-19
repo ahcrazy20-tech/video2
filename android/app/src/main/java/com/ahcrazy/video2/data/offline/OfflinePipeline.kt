@@ -31,11 +31,11 @@ internal class OfflinePipeline(
     fun run(
         dir: File, input: File, source: SubLang, target: SubLang, speechModel: OfflineModel, signal: CancellationSignal,
         fastSpeech: Boolean = false, translator: OfflineModel = OfflineModel.HYMT_Q4,
-        preset: OfflinePreset = OfflinePreset.CPU, stats: OfflineStats = OfflineStats(),
+        preset: OfflinePreset = OfflinePreset.CPU, stats: OfflineStats = OfflineStats(), silenceGate: Boolean = false,
         progress: (TranslationPhase, Double, Int, Boolean) -> Unit
     ): List<SubCue> {
         require(speechModel in OfflineModel.speechModels && (!fastSpeech || speechModel.supportsFastSpeech))
-        require(translator in OfflineModel.translators)
+        require(translator in OfflineModel.translators && (!silenceGate || supportsSilenceGate(source.code, speechModel)))
         if (!supportsLocalPair(source.code, target.code, speechModel, translator)) throw OfflineFailure(OfflineIssue.FAST_PAIR)
         signal.throwIfCanceled()
         val title = stamp(input)
@@ -65,7 +65,7 @@ internal class OfflinePipeline(
                 } finally { temp.delete() }
             }
             early = transcribeAndStream(dir, pcm, original, langFile, source, target, speechModel, translator,
-                fastSpeech, preset, stats, signal, progress)
+                fastSpeech, preset, stats, silenceGate, signal, progress)
         }
         // A process can stop after committing the transcript but before removing the temporary PCM.
         // Read and validate that checkpoint first; Whisper does not load again to translate it.
@@ -73,7 +73,7 @@ internal class OfflinePipeline(
         val cues = CueJson.read(original)
         val language = detectedSourceCode(readCheckpoint(langFile)) ?: SubLang.AUTO.code
         pcm.delete()
-        speechCheckpoint(dir, speechModel).deleteRecursively()
+        speechCheckpoint(dir, speechModel, silenceGate).deleteRecursively()
         if (language !in hymtSourceLanguages) throw OfflineFailure(OfflineIssue.LANGUAGE)
         if (!supportsLocalPair(language, target.code, speechModel, translator)) throw OfflineFailure(OfflineIssue.FAST_PAIR)
         if (language == target.code) {
@@ -102,19 +102,32 @@ internal class OfflinePipeline(
     }
 
     /** A new translation job can reuse only the original timed transcript, never previous translated text. */
-    fun reuseTranscript(from: File, to: File, input: File, signal: CancellationSignal, correctedSource: SubLang? = null) {
+    fun reuseTranscript(
+        from: File, to: File, input: File, signal: CancellationSignal,
+        correctedSource: SubLang? = null, expectedSource: SubLang? = null
+    ) {
+        require(correctedSource == null || expectedSource == null)
+        signal.throwIfCanceled()
         val original = File(from, "cues-original.json")
         val language = File(from, "offline-language.txt")
         val fingerprint = File(from, "offline-source.json")
         if (listOf(original, language, fingerprint).any { !hasCheckpoint(it) }) throw OfflineFailure(OfflineIssue.NO_TRANSCRIPT)
         val current = stamp(input)
         if (readCheckpoint(fingerprint) != current) throw OfflineFailure(OfflineIssue.VIDEO)
-        val cues = CueJson.read(original).map { it.copy(translated = "") }
-        if (cues.isEmpty()) throw OfflineFailure(OfflineIssue.NO_TRANSCRIPT)
+        val savedSource = detectedSourceCode(readCheckpoint(language))
+        val source = correctedSource?.code ?: savedSource
+        if (source !in hymtSourceLanguages || (expectedSource != null && savedSource != expectedSource.code)) {
+            throw OfflineFailure(OfflineIssue.LANGUAGE)
+        }
+        val cues = stage(OfflineIssue.NO_TRANSCRIPT) { CueJson.read(original).map { it.copy(translated = "") } }
+        if (cues.isEmpty() || cues.any { !it.startSec.isFinite() || !it.endSec.isFinite() ||
+                it.startSec < 0 || it.endSec <= it.startSec || it.original.isBlank() } ||
+            cues.zipWithNext().any { (a, b) -> a.endSec > b.startSec }) {
+            throw OfflineFailure(OfflineIssue.NO_TRANSCRIPT)
+        }
         signal.throwIfCanceled()
         atomicText(File(to, "offline-source.json"), current)
-        val source = correctedSource?.code?.takeIf { it in hymtSourceLanguages } ?: readCheckpoint(language)
-        atomicText(File(to, "offline-language.txt"), source)
+        atomicText(File(to, "offline-language.txt"), checkNotNull(source))
         CueJson.write(File(to, "cues-original.json"), cues)
     }
 
@@ -126,7 +139,7 @@ internal class OfflinePipeline(
     private fun transcribeAndStream(
         dir: File, pcm: File, original: File, languageFile: File, source: SubLang, target: SubLang,
         speech: OfflineModel, translator: OfflineModel, fastSpeech: Boolean, preset: OfflinePreset,
-        stats: OfflineStats, parent: CancellationSignal, progress: (TranslationPhase, Double, Int, Boolean) -> Unit
+        stats: OfflineStats, silenceGate: Boolean, parent: CancellationSignal, progress: (TranslationPhase, Double, Int, Boolean) -> Unit
     ): List<SubCue>? {
         val speechSignal = CancellationSignal()
         val mtSignal = CancellationSignal()
@@ -142,7 +155,7 @@ internal class OfflinePipeline(
             fun stopOverlap() {
                 active.getAndSet(null)?.let { stats.overlapDeferred = true; it.close() }
             }
-            val (language, cues) = transcribe(dir, pcm, source, speech, fastSpeech, preset, stats, speechSignal, progress,
+            val (language, cues) = transcribe(dir, pcm, source, speech, fastSpeech, preset, stats, silenceGate, speechSignal, progress,
                 onGpuLost = ::stopOverlap,
                 onCommit = { language, prefix, gpu, more ->
                     if (tryOverlap && gpu && more && language in hymtSourceLanguages && language != target.code) {
@@ -199,7 +212,7 @@ internal class OfflinePipeline(
 
     private fun transcribe(
         dir: File, pcm: File, source: SubLang, speechModel: OfflineModel, fastSpeech: Boolean, preset: OfflinePreset,
-        stats: OfflineStats, signal: CancellationSignal, progress: (TranslationPhase, Double, Int, Boolean) -> Unit,
+        stats: OfflineStats, silenceGate: Boolean, signal: CancellationSignal, progress: (TranslationPhase, Double, Int, Boolean) -> Unit,
         onGpuLost: () -> Unit, onCommit: (String, List<SubCue>, Boolean, Boolean) -> Unit
     ): Pair<String, List<SubCue>> {
         val frames = pcm.length() / 2L
@@ -207,7 +220,7 @@ internal class OfflinePipeline(
         if (frames > MAX_LOCAL_SECONDS * SAMPLE_RATE.toLong()) throw OfflineFailure(OfflineIssue.TOO_LONG)
         stats.audioMs = frames * 1000 / SAMPLE_RATE
         val count = ((frames + SpeechWindow.CORE - 1) / SpeechWindow.CORE).toInt()
-        val checkpoints = speechCheckpoint(dir, speechModel).apply { mkdirs() }
+        val checkpoints = speechCheckpoint(dir, speechModel, silenceGate).apply { mkdirs() }
         val cues = mutableListOf<SubCue>()
         var language = source.code
         var triedLanguageRescue = false
@@ -230,6 +243,7 @@ internal class OfflinePipeline(
         if (index < count) {
             val marker = gpuMarker(dir)
             val path = modelPath(speechModel)
+            val detector by lazy { modelPath(OfflineModel.SILERO_VAD) }
             var ownedMarker = false
             fun openCpu(): LocalSpeech = stage(OfflineIssue.TRANSCRIPTION, speechModel.memoryIssue) {
                 // A failed GPU attempt may have changed available memory, even after it closes.
@@ -313,7 +327,44 @@ internal class OfflinePipeline(
                                     openCpu().also { engine = it }.let(::decode)
                                 }
                             }
-                            val result = infer(samples, language, prompt, trackProgress = true)
+                            val gated = if (silenceGate && samples.size >= 8 * SAMPLE_RATE &&
+                                !stats.vadUnavailable && stats.vadRetriedWindows < 2) {
+                                // A detector failure must not become a dropped speech window. Stop
+                                // retrying it for this attempt; decode the original PCM instead.
+                                fun markUnavailable(): GatedAudio? {
+                                    signal.throwIfCanceled()
+                                    stats.vadUnavailable = true
+                                    return null
+                                }
+                                try {
+                                    stats.measure(OfflineStats.Stage.VAD) {
+                                        val bounds = checkNotNull(engine).speechBounds(samples, detector)
+                                        signal.throwIfCanceled()
+                                        if (bounds == null) markUnavailable() else planSilenceGate(samples, bounds)
+                                    }
+                                } catch (error: OperationCanceledException) { throw error }
+                                catch (_: LinkageError) { markUnavailable() }
+                                catch (_: OutOfMemoryError) { markUnavailable() }
+                                catch (_: Exception) { markUnavailable() }
+                            } else null
+                            val result = if (gated == null) infer(samples, language, prompt, trackProgress = true) else {
+                                val remapped = if (gated.samples.isEmpty()) SpeechResult(language, emptyList()) else {
+                                    try { gated.restore(infer(gated.samples, language, prompt, trackProgress = true)) }
+                                    catch (error: OfflineFailure) {
+                                        if (error.issue != OfflineIssue.TRANSCRIPTION) throw error
+                                        signal.throwIfCanceled()
+                                        null
+                                    }
+                                }
+                                if (remapped != null) {
+                                    stats.vadSavedFrames += gated.removedFrames
+                                    stats.vadWindows++
+                                    remapped
+                                } else {
+                                    stats.vadRetriedWindows++
+                                    infer(samples, language, prompt, trackProgress = true)
+                                }
+                            }
                             var savedOnGpu = engine?.vulkan == true
                             added = cuesInWindow(window, result, cues.lastOrNull(), cues.size)
                             if (language == SubLang.AUTO.code && added.isNotEmpty()) {
@@ -345,7 +396,9 @@ internal class OfflinePipeline(
                                     if (language == SubLang.AUTO.code && first != null) language = first
                                 }
                             }
-                            if (savedOnGpu) stats.gpuWindows++ else stats.cpuWindows++
+                            if (gated?.samples?.isEmpty() != true) {
+                                if (savedOnGpu) stats.gpuWindows++ else stats.cpuWindows++
+                            }
                         }
                         signal.throwIfCanceled()
                         atomicText(File(checkpoints, "$index.json"), JSONObject().put("language", language)
@@ -406,7 +459,11 @@ internal class OfflinePipeline(
                     val overlapping = checkOverlap()
                     val path = modelPath(model)
                     stats.measure(OfflineStats.Stage.TRANSLATE) {
-                        if (overlapping) engines.translatorForOverlap(path, model, signal) else engines.translator(path, model, signal)
+                        when {
+                            model.isFirefoxPivot -> engines.translatorPivot(path, modelPath(OfflineModel.FIREFOX_EN_AR), model, signal)
+                            overlapping -> engines.translatorForOverlap(path, model, signal)
+                            else -> engines.translator(path, model, signal)
+                        }
                     }.also { engine = it }
                 }
                 val outputs = stage(OfflineIssue.TRANSLATION, OfflineIssue.TRANSLATOR_MEMORY) {
@@ -420,6 +477,7 @@ internal class OfflinePipeline(
                             // Never commit a short or blank response or apply it to shifted timings.
                             if (output.size != batch.size) throw OfflineFailure(OfflineIssue.TRANSLATION)
                             output.mapIndexed { i, line ->
+                                if ('\uFFFD' in line) throw OfflineFailure(OfflineIssue.TRANSLATION)
                                 line.trim().ifBlank {
                                     originals[i].takeUnless { it.any(Char::isLetter) }
                                         ?: throw OfflineFailure(OfflineIssue.TRANSLATION)
@@ -455,8 +513,13 @@ internal class OfflinePipeline(
     }
 
     companion object {
-        private fun speechCheckpoint(dir: File, speech: OfflineModel) =
-            File(dir, if (speech.isMoonshine) "offline-stt-${speech.id}" else "offline-stt")
+        private fun speechCheckpoint(dir: File, speech: OfflineModel, silenceGate: Boolean) = File(dir, when {
+            // The gate/packing policy is part of the transcript identity. Do not resume from
+            // legacy windows with a mix of compacted and ordinary PCM.
+            silenceGate -> "offline-stt-gate-v1-${speech.id}"
+            speech.isMoonshine -> "offline-stt-${speech.id}"
+            else -> "offline-stt"
+        })
 
         // Same directory as older 7B Q4 jobs; never mix their batches with 1.8B.
         fun translatedCuesFile(dir: File, target: String, translator: OfflineModel?) = File(dir,

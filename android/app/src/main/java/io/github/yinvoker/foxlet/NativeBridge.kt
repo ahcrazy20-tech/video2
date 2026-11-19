@@ -12,4 +12,5 @@ internal object NativeBridge {
     external fun loadModel(service: Long, configYaml: String, ssplitPrefix: ByteArray?): Long
     external fun releaseModel(service: Long, model: Long): Boolean
     external fun translate(service: Long, model: Long, texts: Array<String>, html: Boolean): Array<String>
+    external fun translatePivot(service: Long, first: Long, second: Long, texts: Array<String>, html: Boolean): Array<String>
 }

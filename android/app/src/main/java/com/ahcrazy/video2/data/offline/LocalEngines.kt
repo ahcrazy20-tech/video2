@@ -9,6 +9,7 @@ internal data class SpeechResult(val language: String, val segments: List<Speech
 
 internal interface LocalSpeech : AutoCloseable {
     val vulkan: Boolean get() = false
+    fun speechBounds(pcm: ShortArray, detector: File): IntArray? = null
     fun decode(pcm: ShortArray, language: String, prompt: String, fast: Boolean, progress: WhisperProgress): SpeechResult
 }
 internal interface LocalTranslator : AutoCloseable {
@@ -21,6 +22,7 @@ internal interface LocalEngines {
     fun speechMoonshine(model: File, signal: CancellationSignal): LocalSpeech = error("Moonshine unavailable")
     fun speechVulkan(model: File, signal: CancellationSignal): LocalSpeech = error("Vulkan backend unavailable")
     fun translator(model: File, kind: OfflineModel, signal: CancellationSignal): LocalTranslator
+    fun translatorPivot(model: File, arabic: File, kind: OfflineModel, signal: CancellationSignal): LocalTranslator = error("Firefox pivot unavailable")
     fun translatorForOverlap(model: File, kind: OfflineModel, signal: CancellationSignal): LocalTranslator = translator(model, kind, signal)
 }
 
@@ -60,6 +62,16 @@ internal object JniEngines : LocalEngines {
             native.load(handle, model.absolutePath.encodeToByteArray(), threads)
             return object : LocalSpeech {
                 override val vulkan = gpu
+                private var verifiedDetector: File? = null
+                override fun speechBounds(pcm: ShortArray, detector: File): IntArray {
+                    signal.throwIfCanceled()
+                    if (verifiedDetector == null) {
+                        detector.inputStream().use { copyVerifiedWeight(OfflineModel.SILERO_VAD.spec, it, null, signal) {} }
+                        verifiedDetector = detector
+                    }
+                    check(verifiedDetector == detector)
+                    return native.speechBounds(handle, pcm, detector.absolutePath.encodeToByteArray()).also { signal.throwIfCanceled() }
+                }
                 override fun decode(pcm: ShortArray, language: String, prompt: String,
                                     fast: Boolean, progress: WhisperProgress): SpeechResult {
                     val output = native.decode(handle, pcm, language.encodeToByteArray(), prompt.encodeToByteArray(), fast, progress)
@@ -89,7 +101,10 @@ internal object JniEngines : LocalEngines {
     }
 
     override fun translator(model: File, kind: OfflineModel, signal: CancellationSignal) =
-        if (kind.isFirefox) openFirefox(model, signal) else openTranslator(model, kind, signal, false)
+        if (kind.isFirefox) openFirefox(model, kind, signal) else openTranslator(model, kind, signal, false)
+
+    override fun translatorPivot(model: File, arabic: File, kind: OfflineModel, signal: CancellationSignal) =
+        openFirefox(model, kind, signal, arabic)
 
     override fun translatorForOverlap(model: File, kind: OfflineModel, signal: CancellationSignal) =
         openTranslator(model, kind, signal, true)
@@ -133,6 +148,7 @@ internal interface WhisperNative {
     fun cancel(handle: Long)
     fun destroy(handle: Long)
     fun load(handle: Long, path: ByteArray, threads: Int)
+    fun speechBounds(handle: Long, pcm: ShortArray, path: ByteArray): IntArray
     fun decode(handle: Long, pcm: ShortArray, lang: ByteArray, previous: ByteArray, fast: Boolean, progress: WhisperProgress): Array<ByteArray>
 }
 
@@ -146,6 +162,7 @@ internal object WhisperJni : WhisperNative {
     external override fun cancel(handle: Long)
     external override fun destroy(handle: Long)
     external override fun load(handle: Long, path: ByteArray, threads: Int)
+    external override fun speechBounds(handle: Long, pcm: ShortArray, path: ByteArray): IntArray
     external override fun decode(handle: Long, pcm: ShortArray, lang: ByteArray, previous: ByteArray, fast: Boolean, progress: WhisperProgress): Array<ByteArray>
 }
 
@@ -157,6 +174,7 @@ internal object WhisperFp16Jni : WhisperNative {
     external override fun cancel(handle: Long)
     external override fun destroy(handle: Long)
     external override fun load(handle: Long, path: ByteArray, threads: Int)
+    external override fun speechBounds(handle: Long, pcm: ShortArray, path: ByteArray): IntArray
     external override fun decode(handle: Long, pcm: ShortArray, lang: ByteArray, previous: ByteArray, fast: Boolean, progress: WhisperProgress): Array<ByteArray>
 }
 
@@ -168,6 +186,7 @@ internal object WhisperFp16DotprodJni : WhisperNative {
     external override fun cancel(handle: Long)
     external override fun destroy(handle: Long)
     external override fun load(handle: Long, path: ByteArray, threads: Int)
+    external override fun speechBounds(handle: Long, pcm: ShortArray, path: ByteArray): IntArray
     external override fun decode(handle: Long, pcm: ShortArray, lang: ByteArray, previous: ByteArray, fast: Boolean, progress: WhisperProgress): Array<ByteArray>
 }
 
@@ -179,6 +198,7 @@ internal object WhisperVulkanJni : WhisperNative {
     external override fun cancel(handle: Long)
     external override fun destroy(handle: Long)
     external override fun load(handle: Long, path: ByteArray, threads: Int)
+    external override fun speechBounds(handle: Long, pcm: ShortArray, path: ByteArray): IntArray
     external override fun decode(handle: Long, pcm: ShortArray, lang: ByteArray, previous: ByteArray, fast: Boolean, progress: WhisperProgress): Array<ByteArray>
 }
 

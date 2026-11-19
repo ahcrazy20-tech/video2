@@ -92,6 +92,15 @@ internal fun PerformanceSheet(job: TranslationJob, ar: Boolean, onDismiss: () ->
                     if (p.gpuWindows > 0 || p.speechGpuMs > 0) Metric(
                         if (p.gpuWindows > 0) "GPU / Vulkan" else if (ar) "محاولة GPU" else "GPU attempt", runDuration(p.speechGpuMs))
                     if (p.cpuWindows > 0 || p.speechCpuMs > 0) Metric("CPU", runDuration(p.speechCpuMs))
+                    if (job.offlineSilenceGate && !p.reusedTranscript) {
+                        ChipPreview(if (ar) "Silero · تخطّي الصمت" else "Silero · skip quiet gaps", V2.Mint)
+                        Metric(if (ar) "وقت الكشف" else "Detection time", runDuration(p.vadMs))
+                        Metric(if (ar) "صوت أقل دخل Whisper" else "Audio omitted from Whisper", runDuration(p.vadSavedAudioMs))
+                        Metric(if (ar) "نوافذ اختصرت" else "Shortened windows", p.vadWindows.toString())
+                        if (p.vadRetriedWindows > 0) Metric(if (ar) "أجزاء اتعادت كاملة" else "Unfiltered retries", p.vadRetriedWindows.toString())
+                        if (p.vadUnavailable) Note(if (ar) "الكاشف ما بقاش متاح؛ باقي التفريغ كمل من غير تخطّي." else "Detector unavailable; remaining audio was transcribed without skipping.")
+                        else if (p.vadRetriedWindows >= 2) Note(if (ar) "بعد محاولتين بتوقيت غير واضح، كادر كمّل من غير تخطّي." else "After two timing retries, Kadr continued without skipping.")
+                    }
                     if (p.reusedSpeechWindows > 0) Metric(if (ar) "أجزاء تفريغ محفوظة" else "Reused speech windows", p.reusedSpeechWindows.toString())
                 }
             }

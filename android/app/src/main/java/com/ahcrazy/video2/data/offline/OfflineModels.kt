@@ -23,6 +23,7 @@ internal data class ModelAsset(val name: String, val spec: PinnedModel, val back
 internal const val MIB = 1024L * 1024
 private const val HF = "https://huggingface.co"
 private const val WHISPER = "$HF/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1"
+private const val SILERO = "$HF/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v6.2.0.bin"
 internal const val RETIRED_TRANSLATOR_ID = "hymt2-7b-q6"
 private const val RETIRED_FILE = "$RETIRED_TRANSLATOR_ID-88ef0aba5995.gguf"
 private const val HYMT_LITE_REV = "$HF/tencent/Hy-MT2-1.8B-GGUF/resolve/b27182d810fa3ceb6ed04e7c324c54e35c0d209c"
@@ -55,7 +56,12 @@ internal enum class OfflineModel(
         PinnedModel("$HYMT/Hy-MT2-7B-Q4_K_M.gguf", 4_624_648_896, "9f96256500f3fc1ab4d64336b58f52a949a95ad7516b0c229476eef782f9f77b"),
         "gguf", 7_168 * MIB, 3_072 * MIB),
     MOONSHINE_EN(MOONSHINE_ID, "Moonshine Small · English", moonshineAssets, 3_072 * MIB, 800 * MIB),
-    FIREFOX_EN_AR(FIREFOX_ID, "Firefox Translations · EN → AR", firefoxAssets, 3_072 * MIB, 600 * MIB, minSdk = 28);
+    FIREFOX_EN_AR(FIREFOX_ID, "Firefox Translations · EN → AR", firefoxAssets, 3_072 * MIB, 600 * MIB, minSdk = 28),
+    FIREFOX_ES_AR(FIREFOX_ES_ID, "Firefox Translations · ES → EN → AR", firefoxSpanishAssets, 3_072 * MIB, 800 * MIB, minSdk = 28),
+    FIREFOX_IT_AR(FIREFOX_IT_ID, "Firefox Translations · IT → EN → AR", firefoxItalianAssets, 3_072 * MIB, 800 * MIB, minSdk = 28),
+    SILERO_VAD("silero-vad-62", "Silero VAD · v6.2.0",
+        PinnedModel(SILERO, 885_098, "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987"),
+        "bin", 3_072 * MIB, 256 * MIB);
 
     constructor(id: String, label: String, spec: PinnedModel, extension: String, minTotalRam: Long, requiredFreeRam: Long) :
         this(id, label, listOf(singleAsset(id, spec, extension)), minTotalRam, requiredFreeRam)
@@ -66,12 +72,20 @@ internal enum class OfflineModel(
     val installedName get() = if (isBundle) id else assets.single().name
     val publisherName get() = assets.single().importName
     val isMoonshine get() = this == MOONSHINE_EN
-    val isFirefox get() = this == FIREFOX_EN_AR
+    val firefoxSource: String? get() = when (this) {
+        FIREFOX_EN_AR -> "en"
+        FIREFOX_ES_AR -> "es"
+        FIREFOX_IT_AR -> "it"
+        else -> null
+    }
+    val isFirefox get() = firefoxSource != null
+    val isFirefoxPivot get() = isFirefox && this != FIREFOX_EN_AR
+    val requiredBundles get() = if (isFirefoxPivot) listOf(this, FIREFOX_EN_AR) else listOf(this)
 
     val memoryIssue: OfflineIssue get() = when (this) {
-        WHISPER_SMALL_Q5, WHISPER_MEDIUM, WHISPER_MEDIUM_Q5, WHISPER_TURBO, MOONSHINE_EN -> OfflineIssue.MEMORY
+        WHISPER_SMALL_Q5, WHISPER_MEDIUM, WHISPER_MEDIUM_Q5, WHISPER_TURBO, MOONSHINE_EN, SILERO_VAD -> OfflineIssue.MEMORY
         WHISPER_LARGE -> OfflineIssue.LARGE_MODEL_MEMORY
-        HYMT_LITE, HYMT_Q4, FIREFOX_EN_AR -> OfflineIssue.TRANSLATOR_MEMORY
+        HYMT_LITE, HYMT_Q4, FIREFOX_EN_AR, FIREFOX_ES_AR, FIREFOX_IT_AR -> OfflineIssue.TRANSLATOR_MEMORY
     }
 
     val supportsFastSpeech get() = this in speechModels && this != WHISPER_LARGE && !isMoonshine
@@ -79,15 +93,18 @@ internal enum class OfflineModel(
 
     companion object {
         val speechModels = listOf(WHISPER_MEDIUM_Q5, WHISPER_TURBO, WHISPER_MEDIUM, WHISPER_LARGE, WHISPER_SMALL_Q5, MOONSHINE_EN)
-        val translators = listOf(HYMT_LITE, HYMT_Q4, FIREFOX_EN_AR)
+        val translators = listOf(HYMT_LITE, HYMT_Q4, FIREFOX_EN_AR, FIREFOX_ES_AR, FIREFOX_IT_AR)
         fun translatorForJob(id: String?) = translators.firstOrNull { it.id == id }
+        fun firefoxFor(source: String, target: String) = if (target == "ar" && source != "auto") {
+            translators.firstOrNull { it.firefoxSource == source }
+        } else null
 
         // Version 1.7 always used Large-v3, before jobs stored a speech model ID.
         fun speechForJob(id: String?): OfflineModel? = if (id == null) WHISPER_LARGE else speechModels.firstOrNull { it.id == id }
 
-        fun pack(speech: OfflineModel, translator: OfflineModel): List<OfflineModel> {
-            require(speech in speechModels && translator in translators)
-            return listOf(speech, translator)
+        fun pack(speech: OfflineModel, translator: OfflineModel, silenceGate: Boolean = false): List<OfflineModel> {
+            require(speech in speechModels && translator in translators && (!silenceGate || !speech.isMoonshine))
+            return listOf(speech) + translator.requiredBundles + listOfNotNull(SILERO_VAD.takeIf { silenceGate })
         }
     }
 }
@@ -171,9 +188,10 @@ internal class OfflineModels(private val context: Context, private val work: Off
         if (translationUnderPressure(ram.availMem, ram.threshold, ram.lowMemory)) throw OfflineFailure(OfflineIssue.TRANSLATOR_MEMORY)
     }
 
-    fun downloadPack(speech: OfflineModel, translator: OfflineModel) = download(OfflineModel.pack(speech, translator))
+    fun downloadPack(speech: OfflineModel, translator: OfflineModel, silenceGate: Boolean = false) =
+        download(OfflineModel.pack(speech, translator, silenceGate))
 
-    fun download(model: OfflineModel) = download(listOf(model))
+    fun download(model: OfflineModel) = download(model.requiredBundles)
 
     private fun download(pack: List<OfflineModel>) {
         if (work.status.value != null || pack.all(::ready)) return

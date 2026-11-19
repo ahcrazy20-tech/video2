@@ -2,6 +2,7 @@
 #include "whisper.h"
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <vector>
 
@@ -24,6 +25,7 @@ extern "C" bool video2_whisper_uses_vulkan(const whisper_context * ctx);
 namespace {
 struct Whisper : video2::Cancellable {
     std::unique_ptr<whisper_context, decltype(&whisper_free)> engine{nullptr, whisper_free};
+    std::unique_ptr<whisper_vad_context, decltype(&whisper_vad_free)> vad{nullptr, whisper_vad_free};
     int threads = 4;
 };
 void quiet(ggml_log_level, const char *, void *) {}
@@ -91,6 +93,56 @@ extern "C" JNIEXPORT void JNICALL WHISPER_JNI(load)(JNIEnv * env, jobject, jlong
         if (!video2_whisper_uses_vulkan(s.engine.get())) throw std::runtime_error("Whisper did not initialize a Vulkan device");
 #endif
         return true;
+    });
+}
+
+extern "C" JNIEXPORT jintArray JNICALL WHISPER_JNI(speechBounds)(
+        JNIEnv * env, jobject, jlong handle, jshortArray pcm, jbyteArray path) {
+    return video2::guarded(env, [&]() -> jintArray {
+        auto & s = video2::session<Whisper>(handle);
+        s.check();
+        const jsize count = env->GetArrayLength(pcm);
+        if (count <= 0 || count > 75 * WHISPER_SAMPLE_RATE) throw std::runtime_error("Invalid VAD PCM length");
+        if (!s.vad) {
+            auto config = whisper_vad_default_context_params();
+            config.use_gpu = false;
+            config.n_threads = std::clamp(s.threads, 1, 2);
+            whisper_log_set(quiet, nullptr);
+            s.vad.reset(whisper_vad_init_from_file_with_params(video2::utf8(env, path, 4096).c_str(), config));
+            s.check();
+            if (!s.vad) throw std::runtime_error("Could not open Silero VAD");
+        }
+        std::vector<jshort> shorts(count);
+        env->GetShortArrayRegion(pcm, 0, count, shorts.data());
+        if (env->ExceptionCheck()) return nullptr;
+        std::vector<float> audio(count);
+        for (jsize i = 0; i < count; ++i) audio[i] = shorts[i] / 32768.0f;
+        auto params = whisper_vad_default_params();
+        params.threshold = 0.35f;
+        params.min_speech_duration_ms = 100; // Retain brief replies and interjections.
+        params.min_silence_duration_ms = 1400;
+        params.speech_pad_ms = 250;
+        std::unique_ptr<whisper_vad_segments, decltype(&whisper_vad_free_segments)> ranges(
+            whisper_vad_segments_from_samples(s.vad.get(), params, audio.data(), count), whisper_vad_free_segments);
+        s.check();
+        if (!ranges) throw std::runtime_error("Silero VAD failed");
+        const int n = whisper_vad_segments_n_segments(ranges.get());
+        if (n < 0 || n > 256) throw std::runtime_error("Invalid Silero segment count");
+        std::vector<jint> bounds;
+        bounds.reserve(n * 2);
+        const int limit = count / (WHISPER_SAMPLE_RATE / 100);
+        for (int i = 0; i < n; ++i) {
+            const float a = whisper_vad_segments_get_segment_t0(ranges.get(), i);
+            const float b = whisper_vad_segments_get_segment_t1(ranges.get(), i);
+            if (!std::isfinite(a) || !std::isfinite(b) || a < 0 || a >= b || b > limit + 1.0f) {
+                throw std::runtime_error("Invalid Silero segment bounds");
+            }
+            bounds.push_back(std::min(limit, static_cast<int>(std::lround(a))));
+            bounds.push_back(std::min(limit, static_cast<int>(std::lround(b))));
+        }
+        auto output = env->NewIntArray(static_cast<jsize>(bounds.size()));
+        if (output && !bounds.empty()) env->SetIntArrayRegion(output, 0, static_cast<jsize>(bounds.size()), bounds.data());
+        return output;
     });
 }
 

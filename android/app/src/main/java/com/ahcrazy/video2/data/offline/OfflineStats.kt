@@ -8,7 +8,7 @@ import org.json.JSONObject
 /** Monotonic time for one attempt. The speech producer and MT worker write separate fields;
  * the worker is joined before exporting the result or reading the report. */
 internal class OfflineStats(private val clock: () -> Long = SystemClock::elapsedRealtime) {
-    enum class Stage { EXTRACT, CPU_SPEECH, GPU_SPEECH, TRANSLATE, EXPORT }
+    enum class Stage { EXTRACT, CPU_SPEECH, GPU_SPEECH, VAD, TRANSLATE, EXPORT }
     private val start = clock()
     private val millis = LongArray(Stage.entries.size)
     private val generated = mutableSetOf<Int>()
@@ -25,6 +25,10 @@ internal class OfflineStats(private val clock: () -> Long = SystemClock::elapsed
     var overlapped = false
     var overlapDeferred = false
     var gpuFallback: GpuFallback? = null
+    var vadSavedFrames = 0L
+    var vadWindows = 0
+    var vadRetriedWindows = 0
+    var vadUnavailable = false
 
     fun <T> measure(stage: Stage, block: () -> T): T {
         val began = clock()
@@ -47,7 +51,9 @@ internal class OfflineStats(private val clock: () -> Long = SystemClock::elapsed
         cpuWindows = cpuWindows, gpuWindows = gpuWindows, reusedSpeechWindows = reusedSpeechWindows,
         generatedBatches = generated.size, reusedBatches = (reused - generated).size, generationCalls = generationCalls,
         firstBatchMs = first, resumed = resumed, reusedTranscript = reusedTranscript, sameLanguage = sameLanguage,
-        overlapped = overlapped, overlapDeferred = overlapDeferred, gpuFallback = gpuFallback
+        overlapped = overlapped, overlapDeferred = overlapDeferred, gpuFallback = gpuFallback,
+        vadMs = millis[Stage.VAD.ordinal], vadSavedAudioMs = vadSavedFrames * 1_000 / SAMPLE_RATE,
+        vadWindows = vadWindows, vadRetriedWindows = vadRetriedWindows, vadUnavailable = vadUnavailable
     )
 }
 
@@ -59,6 +65,8 @@ internal fun OfflinePerformance.toJson() = JSONObject().apply {
     put("firstBatch", firstBatchMs ?: JSONObject.NULL); put("resumed", resumed); put("reusedTranscript", reusedTranscript)
     put("sameLanguage", sameLanguage); put("overlapped", overlapped); put("overlapDeferred", overlapDeferred)
     put("gpuFallback", gpuFallback?.name ?: JSONObject.NULL)
+    put("vadMs", vadMs); put("vadSavedAudioMs", vadSavedAudioMs)
+    put("vadWindows", vadWindows); put("vadRetriedWindows", vadRetriedWindows); put("vadUnavailable", vadUnavailable)
 }
 
 internal fun readOfflinePerformance(json: JSONObject?): OfflinePerformance? {
@@ -73,6 +81,8 @@ internal fun readOfflinePerformance(json: JSONObject?): OfflinePerformance? {
         firstBatchMs = if (json.isNull("firstBatch")) null else ms("firstBatch"), resumed = json.optBoolean("resumed"),
         reusedTranscript = json.optBoolean("reusedTranscript"), sameLanguage = json.optBoolean("sameLanguage"),
         overlapped = json.optBoolean("overlapped"), overlapDeferred = json.optBoolean("overlapDeferred"),
-        gpuFallback = GpuFallback.entries.firstOrNull { it.name == json.optString("gpuFallback") }
+        gpuFallback = GpuFallback.entries.firstOrNull { it.name == json.optString("gpuFallback") },
+        vadMs = ms("vadMs"), vadSavedAudioMs = ms("vadSavedAudioMs"), vadWindows = count("vadWindows"),
+        vadRetriedWindows = count("vadRetriedWindows"), vadUnavailable = json.optBoolean("vadUnavailable")
     )
 }

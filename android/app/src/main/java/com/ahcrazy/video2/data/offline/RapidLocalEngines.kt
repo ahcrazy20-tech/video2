@@ -60,44 +60,63 @@ internal fun timedSpeechLine(start: Double, duration: Double, text: String, maxC
     return if (to > from) SpeechSegment(from, to, text.trim()) else null
 }
 
-internal fun openFirefox(model: File, signal: CancellationSignal): LocalTranslator {
-    verifyBundle(model, OfflineModel.FIREFOX_EN_AR, signal)
+internal fun openFirefox(model: File, route: OfflineModel, signal: CancellationSignal, arabic: File? = null): LocalTranslator {
+    val source = requireNotNull(route.firefoxSource)
+    require(route.isFirefoxPivot == (arabic != null))
+    verifyBundle(model, route, signal)
+    if (arabic != null) verifyBundle(arabic, OfflineModel.FIREFOX_EN_AR, signal)
     NativeBridge.ensureLoaded()
-    // One worker replicates nothing. The model batches separate inputs into the
-    // same inference pass and ARM kernels pick the best available instruction set.
+    // The upstream pivot API keeps both models resident and keeps response order. No English
+    // intermediate is written to the library or reused as a source transcript.
     val service = NativeBridge.createService(1, 0)
     check(service != 0L) { "Cannot initialize Firefox Translations" }
-    val handle = try {
+    var first = 0L
+    var second = 0L
+    fun releaseHandles() {
+        try { if (second != 0L) NativeBridge.releaseModel(service, second) }
+        finally {
+            try { if (first != 0L) NativeBridge.releaseModel(service, first) }
+            finally { NativeBridge.destroyService(service) }
+        }
+    }
+    fun load(dir: File, from: String, to: String): Long {
         signal.throwIfCanceled()
-        NativeBridge.loadModel(service, firefoxConfig(model), null).also { check(it != 0L) }
+        return NativeBridge.loadModel(service, firefoxConfig(dir, from, to), null).also { check(it != 0L) }
+    }
+    try {
+        first = load(model, source, if (arabic == null) "ar" else "en")
+        if (arabic != null) second = load(arabic, "en", "ar")
+        signal.throwIfCanceled()
     } catch (error: Throwable) {
-        NativeBridge.destroyService(service)
+        try { releaseHandles() } catch (cleanup: Throwable) { error.addSuppressed(cleanup) }
         throw error
     }
     return object : LocalTranslator {
         override fun translateBatch(lines: List<String>): List<String> {
             signal.throwIfCanceled()
-            return NativeBridge.translate(service, handle, lines.toTypedArray(), false).toList().also { signal.throwIfCanceled() }
+            val array = lines.toTypedArray()
+            val result = if (second == 0L) NativeBridge.translate(service, first, array, false)
+                else NativeBridge.translatePivot(service, first, second, array, false)
+            signal.throwIfCanceled()
+            return result.toList()
         }
 
-        override fun close() {
-            try { NativeBridge.releaseModel(service, handle) }
-            finally { NativeBridge.destroyService(service) }
-        }
+        override fun close() = releaseHandles()
     }
 }
 
-private fun firefoxConfig(dir: File): String {
+private fun firefoxConfig(dir: File, from: String, to: String): String {
     fun path(name: String) = JSONObject.quote(File(dir, name).absolutePath)
-    val vocab = path("vocab.enar.spm")
+    val pair = from + to
+    val vocab = path("vocab.$pair.spm")
     return """
         models:
-          - ${path("model.enar.intgemm.alphas.bin")}
+          - ${path("model.$pair.intgemm.alphas.bin")}
         vocabs:
           - $vocab
           - $vocab
         shortlist:
-          - ${path("lex.50.50.enar.s2t.bin")}
+          - ${path("lex.50.50.$pair.s2t.bin")}
           - 1
         beam-size: 1
         normalize: 1.0
@@ -109,7 +128,7 @@ private fun firefoxConfig(dir: File): String {
         gemm-precision: int8shiftAlphaAll
         alignment: soft
         check-bytearray: true
-        ssplit-language: en
+        ssplit-language: $from
         quiet: true
         quiet-translation: true
     """.trimIndent()

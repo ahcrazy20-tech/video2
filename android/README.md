@@ -1,5 +1,12 @@
 # كادر (Kadr) — نسخة Android
 
+## الجديد في 2.6 — تخطّي الصمت وإسباني/إيطالي إلى عربي (تجريبي)
+
+- افتح **الترجمة → + → على الجهاز → تجربة الإسباني والإيطالي**. اختار واحدة، ونزّل الأوزان اللي ناقصة بس. **سريع** يستخدم Firefox محليًا عبر الإنجليزي؛ **سياق أدق** يستخدم Hy‑MT2 مباشرةً من لغة الحوار.
+- **تخطّي فواصل الصمت** خيار منفصل لـWhisper بعد اختيار لغة المصدر يدويًا. كاشف Silero أقل من 1 MB، والفيديو نفسه ما بيتقصّش. لو الكلام مستمر أو فيه ضوضاء/موسيقى، ممكن ما يوفرش وقت. ممكن تطفّيه من غير تبديل الموديل.
+- من نتيجة Firefox، اضغط **سياق أدق · من نفس التفريغ (Hy‑MT2)** بعد تثبيت المترجم. ده يعمل مهمة وملفات SRT منفصلة من نفس النص والتوقيت، من غير إعادة تفريغ أو مسح النسخة الأولى. الفيديو يفضل خاص داخل كادر.
+- قارن مهمتين **جديدتين** من نفس المقطع على نفس موديل Whisper ونفس الإعدادات، مع تخطّي الصمت مطفأ ومفعّل. في **الأداء** هتلاقي وقت الكشف، والتفريغ، والترجمة، والوقت لحد حفظ SRT. [الاختبار على Galaxy S26 Ultra وحدود التجربة](../docs/adaptive-local-subtitles.md).
+
 ## Android 2.5: rapid English → Arabic subtitles (experimental)
 
 In **Translate → + → On device → Speed presets**, select **Rapid English → Arabic** and explicitly download the two models (about **178 MB** combined). Both stages stay on the phone: Moonshine Small transcribes English; an INT8 Firefox Translations model translates the timed cues to Arabic. Whisper and Hy‑MT2 remain available for other languages, mixed speech or more contextual translation. ARM64 / Android 9+; actual speed and quality depend on the clip and phone. [Research, source pins, and the A/B test procedure](../docs/fast-local-subtitles.md).

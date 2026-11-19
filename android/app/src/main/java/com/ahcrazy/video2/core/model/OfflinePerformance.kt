@@ -27,5 +27,10 @@ data class OfflinePerformance(
     val sameLanguage: Boolean = false,
     val overlapped: Boolean = false,
     val overlapDeferred: Boolean = false,
-    val gpuFallback: GpuFallback? = null
+    val gpuFallback: GpuFallback? = null,
+    val vadMs: Long = 0,
+    val vadSavedAudioMs: Long = 0,
+    val vadWindows: Int = 0,
+    val vadRetriedWindows: Int = 0,
+    val vadUnavailable: Boolean = false
 )
