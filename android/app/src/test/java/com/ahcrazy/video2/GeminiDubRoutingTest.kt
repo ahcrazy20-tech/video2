@@ -18,7 +18,13 @@ import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.junit.Assert.*
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+// The quota envelope uses Android's org.json implementation.
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class GeminiDubRoutingTest {
     @Test fun dailyAndZeroLimitsIgnoreRetryInfoAndPinAnAllowedAlternateOnlyForThatStage() = runBlocking<Unit> {
         for ((id, value, kind) in listOf(
