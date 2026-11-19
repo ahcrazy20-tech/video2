@@ -148,7 +148,11 @@ fun SettingsScreen(ar: Boolean, onLangChange: (String) -> Unit, onLockNow: () ->
                 ToggleRow(if (ar) "تصفية إعلانات الفيديو من الكشف" else "Filter video ads from detection", filterAds) {
                     scope.launch { app.settings.setAdBlockFilterVideoAds(it) }
                 }
-                Text(if (ar) "بيحجب ~60 نطاق إعلان وتتبع جوه المتصفح ويرشح المقاطع الإعلانية." else "Blocks ~60 ad/tracker hosts in the browser and filters ad clips.", fontSize = 11.sp, color = V2.TextDim)
+                Text(if (ar) "المتوازن بيحجب نطاقات إعلان معروفة وتحويلاتها. الصارم بيضيف نطاقات وقواعد أكتر وبيقفل النوافذ الجديدة. لو موقع اتعطّل، تقدر توقف الحجب من الدرع في التبويب ده بس." else
+                    "Balanced blocks known ad hosts and navigations to them. Strict adds more rules and stops new windows. If a site breaks, pause blocking from the shield in that tab.",
+                    fontSize = 11.sp, color = V2.TextDim)
+                Text(if (ar) "الحجب جوه المتصفح بس. الإعلانات المدمجة في نفس بث الفيديو ممكن تفضل ظاهرة." else
+                    "Blocking is limited to the browser. Ads stitched into the video stream may still appear.", fontSize = 11.sp, color = V2.TextDim)
             }
         }
 
@@ -222,7 +226,7 @@ fun SettingsScreen(ar: Boolean, onLangChange: (String) -> Unit, onLockNow: () ->
         SectionTitle("ℹ️ " + if (ar) "عن التطبيق" else "About")
         GlassCard(Modifier.fillMaxWidth()) {
             Column {
-                StorageLine(if (ar) "التطبيق" else "App", -1, "فيديو ٢ · Video2")
+                StorageLine(if (ar) "التطبيق" else "App", -1, if (ar) "كادر" else "Kadr")
                 StorageLine("Bundle / Package", -1, "com.ahcrazy.video2")
                 StorageLine(if (ar) "الهدف" else "Target", -1, "Android 8+ · Media3 ExoPlayer · Kotlin/Compose")
                 Text(if (ar) "الاستخراج: HTML5 video/source · fetch/XHR · Performance log · HLS m3u8 · MP4/WebM/DASH" else "Extraction: HTML5 · fetch/XHR · Performance · HLS · DASH", fontSize = 11.sp, color = V2.TextDim, modifier = Modifier.padding(top = 8.dp))

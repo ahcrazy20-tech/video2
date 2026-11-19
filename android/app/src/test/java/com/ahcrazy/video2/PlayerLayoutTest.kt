@@ -55,7 +55,7 @@ class PlayerLayoutTest {
         compose.onNodeWithTag("player.seek").performTouchInput { click(Offset(width * .75f, center.y)) }
         compose.runOnIdle { assertTrue("A touch on the right should set later progress: $seeked", seeked > .5f) }
         assertTrue(compose.onNodeWithText("سطر ترجمة").getUnclippedBoundsInRoot().bottom <= deck.top)
-        for (tag in listOf("player.speed", "player.mute", "player.captions", "player.rotate")) {
+        for (tag in listOf("player.rewind", "player.play", "player.forward", "player.captions", "player.rotate")) {
             compose.onNodeWithTag(tag).assertIsDisplayed()
             val target = bounds(tag)
             assertTrue("$tag must be at least 48 dp wide", target.right - target.left >= 48.dp)
@@ -68,7 +68,7 @@ class PlayerLayoutTest {
 
     @Test
     @Config(qualifiers = "w640dp-h300dp-land")
-    fun shortLandscapeKeepsControlsInsideSideCutoutsAndUsesCompactDeck() {
+    fun shortLandscapeKeepsTransportBelowCaptionsAndInsideSideCutouts() {
         showPlayer(ar = false)
         val root = bounds("player.root")
         val header = bounds("player.header")
@@ -81,7 +81,11 @@ class PlayerLayoutTest {
         assertTrue(bounds("player.back").left < bounds("player.tools").left)
         compose.onNodeWithTag("player.seek").assertIsDisplayed()
         compose.onNodeWithTag("player.play").assertIsDisplayed()
-        compose.onNodeWithTag("player.speed").assertDoesNotExist()
+        compose.onNodeWithTag("player.captions").assertIsDisplayed()
+        compose.onNodeWithTag("player.rotate").assertIsDisplayed()
+        assertTrue(bounds("player.play").top >= bounds("player.timeline").bottom)
+        assertTrue(bounds("player.captions").left >= bounds("player.forward").right)
+        assertTrue(compose.onNodeWithText("Caption line").getUnclippedBoundsInRoot().bottom <= deck.top)
     }
 
     private fun bounds(tag: String) = compose.onNodeWithTag(tag).getUnclippedBoundsInRoot()
@@ -91,10 +95,11 @@ class PlayerLayoutTest {
             Video2Theme(rtl = ar) {
                 PlayerFrame(chromeVisible = chrome(), insets = WindowInsets(left = 20.dp, top = 32.dp, right = 12.dp, bottom = 28.dp),
                     video = {}, header = { PlayerHeader(ar, "A long video title that should fit even on narrow displays", "MP4 · 720p", "Saved file", {}, {}) },
-                    center = { if (chrome()) PlayerTransport(ar, true, false, true, false, onBackTen, {}, {}) },
-                    captions = { Text(if (ar) "سطر ترجمة" else "Caption line") },
-                    deck = { compact -> PlayerDeck(ar, compact, 1_000, 64_000, .4f, true, false, "1×", false, true, true,
-                        !ar, onScrub, {}, {}, {}, {}, {}) })
+                    center = {}, captions = { Text(if (ar) "سطر ترجمة" else "Caption line") },
+                    deck = { PlayerDeck(ar, 1_000, 64_000, .4f, true, false, true, true,
+                        !ar, onScrub, {}, {}, {}) {
+                        PlayerTransport(ar, true, false, true, false, onBackTen, {}, {})
+                    } })
             }
         }
     }

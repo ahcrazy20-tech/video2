@@ -8,7 +8,9 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.ahcrazy.video2.core.media.BrowserAdMode
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import java.security.MessageDigest
 
@@ -45,6 +47,9 @@ class AppSettings(private val ctx: Context) {
     val sttConcurrency: Flow<Int> = ctx.dataStore.data.map { it[K.STT_CONCURRENCY] ?: 3 }
     val adBlockEnabled: Flow<Boolean> = ctx.dataStore.data.map { (it[K.ADBLOCK_ENABLED] ?: "true") == "true" }
     val adBlockMode: Flow<String> = ctx.dataStore.data.map { it[K.ADBLOCK_MODE] ?: "balanced" }
+    internal val browserAdMode = ctx.dataStore.data.map {
+        BrowserAdMode.fromPreferences((it[K.ADBLOCK_ENABLED] ?: "true") == "true", it[K.ADBLOCK_MODE])
+    }.distinctUntilChanged()
     val adBlockFilterVideoAds: Flow<Boolean> = ctx.dataStore.data.map { (it[K.ADBLOCK_FILTER_VIDEO_ADS] ?: "true") == "true" }
     val azureRegion: Flow<String> = ctx.dataStore.data.map { it[K.AZURE_REGION] ?: "eastus" }
 

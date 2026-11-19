@@ -14,8 +14,9 @@
     <application
         android:name=".Video2Application"
         android:allowBackup="false"
-        android:icon="@drawable/ic_launcher_foreground"
-        android:label="فيديو ٢"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.Video2"
         android:usesCleartextTraffic="true"

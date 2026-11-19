@@ -1,9 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#0F1219" android:pathData="M0,0h108v108h-108z"/>
-    <path android:fillColor="#F25C57"
-        android:pathData="M54,22 C34,22 22,34 22,54 C22,74 34,86 54,86 C74,86 86,74 86,54 C86,34 74,22 54,22 Z"/>
-    <path android:fillColor="#FFFFFF"
-        android:pathData="M46,38 L72,54 L46,70 Z"/>
+    <!-- Keep the mark within the adaptive icon's central safe zone. -->
+    <path android:strokeColor="#B0BEFA" android:strokeWidth="2.8" android:strokeLineJoin="round"
+        android:pathData="M35,46 V44 Q35,35 44,35 H46 M62,35 H64 Q73,35 73,44 V46 M73,62 V64 Q73,73 64,73 H62 M46,73 H44 Q35,73 35,64 V62" />
+    <path android:fillColor="#B0BEFA"
+        android:pathData="M46.5,46.5 C46.5,44.8 48.4,43.5 50,44.4 L64.6,51.9 C66.4,52.9 66.4,55.1 64.6,56.1 L50,63.6 C48.4,64.5 46.5,63.2 46.5,61.5 Z" />
 </vector>

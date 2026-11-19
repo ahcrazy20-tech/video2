@@ -37,6 +37,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.ahcrazy.video2.app
+import com.ahcrazy.video2.core.media.BrowserAdMode
+import com.ahcrazy.video2.core.media.BrowserAdRules
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.isYouTubePage
 import com.ahcrazy.video2.core.media.manifestKind
@@ -71,7 +73,9 @@ internal fun BrowserScreen(
     val tab = session.current
     val snackbars = remember { SnackbarHostState() }
     val filterAds by app.settings.adBlockFilterVideoAds.collectAsState(initial = true)
-    val adBlock by app.settings.adBlockEnabled.collectAsState(initial = true)
+    val adMode by app.settings.browserAdMode.collectAsState(initial = null)
+    val adPaused = tab.adBlockPaused
+    val effectiveAdMode = adMode ?: tab.savedAdMode
     val preferredHeight by app.settings.downloadMaxHeight.collectAsState(initial = 0)
     var shown by remember { mutableStateOf("") }
     var recovering by remember { mutableStateOf(false) }
@@ -85,7 +89,11 @@ internal fun BrowserScreen(
     var pasteUrl by remember { mutableStateOf("") }
     var pasteTitle by remember { mutableStateOf("") }
     val extractor = remember { ctx.assets.open("extractor.js").bufferedReader().use { it.readText() } }
-    val adHosts = remember { ctx.assets.open("adblock_hosts.txt").bufferedReader().useLines { lines -> lines.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet() } }
+    val cosmetics = remember { ctx.assets.open("adblock_strict.js").bufferedReader().use { it.readText() } }
+    val adRules = remember {
+        fun hosts(asset: String) = ctx.assets.open(asset).bufferedReader().use { it.readLines() }
+        BrowserAdRules(hosts("adblock_hosts.txt"), hosts("adblock_strict_hosts.txt"))
+    }
     val detected = tab.detected.filter { !filterAds || !it.fromAd }.sortedByDescending(::mediaScore)
 
     val currentPlan = remember(tab.url, detected, tab.drm) {
@@ -104,7 +112,6 @@ internal fun BrowserScreen(
             direct = plan.media.map { SmartCandidate(it, tab.auth(it)) }, peerTube = plan.peerTube)
     }
 
-    SideEffect { session.adBlock = adBlock }
     BackHandler(enabled = fullscreen != null || tab.canGoBack) { if (fullscreen != null) tab.exitFullscreen() else tab.goBack() }
     LaunchedEffect(openUrl) {
         if (!openUrl.isNullOrBlank()) { session.current.open(openUrl); onConsumeOpenUrl() }
@@ -240,7 +247,14 @@ internal fun BrowserScreen(
                         BadgedBox(badge = { if (session.tabs.size > 1) Badge(containerColor = V2.CardSoft) { Text("${session.tabs.size}") } }) {
                             IconButton(onClick = { shown = "tabs" }) { Icon(Icons.Filled.Tab, if (ar) "التبويبات" else "Tabs") }
                         }
-                        IconButton(onClick = { session.add() }) { Icon(Icons.Filled.Add, if (ar) "تبويب جديد" else "New tab") }
+                        if (tab.url.isBlank()) {
+                            IconButton(onClick = { session.add() }) { Icon(Icons.Filled.Add, if (ar) "تبويب جديد" else "New tab") }
+                        } else {
+                            IconButton(onClick = { shown = "adblock" }, modifier = Modifier.testTag("browser.shield")) {
+                                Icon(Icons.Filled.Shield, if (ar) "مانع الإعلانات" else "Ad blocker",
+                                    tint = if (effectiveAdMode == BrowserAdMode.OFF || adPaused) V2.TextDim else V2.Accent)
+                            }
+                        }
                     }
                     if (tab.loading) LinearProgressIndicator(progress = { tab.progress.coerceIn(0f, 1f) }, Modifier.fillMaxWidth(), color = V2.Mint)
                     else HorizontalDivider(color = V2.Outline)
@@ -257,7 +271,7 @@ internal fun BrowserScreen(
                             modifier = Modifier.fillMaxSize().testTag("browser.viewport"),
                             onReset = null,
                             onRelease = tab::unmount,
-                            update = { tab.mount(it, extractor, adHosts, session) }
+                            update = { tab.mount(it, extractor, adRules, cosmetics, adMode) }
                         )
                     }
                     tab.failure?.let { BrowserFailure(ar, it, onRetry = tab::reload, onHome = tab::goHome) }
@@ -335,6 +349,23 @@ internal fun BrowserScreen(
         })
     }
 
+    if (shown == "adblock") {
+        AlertDialog(onDismissRequest = { shown = "" }, title = { Text(if (ar) "مانع الإعلانات" else "Ad blocker") },
+            text = { Text(when {
+                effectiveAdMode == BrowserAdMode.OFF -> if (ar) "الحجب مقفول من الإعدادات." else "Blocking is off in Settings."
+                adPaused -> if (ar) "الحجب متوقف في التبويب ده بس. تفعيله هيعيد تحميل الصفحة." else
+                    "Blocking is paused in this tab only. Resuming it reloads the page."
+                effectiveAdMode == BrowserAdMode.STRICT -> if (ar) "صارم: بيحجب شبكات إعلان أكتر، وبعض مساحات الإعلان، والنوافذ الجديدة. لو الموقع ما اشتغلش، وقّفه في التبويب ده." else
+                    "Strict: blocks more ad networks, some ad slots and new windows. Pause it in this tab if the site stops working."
+                else -> if (ar) "متوازن: بيحجب طلبات وتحويلات لنطاقات إعلانية معروفة. لو الموقع ما اشتغلش، وقّفه في التبويب ده." else
+                    "Balanced: blocks requests and navigations to known ad hosts. Pause it in this tab if the site stops working."
+            }) },
+            confirmButton = {
+                if (effectiveAdMode != BrowserAdMode.OFF) TextButton(onClick = {
+                    shown = ""; tab.adBlockPaused = !adPaused
+                }) { Text(if (adPaused) (if (ar) "فعّل الحجب" else "Resume blocking") else if (ar) "وقّف في التبويب ده" else "Pause in this tab") }
+            }, dismissButton = { TextButton(onClick = { shown = "" }) { Text(if (ar) "إغلاق" else "Close") } })
+    }
     if (shown == "tabs") {
         ModalBottomSheet(onDismissRequest = { shown = "" }) {
             Column(Modifier.padding(horizontal = 18.dp).padding(bottom = 22.dp)) {
@@ -409,7 +440,7 @@ private fun BrowserStart(ar: Boolean, onSearch: () -> Unit, onDirect: () -> Unit
         Surface(shape = RoundedCornerShape(25.dp), color = V2.CardSoft) {
             Icon(Icons.Filled.Explore, null, Modifier.padding(18.dp).size(42.dp), tint = V2.Mint)
         }
-        Text(if (ar) "متصفح فيديو ٢" else "Video2 Browser", style = MaterialTheme.typography.headlineMedium)
+        Text(if (ar) "متصفح كادر" else "Kadr Browser", style = MaterialTheme.typography.headlineMedium)
         Text(if (ar) "افتح صفحة وشغّل الفيديو، وبعدها اضغط «الالتقاط» عشان تشوف المصادر المتاحة."
             else "Open a page and play the video, then tap Capture to see available sources.",
             color = V2.TextDim, textAlign = TextAlign.Center)

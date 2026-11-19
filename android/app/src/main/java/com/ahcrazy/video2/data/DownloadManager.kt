@@ -634,7 +634,7 @@ class DownloadService : Service() {
 
     private fun notification(count: Int = 0, progress: Double = 0.0): Notification {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        return Notification.Builder(this, channelId).setContentTitle("فيديو ٢")
+        return Notification.Builder(this, channelId).setContentTitle(getString(com.ahcrazy.video2.R.string.app_name))
             .setContentText(if (count <= 1) "جارٍ التحميل في الخلفية…" else "جارٍ تحميل $count ملفات…")
             .setSmallIcon(android.R.drawable.stat_sys_download).setOnlyAlertOnce(true).setOngoing(true)
             .setProgress(100, (progress * 100).toInt().coerceIn(0, 100), count != 1 || progress == 0.0)

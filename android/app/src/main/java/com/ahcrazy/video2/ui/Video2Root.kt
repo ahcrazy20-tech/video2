@@ -140,7 +140,7 @@ private fun LockScreen(ar: Boolean, onUnlock: () -> Unit) {
                 Text(if (ar) "دخول" else "Unlock")
             }
             Spacer(Modifier.height(30.dp))
-            Text("فيديو ٢ · Video2", color = V2.TextDim, fontSize = 11.sp)
+            Text(if (ar) "كادر" else "Kadr", color = V2.TextDim, fontSize = 11.sp)
         }
     }
 }

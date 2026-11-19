@@ -14,7 +14,7 @@ import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.model.SavedVideo
 import java.io.File
 
-internal fun snapshotName() = "Video2-${System.currentTimeMillis()}.jpg"
+internal fun snapshotName() = "Kadr-${System.currentTimeMillis()}.jpg"
 
 internal fun savePlayerSnapshot(ctx: Context, video: SavedVideo, positionMs: Long, document: Uri? = null): Boolean = runCatching {
     val reader = MediaMetadataRetriever()

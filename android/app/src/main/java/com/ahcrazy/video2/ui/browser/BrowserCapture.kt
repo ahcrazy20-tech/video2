@@ -21,8 +21,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import com.ahcrazy.video2.core.media.BrowserAdMode
+import com.ahcrazy.video2.core.media.BrowserAdRules
 import com.ahcrazy.video2.core.media.httpMediaUrl
 import com.ahcrazy.video2.core.media.MediaRequestContexts
 import com.ahcrazy.video2.core.media.ObservedMediaRequest
@@ -48,7 +51,6 @@ internal class BrowserSession {
     val tabs = mutableStateListOf(BrowserTab())
     var currentId by mutableStateOf(tabs.first().id)
     val current: BrowserTab get() = tabs.first { it.id == currentId }
-    @Volatile var adBlock = true
 
     fun add() { BrowserTab().also { tabs.add(it); currentId = it.id } }
 
@@ -94,6 +96,11 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
         private set
     var canGoForward by mutableStateOf(false)
         private set
+    var adBlockPaused by mutableStateOf(false)
+    var savedAdMode = BrowserAdMode.BALANCED
+        private set
+    @Volatile private var activeAdMode = BrowserAdMode.BALANCED
+    private var cosmeticHandle: ScriptHandler? = null
     @Volatile private var webView: WebView? = null
     private val main = Handler(Looper.getMainLooper())
     private val framesWithDrm = mutableSetOf<String>()
@@ -230,17 +237,22 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
     }
 
     /** Attach the retained WebView inside a clipped native container for this viewport only. */
-    fun mount(container: FrameLayout, script: String, adHosts: Set<String>, session: BrowserSession) {
+    fun mount(container: FrameLayout, script: String, rules: BrowserAdRules, cosmetics: String, mode: BrowserAdMode?) {
         if (destroyed || url.isBlank() || failure == BrowserPageError.WEBVIEW_UNAVAILABLE || failure == BrowserPageError.RENDERER_STOPPED) return
         val previous = webView
         try {
-            val view = previous ?: createWebView(container.context, script, adHosts, session)
+            if (mode != null) savedAdMode = mode
+            val effective = if (adBlockPaused) BrowserAdMode.OFF else savedAdMode
+            val changed = effective != activeAdMode
+            val view = previous ?: createWebView(container.context, script, rules, cosmetics)
+            if (previous == null || changed) configureAdBlock(view, effective, cosmetics)
             if (view.parent !== container) {
                 (view.parent as? ViewGroup)?.removeView(view)
                 container.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
                 view.onResume()
             }
             if (previous == null) view.loadUrl(url)
+            else if (changed) reload() // Replace any CSS and already-loaded requests from the old policy.
         } catch (_: RuntimeException) {
             disposeWebView()
             loading = false
@@ -256,13 +268,27 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
         }
     }
 
+    private fun configureAdBlock(view: WebView, mode: BrowserAdMode, cosmetics: String) {
+        activeAdMode = mode
+        val strict = mode == BrowserAdMode.STRICT
+        // In single-window mode a target=_blank link can become a same-window navigation.
+        // Strict mode puts new windows through onCreateWindow and denies them instead.
+        view.settings.setSupportMultipleWindows(strict)
+        cosmeticHandle?.let { runCatching { it.remove() } }
+        cosmeticHandle = if (strict) runCatching {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT))
+                WebViewCompat.addDocumentStartJavaScript(view, cosmetics, setOf("*")) else null
+        }.getOrNull() else null
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
-    private fun createWebView(context: Context, script: String, adHosts: Set<String>, session: BrowserSession): WebView {
+    private fun createWebView(context: Context, script: String, rules: BrowserAdRules, cosmetics: String): WebView {
         val view = WebView(context)
         webView = view
         view.setBackgroundColor(Color.WHITE)
         view.settings.apply {
             javaScriptEnabled = true
+            javaScriptCanOpenWindowsAutomatically = false
             domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = true
             allowFileAccess = false
@@ -276,7 +302,7 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
                     if (view !== webView) return@addWebMessageListener
                     val origin = httpMediaUrl(sourceOrigin.toString()) ?: return@addWebMessageListener
                     if (isMainFrame && httpMediaUrl(view.url)?.origin() != origin.origin()) return@addWebMessageListener
-                    message.data?.let { ingestMessage(it, origin, if (isMainFrame) httpMediaUrl(view.url) else null) }
+                    message.data?.let { ingestMessage(it, origin, rules, if (isMainFrame) httpMediaUrl(view.url) else null) }
                 }
                 true
             }
@@ -288,6 +314,8 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
             }
         }.getOrDefault(false)
         view.webChromeClient = object : WebChromeClient() {
+            override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message): Boolean = false
+
             override fun onProgressChanged(v: WebView?, newProgress: Int) { if (v === webView) progress = newProgress / 100f }
             override fun onShowCustomView(custom: View, callback: CustomViewCallback) {
                 if (view !== webView || !view.isAttachedToWindow || fullscreen != null) callback.onCustomViewHidden()
@@ -301,8 +329,10 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
             }
         }
         view.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
-                request.isForMainFrame && httpMediaUrl(request.url.toString()) == null
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val target = httpMediaUrl(request.url.toString()) ?: return request.isForMainFrame
+                return rules.blocksNavigation(target, activeAdMode)
+            }
 
             override fun onPageStarted(view: WebView, target: String?, favicon: Bitmap?) {
                 if (view !== webView || httpMediaUrl(target) == null) return
@@ -315,6 +345,7 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
                 loading = false
                 updateHistory(view)
                 if (failure == null && httpMediaUrl(target) != null) {
+                    if (activeAdMode == BrowserAdMode.STRICT && cosmeticHandle == null) view.evaluateJavascript(cosmetics, null)
                     if (!early) view.evaluateJavascript(script, null)
                     else rescan()
                 }
@@ -349,13 +380,16 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 if (view !== webView) return null
                 val target = httpMediaUrl(request.url.toString()) ?: return null
-                val adHost = generateSequence(target.host) { h -> h.substringAfter('.', "").ifEmpty { null } }.any { it in adHosts }
-                if (session.adBlock && adHost && !request.isForMainFrame) return WebResourceResponse("text/plain", "utf-8", byteArrayOf().inputStream())
+                if (rules.blocksRequest(target, request.isForMainFrame, activeAdMode)) {
+                    return WebResourceResponse("text/plain", "UTF-8", 204, "No Content",
+                        mapOf("Cache-Control" to "no-store"), byteArrayOf().inputStream())
+                }
+                val adSource = rules.isAdSource(target)
                 if (request.method != "GET") return null
                 val epoch = pageEpoch
                 val track = target.isPlayerTrackDelivery()
                 if (target.isMediaFragment()) {
-                    if (track && !adHost && lastTrackSignalEpoch != epoch) {
+                    if (track && !adSource && lastTrackSignalEpoch != epoch) {
                         lastTrackSignalEpoch = epoch
                         main.post { if (view === webView && epoch == pageEpoch) notePlayback(PlaybackHint.SEGMENTED) }
                     }
@@ -371,8 +405,8 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
                 if (requestContexts.remember(epoch, target, observed) && (track || (kind != MediaKind.OTHER && kind != MediaKind.TS))) main.post {
                     if (view === webView && epoch == pageEpoch) {
                         if (track && detected.none { it.url == target.toString() }) {
-                            if (!adHost) notePlayback(PlaybackHint.SEGMENTED)
-                        } else candidate(target, kind, accept, "webview-request", httpMediaUrl(observed.referer), ad = adHost)
+                            if (!adSource) notePlayback(PlaybackHint.SEGMENTED)
+                        } else candidate(target, kind, accept, "webview-request", httpMediaUrl(observed.referer), ad = adSource)
                     }
                 }
                 return null // Do not proxy or execute a second request.
@@ -385,7 +419,8 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
             val kind = MediaKind.infer(target, mime).takeIf { it != MediaKind.OTHER } ?: MediaKind.infer(filename.orEmpty(), mime)
             if (kind == MediaKind.OTHER || kind == MediaKind.TS) return@setDownloadListener
             if (downloadUserAgents.size < 50) ua.safeHeader(512)?.let { downloadUserAgents[remote] = it }
-            candidate(remote, kind, mime, "webview-download", httpMediaUrl(view.url), label = filename, size = length.takeIf { it > 0 })
+            candidate(remote, kind, mime, "webview-download", httpMediaUrl(view.url), ad = rules.isAdSource(remote),
+                label = filename, size = length.takeIf { it > 0 })
         }
         if (!bridge) main.postDelayed(object : Runnable {
             override fun run() {
@@ -397,7 +432,7 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
                         if (view === webView && epoch == pageEpoch && result.length <= 600_000) runCatching {
                             val arr = JSONArray(result)
                             if (origin == httpMediaUrl(url)) {
-                                for (i in 0 until minOf(80, arr.length())) ingestMessage(arr.optString(i), origin)
+                                for (i in 0 until minOf(80, arr.length())) ingestMessage(arr.optString(i), origin, rules)
                             }
                         }
                     }
@@ -408,7 +443,7 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
         return view
     }
 
-    private fun ingestMessage(payload: String, origin: HttpUrl, livePage: HttpUrl? = null) {
+    private fun ingestMessage(payload: String, origin: HttpUrl, rules: BrowserAdRules, livePage: HttpUrl? = null) {
         if (destroyed || payload.length !in 1..24_000) return
         val body = runCatching { JSONObject(payload) }.getOrNull() ?: return
         val frame = httpMediaUrl(body.optString("page"))?.takeIf { it.origin() == origin.origin() } ?: return
@@ -453,7 +488,7 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
             drm = protection, pageUrl = current.toString(), extractionMethod = method,
             durationSec = item.optDouble("duration").takeIf { it.isFinite() && it > 0 },
             width = item.optInt("width").takeIf { it in 1..16384 }, height = item.optInt("height").takeIf { it in 1..16384 },
-            requestReferer = frame.toString(), publicPageUrl = YouTubeVideo.parse(frame.toString())?.watchUrl, fromAd = item.optBoolean("ad") || target.isVideoAd()
+            requestReferer = frame.toString(), publicPageUrl = YouTubeVideo.parse(frame.toString())?.watchUrl, fromAd = item.optBoolean("ad") || target.isVideoAd() || rules.isAdSource(target)
         ))
     }
 
@@ -476,6 +511,7 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
     private fun disposeWebView(rendererStopped: Boolean = false) {
         val view = webView
         webView = null
+        cosmeticHandle = null
         exitFullscreen()
         main.removeCallbacksAndMessages(null)
         canGoBack = false

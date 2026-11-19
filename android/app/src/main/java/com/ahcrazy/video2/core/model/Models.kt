@@ -174,7 +174,8 @@ data class SavedVideo(
     val durationSec: Double? = null, val fileSize: Long = 0L, val lastPositionSec: Double = 0.0,
     val extractionMethod: String = "", val folderId: String? = null,
     val subtitleFiles: Map<String, String> = emptyMap(), val subtitleTargetLang: String? = null,
-    val dubbedAudioPath: String? = null, val dubbedInfo: DubbedInfo? = null
+    val dubbedAudioPath: String? = null, val dubbedInfo: DubbedInfo? = null,
+    val lastPlayedAt: Long = 0L
 ) {
     val hasSubtitles: Boolean get() = subtitleFiles.values.any { java.io.File(it).exists() }
     val hasDubbedAudio: Boolean get() = dubbedAudioPath != null && java.io.File(dubbedAudioPath).exists()

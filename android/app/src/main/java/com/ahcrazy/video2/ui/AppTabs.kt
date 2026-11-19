@@ -21,14 +21,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.ClosedCaption
-import androidx.compose.material.icons.filled.CloudDownload
-import androidx.compose.material.icons.filled.Explore
-import androidx.compose.material.icons.filled.PlayCircle
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.ClosedCaption
+import androidx.compose.material.icons.outlined.Explore
+import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -38,8 +39,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -50,12 +54,12 @@ import com.ahcrazy.video2.ui.theme.V2
 import com.ahcrazy.video2.ui.theme.glassSurface
 
 internal enum class AppTab(val label: String, val icon: ImageVector) {
-    BROWSER("tab.browser", Icons.Filled.Explore),
-    LIBRARY("tab.library", Icons.Filled.PlayCircle),
-    TRANSLATE("tab.translate", Icons.Filled.ClosedCaption),
-    DOWNLOADS("tab.downloads", Icons.Filled.CloudDownload),
-    SETTINGS("tab.settings", Icons.Filled.Settings),
-    MAGIC("tab.magic", Icons.Filled.AutoAwesome)
+    BROWSER("tab.browser", Icons.Outlined.Explore),
+    LIBRARY("tab.library", Icons.Outlined.VideoLibrary),
+    TRANSLATE("tab.translate", Icons.Outlined.ClosedCaption),
+    DOWNLOADS("tab.downloads", Icons.Outlined.FileDownload),
+    SETTINGS("tab.settings", Icons.Outlined.Settings),
+    MAGIC("tab.magic", Icons.Outlined.Search)
 }
 
 @Composable
@@ -78,20 +82,28 @@ internal fun AppTabs(
         if (immersive) Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)))
         else Column(Modifier.fillMaxWidth().glassSurface(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
             .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))) {
+            val labelHeight = with(LocalDensity.current) { 13.sp.toDp() }.coerceAtMost(22.dp)
             Row(Modifier.fillMaxWidth().height(64.dp).selectableGroup().padding(horizontal = 2.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 AppTab.entries.forEach { tab ->
                     val active = tab == selected
-                    val tint = if (active) V2.Mint else V2.TextDim
+                    val tint = if (active) V2.Accent else V2.TextDim
+                    val label = L10n.t(lang, tab.label)
                     Column(
-                        Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(12.dp))
-                            .background(if (active) V2.Mint.copy(alpha = .12f) else Color.Transparent).testTag(tab.label).selectable(selected = active, role = Role.Tab, onClick = { onSelect(tab) }),
+                        Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(12.dp)).testTag(tab.label)
+                            .selectable(selected = active, role = Role.Tab, onClick = { onSelect(tab) })
+                            .semantics { if (!active) contentDescription = label },
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
-                        Icon(tab.icon, contentDescription = null, tint = tint, modifier = Modifier.size(21.dp))
-                        Text(L10n.t(lang, tab.label), fontSize = 10.sp, lineHeight = 12.sp, fontWeight = FontWeight.SemiBold,
-                            color = tint, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+                        Box(Modifier.size(34.dp).background(if (active) tint.copy(alpha = .18f) else Color.Transparent, CircleShape),
+                            contentAlignment = Alignment.Center) {
+                            Icon(tab.icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
+                        }
+                        Box(Modifier.height(labelHeight), contentAlignment = Alignment.Center) {
+                            if (active) Text(label, fontSize = 10.sp, lineHeight = 12.sp, fontWeight = FontWeight.SemiBold,
+                                color = tint, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+                        }
                     }
                 }
             }

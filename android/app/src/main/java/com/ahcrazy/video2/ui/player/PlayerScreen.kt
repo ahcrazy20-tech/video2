@@ -34,6 +34,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.PictureInPictureModeChangedInfo
 import androidx.core.util.Consumer
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.common.AudioAttributes
@@ -157,6 +160,21 @@ fun PlayerScreen(
         onDispose {
             activity.removeOnPictureInPictureModeChangedListener(callback)
             if (activity.requestedOrientation != previousOrientation) activity.requestedOrientation = previousOrientation
+        }
+    }
+    DisposableEffect(activity, landscape, pip) {
+        val window = activity.window
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        val previousBehavior = controller.systemBarsBehavior
+        if (landscape && !pip) {
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+        }
+        onDispose {
+            if (landscape && !pip) {
+                controller.show(WindowInsetsCompat.Type.systemBars())
+                controller.systemBarsBehavior = previousBehavior
+            }
         }
     }
     DisposableEffect(player, activity) {
@@ -309,9 +327,7 @@ fun PlayerScreen(
                     TextButton(onClick = { player.prepare(); player.play() }) { Text(if (ar) "حاول تاني" else "Retry", color = V2.Mint) }
                 }
             }
-            chrome -> PlayerTransport(ar, playback.active, playback.ended, playback.seekable, playback.buffering,
-                onBackTen = { jump(-10_000L) }, onToggle = ::toggle, onForwardTen = { jump(10_000L) })
-            playback.buffering -> CircularProgressIndicator(Modifier.size(36.dp), color = V2.Mint, strokeWidth = 2.dp)
+            playback.buffering && !chrome -> CircularProgressIndicator(Modifier.size(36.dp), color = V2.Accent, strokeWidth = 2.dp)
         }
         if (!pip) notice?.let { message ->
             Surface(Modifier.align(Alignment.TopCenter).padding(top = 8.dp).semantics { liveRegion = LiveRegionMode.Polite },
@@ -323,13 +339,16 @@ fun PlayerScreen(
         if (!pip && subMode != SubMode.OFF && playback.error == null) PlayerCaptionLines(
             if (subMode != SubMode.TRANSLATED) SrtCodec.cueAt(cues, at) else null,
             if (subMode != SubMode.ORIGINAL) SrtCodec.cueAt(cues, at, translated = true) else null, subSize)
-    }, deck = { compact ->
-        PlayerDeck(ar, compact, clock, playback.duration,
+    }, deck = {
+        PlayerDeck(ar, clock, playback.duration,
             if (playback.duration > 0) (buffered.toDouble() / playback.duration).toFloat() else 0f,
-            playback.seekable && playback.duration > 0 && playback.error == null, playback.live, rateLabel(rate), muted,
+            playback.seekable && playback.duration > 0 && playback.error == null, playback.live,
             cues.isNotEmpty(), subMode != SubMode.OFF, landscape, onScrub = { scrub = it }, onScrubEnd = {
                 scrub?.let { seek((it * playback.duration).toLong()) }; scrub = null
-            }, onSpeed = { panel = Panel.SPEED }, onMute = ::onMute, onCaptions = { panel = Panel.CAPTIONS }, onRotate = ::rotate)
+            }, onCaptions = { panel = Panel.CAPTIONS }, onRotate = ::rotate) {
+            PlayerTransport(ar, playback.active, playback.ended, playback.seekable, playback.buffering,
+                onBackTen = { jump(-10_000L) }, onToggle = ::toggle, onForwardTen = { jump(10_000L) }, enabled = playback.error == null)
+        }
     })
 
     val dismiss: () -> Unit = { panel = null; activityTick++ }
@@ -343,7 +362,7 @@ fun PlayerScreen(
                 PlayerTool(Icons.Filled.Speed, if (ar) "سرعة التشغيل" else "Playback speed", rateLabel(rate)) { panel = Panel.SPEED },
                 PlayerTool(if (muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp, if (ar) "كتم الصوت" else "Mute", if (muted) on else off) { onMute(); dismiss() },
                 PlayerTool(Icons.Filled.ClosedCaption, if (ar) "الترجمة" else "Captions",
-                    if (cues.isNotEmpty()) (if (ar) subMode.ar else subMode.en) else (if (ar) "مفيش ترجمة من Video2 للملف ده" else "No Video2 captions for this file"),
+                    if (cues.isNotEmpty()) (if (ar) subMode.ar else subMode.en) else (if (ar) "مفيش ترجمة محفوظة للملف ده" else "No saved captions for this file"),
                     cues.isNotEmpty()) { panel = Panel.CAPTIONS },
                 PlayerTool(Icons.Filled.Search, if (ar) "بحث في الترجمة" else "Search captions", enabled = playback.seekable) { panel = Panel.SEARCH }.takeIf { cues.isNotEmpty() },
                 PlayerTool(Icons.Filled.RecordVoiceOver, if (ar) "الدبلجة" else "Dubbed audio", if (dubOn) on else off) { dubOn = !dubOn; dismiss() }.takeIf { canDub },

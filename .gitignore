@@ -9,6 +9,7 @@ xcuserdata/
 /android/.gradle/
 /android/local.properties
 /artifacts/*.apk
+/artifacts/*-Concept.png
 
 # Never commit signing keys or local device backup archives.
 *.jks

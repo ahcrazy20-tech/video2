@@ -1,0 +1,17 @@
+# Additional ad auction, delivery and measurement domains in Strict mode only.
+33across.com
+ad.gt
+adkernel.com
+adsafeprotected.com
+bidtheatre.com
+btrll.com
+clickagy.com
+doubleverify.com
+lijit.com
+mathtag.com
+omnitagjs.com
+rhythmone.com
+rtbhouse.com
+simpli.fi
+sonobi.com
+yieldlab.net

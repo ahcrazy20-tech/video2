@@ -61,3 +61,10 @@ vungle.com
 inmobi.com
 applovin.com
 imasdk.googleapis.com
+# Dedicated ad/redirect networks (not shared media or login domains).
+adnami.io
+casalemedia.com
+contextweb.com
+onclickrev.com
+realsrv.com
+yieldmo.com

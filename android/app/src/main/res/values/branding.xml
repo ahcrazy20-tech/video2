@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Kadr</string>
+    <color name="kadr_launcher_background">#0C1031</color>
+</resources>
