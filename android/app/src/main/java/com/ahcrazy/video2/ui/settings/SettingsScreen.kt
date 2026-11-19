@@ -23,10 +23,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -36,7 +38,6 @@ import com.ahcrazy.video2.core.model.RefinerProvider
 import com.ahcrazy.video2.core.model.STTProvider
 import com.ahcrazy.video2.core.model.TranslatorProvider
 import com.ahcrazy.video2.core.util.L10n
-import com.ahcrazy.video2.data.AppSettings
 import com.ahcrazy.video2.ui.browser.SmartServerDisclosure
 import com.ahcrazy.video2.ui.components.GlassCard
 import com.ahcrazy.video2.ui.components.PickerRow
@@ -82,8 +83,15 @@ fun SettingsScreen(ar: Boolean, onLangChange: (String) -> Unit, onLockNow: () ->
     var refPref by remember { mutableStateOf("auto") }
     var trPref by remember { mutableStateOf("auto") }
     var storageMsg by remember { mutableStateOf<String?>(null) }
+    val settingsScroll = rememberScrollState()
+    val focus = LocalFocusManager.current
+    var keysOpen by rememberSaveable { mutableStateOf(false) }
+    if (keysOpen) {
+        ApiKeysScreen(ar, app.settings::hasKey, app.settings::setKey, app.settings::deleteKey) { keysOpen = false }
+        return
+    }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp)) {
+    Column(Modifier.fillMaxSize().verticalScroll(settingsScroll).padding(horizontal = 14.dp)) {
         Text(if (ar) "الإعدادات" else "Settings", fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp))
 
         AppearancePicker(ar, Video2Appearance.fromStored(appearance)) { theme -> scope.launch { app.settings.setAppearance(theme.id) } }
@@ -156,11 +164,7 @@ fun SettingsScreen(ar: Boolean, onLangChange: (String) -> Unit, onLockNow: () ->
             }
         }
 
-        SectionTitle("🔑 " + if (ar) "مفاتيح مزودي الصوت والترجمة والفيديو" else "API keys")
-        Text(if (ar) "بتتخزن مشفرة في Android Keystore على جهازك بس. MyMemory للترجمة شغال من غير مفتاح (5K كلمة/يوم)." else "Stored encrypted in the Android Keystore only. MyMemory translation needs no key.", fontSize = 11.sp, color = V2.TextDim)
-        AppSettings.apiKeyRows.forEach { (id, title, url) ->
-            ApiKeyRow(title, id, url, ar)
-        }
+        ApiKeysEntry(ar) { focus.clearFocus(); keysOpen = true }
 
         SectionTitle("🎛️ " + if (ar) "تفضيلات التفريغ والترجمة" else "Speech & translation preferences")
         GlassCard(Modifier.fillMaxWidth()) {
@@ -248,38 +252,5 @@ fun SettingsScreen(ar: Boolean, onLangChange: (String) -> Unit, onLockNow: () ->
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Text(label, fontSize = 12.sp, color = V2.TextDim, modifier = Modifier.weight(1f))
         Text(override ?: L10n.fmtBytes(bytes), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-    }
-}
-
-@Composable
-private fun ApiKeyRow(title: String, keyId: String, getKeyUrl: String, ar: Boolean) {
-    val ctx = LocalContext.current
-    val app = (ctx as android.app.Activity).app()
-    var value by remember { mutableStateOf("") }
-    var saved by remember { mutableStateOf(app.settings.hasKey(keyId)) }
-    var msg by remember { mutableStateOf<String?>(null) }
-    GlassCard(Modifier.fillMaxWidth().padding(bottom = 9.dp)) {
-        Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                if (saved) Text("✓ " + if (ar) "محفوظ" else "Saved", fontSize = 11.sp, color = V2.Mint, fontWeight = FontWeight.Bold)
-            }
-            Row(Modifier.padding(top = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(value, { value = it },
-                    placeholder = { Text(if (saved) "••••••••" else if (ar) "الصق المفتاح هنا" else "Paste key here", fontSize = 11.sp) },
-                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                    singleLine = true, modifier = Modifier.weight(1f))
-                TextButton(onClick = {
-                    if (value.isNotBlank()) { app.settings.setKey(keyId, value); saved = true; value = ""; msg = if (ar) "تم الحفظ في Keystore ✓" else "Saved to Keystore ✓" }
-                }) { Text(if (ar) "حفظ" else "Save", fontSize = 12.sp) }
-                if (saved) TextButton(onClick = { app.settings.deleteKey(keyId); saved = false }) { Text("✕", color = V2.Accent) }
-            }
-            Row {
-                TextButton(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(getKeyUrl))) }) {
-                    Text("↗ " + if (ar) "احصل على المفتاح" else "Get key", fontSize = 11.sp)
-                }
-                msg?.let { Text(it, fontSize = 11.sp, color = V2.Mint, modifier = Modifier.padding(top = 12.dp)) }
-            }
-        }
     }
 }
