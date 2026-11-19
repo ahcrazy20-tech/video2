@@ -1,10 +1,7 @@
 package com.ahcrazy.video2.core.dubbing
 
-internal const val GEMINI_MAX_SECONDS = 6 * 60
-internal const val GEMINI_MAX_CUES = 600
-internal const val GEMINI_MAX_SPEAKERS = 8
 private const val GEMINI_MAX_TEXT = 1_200
-private const val SCENE_FRAMES = 55L * DUB_SAMPLE_RATE
+internal const val GEMINI_SCENE_FRAMES = 55L * DUB_SAMPLE_RATE
 private const val SCENE_CUES = 32
 private const val SCENE_CONTEXT = DUB_SAMPLE_RATE * 3L / 4
 
@@ -39,13 +36,16 @@ internal data class GeminiPerformance(val tone: GeminiTone = GeminiTone.NATURAL,
                                       val reaction: GeminiReaction? = null, val reactionFirst: Boolean = false)
 internal data class GeminiSpeechWord(val label: String, val start: Long, val end: Long)
 internal data class GeminiMatch(val speaker: Int, val uncertain: Boolean)
-internal data class GeminiAttribution(val matches: Map<Int, GeminiMatch>, val speakers: List<Int>)
-internal data class GeminiCharacter(val id: Int, val register: GeminiRegister, val preset: GeminiPreset, val overridden: Boolean = false)
+internal data class GeminiAttribution(val matches: Map<Int, GeminiMatch>, val speakers: List<Int>,
+                                     val unlinked: Set<Int> = emptySet())
+internal data class GeminiCharacter(val id: Int, val register: GeminiRegister, val preset: GeminiPreset,
+                                   val overridden: Boolean = false, val unlinked: Boolean = false)
 internal data class GeminiDirection(val cast: List<GeminiCharacter>, val matches: Map<Int, GeminiMatch>,
                                     val performance: Map<Int, GeminiPerformance>) {
     val uncertainCount: Int get() = matches.count { it.value.uncertain }
 
-    fun voiceFor(cue: Int): GeminiPreset = cast.first { it.id == matches.getValue(cue).speaker }.preset
+    private val voicesBySpeaker = cast.associate { it.id to it.preset }
+    fun voiceFor(cue: Int): GeminiPreset = voicesBySpeaker.getValue(matches.getValue(cue).speaker)
 
     fun withVoice(speaker: Int, voice: GeminiPreset): GeminiDirection = copy(cast = cast.map {
         if (it.id == speaker) it.copy(preset = voice, overridden = true) else it
@@ -59,6 +59,14 @@ internal data class GeminiDirection(val cast: List<GeminiCharacter>, val matches
             performance = if (previous.speaker == speaker) performance else performance - cue)
     }
 
+    /** User confirms two independently detected groups are the same speaker. Keep each cue's delivery. */
+    fun mergeSpeaker(from: Int, into: Int): GeminiDirection {
+        if (from == into || from !in voicesBySpeaker || into !in voicesBySpeaker) return this
+        return copy(cast = cast.filterNot { it.id == from }, matches = matches.mapValues { (_, match) ->
+            if (match.speaker == from) match.copy(speaker = into) else match
+        })
+    }
+
     /** Prefer a short exchange to the first monologue. The full track keeps the original start frames. */
     fun preview(plan: DubPlan): DubPlan {
         val maxSpan = 15L * DUB_SAMPLE_RATE
@@ -66,7 +74,7 @@ internal data class GeminiDirection(val cast: List<GeminiCharacter>, val matches
         var bestScore = -1
         for ((index, first) in plan.lines.withIndex()) {
             if (first.end - first.start > maxSpan) continue
-            val window = plan.lines.asSequence().drop(index).takeWhile { it.start < first.start + maxSpan }
+            val window = plan.lines.subList(index, plan.lines.size).asSequence().takeWhile { it.start < first.start + maxSpan }
                 .filter { it.end <= first.start + maxSpan }.take(4).toList()
             val voices = window.mapNotNull { matches[it.number]?.takeUnless(GeminiMatch::uncertain)?.speaker }.distinct().size
             val acting = window.any { performance[it.number]?.let { p -> p.reaction != null || p.tone != GeminiTone.NATURAL } == true }
@@ -103,9 +111,6 @@ private fun speechText(text: String): String = text.replace(subtitleFormatting, 
     .replace('<', '‹').replace('>', '›').replace('|', '｜')
 
 internal fun validateGeminiPlan(plan: DubPlan) {
-    if (plan.frames > GEMINI_MAX_SECONDS * DUB_SAMPLE_RATE.toLong() || plan.lines.size > GEMINI_MAX_CUES) {
-        throw DubFailure(DubIssue.GEMINI_SIZE)
-    }
     plan.lines.forEach {
         if (it.text.length > GEMINI_MAX_TEXT) throw DubFailure(DubIssue.CUE_TOO_LONG, it.number)
         if (speechText(it.text).isBlank()) throw DubFailure(DubIssue.NO_SUBTITLES, it.number)
@@ -128,41 +133,6 @@ internal fun GeminiDirection.take(line: DubLine, options: GeminiOptions): Gemini
     return GeminiTake(voiceFor(line.number).name, transcript, acting.tone.style, options.language)
 }
 
-/** A single diarization response covers the whole clip so speaker IDs never get re-used across chunks. */
-internal fun attributeGeminiLines(plan: DubPlan, words: List<GeminiSpeechWord>): GeminiAttribution {
-    val tracks = words.sortedBy { it.start }.groupBy { it.label }.values.map { spans ->
-        // Merge repeats/overlaps from one speaker so a repeated ASR word doesn't win the assignment.
-        val merged = mutableListOf<LongRange>()
-        for (word in spans) {
-            val last = merged.lastOrNull()
-            if (last != null && word.start <= last.last) merged[merged.lastIndex] = last.first..maxOf(last.last, word.end)
-            else merged += word.start..word.end
-        }
-        merged
-    }
-    if (tracks.isEmpty()) throw DubFailure(DubIssue.GEMINI_ANALYSIS)
-    if (tracks.size > GEMINI_MAX_SPEAKERS) throw DubFailure(DubIssue.GEMINI_CAST)
-    val matches = plan.lines.associate { line ->
-        val scores = tracks.mapIndexed { index, spans ->
-            val overlap = spans.asSequence().dropWhile { it.last <= line.start }.takeWhile { it.first < line.end }
-                .sumOf { minOf(line.end, it.last) - maxOf(line.start, it.first) }
-            index + 1 to overlap
-        }.sortedByDescending { it.second }
-        val (speaker, best) = scores.first()
-        val next = scores.getOrNull(1)?.second ?: 0
-        line.number to if (best == 0L) null else GeminiMatch(speaker,
-            uncertain = best < minOf(line.frames / 2L, DUB_SAMPLE_RATE / 8L) || next * 3 > best)
-    }
-    val used = matches.values.filterNotNull().groupingBy { it.speaker }.eachCount()
-    // No timing match is usually an incompatible SRT, not evidence for a default speaker.
-    val fallback = used.maxByOrNull { it.value }?.key ?: throw DubFailure(DubIssue.GEMINI_ANALYSIS)
-    val displayIds = used.keys.sorted().withIndex().associate { (index, id) -> id to index + 1 }
-    return GeminiAttribution(matches.mapValues { (_, original) ->
-        val match = original ?: GeminiMatch(fallback, true)
-        match.copy(speaker = displayIds.getValue(match.speaker))
-    }, (1..used.size).toList())
-}
-
 internal fun directGeminiCast(attribution: GeminiAttribution, guesses: Map<Int, List<GeminiRegister>>,
                               performance: Map<Int, GeminiPerformance>): GeminiDirection {
     val registers = attribution.speakers.associateWith { speaker ->
@@ -176,11 +146,19 @@ internal fun directGeminiCast(attribution: GeminiAttribution, guesses: Map<Int, 
         }
     }
     val used = mutableSetOf<String>()
+    val reused = mutableMapOf<GeminiRegister, Int>()
     val cast = registers.entries.sortedBy { it.value == GeminiRegister.UNKNOWN }.map { (id, register) ->
         val pool = if (register == GeminiRegister.UNKNOWN) geminiPresets.sortedBy { it.name !in setOf("Achird", "Sulafat") }
                    else geminiPresets.filter { it.register == register }
-        val voice = pool.first { used.add(it.name) }
-        GeminiCharacter(id, register, voice)
+        // More than eight groups of one register are fine across many parts. Reuse a stock voice
+        // only when necessary; that does not merge the underlying speaker assignments.
+        val voice = pool.firstOrNull { it.name !in used } ?: run {
+            val index = reused[register] ?: 0
+            reused[register] = index + 1
+            pool[index % pool.size]
+        }
+        used += voice.name
+        GeminiCharacter(id, register, voice, unlinked = id in attribution.unlinked)
     }.sortedBy { it.id }
     return GeminiDirection(cast, attribution.matches, performance)
 }
@@ -195,7 +173,7 @@ internal fun geminiScenes(plan: DubPlan, audioEnd: Long): List<GeminiScene> {
         val first = plan.lines[index]
         val start = (first.start - SCENE_CONTEXT).coerceAtLeast(0)
         if (first.start >= audioEnd) break
-        val limit = first.start + SCENE_FRAMES
+        val limit = first.start + GEMINI_SCENE_FRAMES
         val cues = mutableListOf(first)
         index++
         while (index < plan.lines.size && cues.size < SCENE_CUES) {

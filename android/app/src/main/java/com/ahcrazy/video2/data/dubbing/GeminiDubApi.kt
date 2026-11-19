@@ -3,7 +3,7 @@ package com.ahcrazy.video2.data.dubbing
 import com.ahcrazy.video2.core.dubbing.DUB_SAMPLE_RATE
 import com.ahcrazy.video2.core.dubbing.DubFailure
 import com.ahcrazy.video2.core.dubbing.DubIssue
-import com.ahcrazy.video2.core.dubbing.GEMINI_MAX_SECONDS
+import com.ahcrazy.video2.core.dubbing.GEMINI_PART_SECONDS
 import com.ahcrazy.video2.core.dubbing.GeminiAttribution
 import com.ahcrazy.video2.core.dubbing.GeminiPerformance
 import com.ahcrazy.video2.core.dubbing.GeminiReaction
@@ -17,6 +17,7 @@ import com.ahcrazy.video2.data.offline.SAMPLE_RATE
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -54,12 +55,17 @@ internal val geminiDubHttp by lazy {
 
 // No automatic model, credential or billing-tier fallback. Never put the key in a URL or a data-class toString.
 internal class GeminiDubConfig private constructor(private val key: String) {
-    fun request(model: GeminiDubModel, body: RequestBody): Request = Request.Builder()
-        .url("$GOOGLE_MODELS${model.id}:generateContent").header("x-goog-api-key", key).post(body).build()
+    fun request(model: GeminiDubModel, body: RequestBody? = null): Request = Request.Builder()
+        .header("x-goog-api-key", key).apply {
+            if (body == null) url("$GOOGLE_MODELS${model.id}").get()
+            else url("$GOOGLE_MODELS${model.id}:generateContent").post(body)
+        }.build()
 
     companion object {
-        fun from(key: String?): GeminiDubConfig? = key?.trim()?.takeIf { it.matches(Regex("[A-Za-z0-9_-]{1,256}")) }
-            ?.let(::GeminiDubConfig)
+        // This checks safe header syntax, not Google's key format or validity. Auth keys include a dot.
+        private val token = Regex("[A-Za-z0-9._=-]{1,512}")
+
+        fun from(key: String?): GeminiDubConfig? = key?.trim()?.takeIf(token::matches)?.let(::GeminiDubConfig)
     }
 }
 
@@ -69,11 +75,15 @@ internal enum class GeminiDubModel(val id: String) {
 
 /** Slice of the app's 16-bit/16 kHz mono PCM scratch file, in PCM frames (not video bytes). */
 internal class GeminiAudioSlice(private val pcm: File, private val from: Long, private val to: Long) {
-    init { require(from >= 0 && to > from && to <= GEMINI_MAX_SECONDS * SAMPLE_RATE.toLong()) }
+    init {
+        require(from >= 0 && to > from && to - from <= GEMINI_PART_SECONDS * SAMPLE_RATE.toLong() && to <= pcm.length() / 2)
+    }
     private val dataBytes = (to - from) * 2
     private val header = monoPcm16Header(SAMPLE_RATE, dataBytes)
     val wavBytes = header.size + dataBytes
-    val durationFrames = (to - from) * DUB_SAMPLE_RATE / SAMPLE_RATE
+    val startFrame = from * DUB_SAMPLE_RATE / SAMPLE_RATE
+    val endFrame = to * DUB_SAMPLE_RATE / SAMPLE_RATE
+    val durationFrames = endFrame - startFrame
 
     fun writeTo(output: OutputStream) {
         RandomAccessFile(pcm, "r").use { input ->
@@ -172,6 +182,24 @@ private val notesSchema by lazy {
 }
 
 internal class GeminiDubApi(private val config: GeminiDubConfig, private val http: Call.Factory = geminiDubHttp) {
+    /** Metadata only: no generation, no audio, no subtitle text. A successful GET cannot prove quota. */
+    suspend fun unavailableModels(): List<GeminiDubModel> = GeminiDubModel.entries.filterNot { model ->
+        val response = try {
+            withTimeoutOrNull(15_000) { fetch(config.request(model), 64 * 1024L) }
+                ?: throw DubFailure(DubIssue.GEMINI_NETWORK)
+        } catch (e: DubFailure) {
+            if (e.issue == DubIssue.GEMINI_MODEL) return@filterNot false
+            throw e
+        }
+        val json = parseObject(response, DubIssue.GEMINI_SERVICE)
+        val name = json.optString("name")
+        if (name != "models/${model.id}" && !(name.startsWith("models/") && json.optString("baseModelId") == model.id)) {
+            throw DubFailure(DubIssue.GEMINI_SERVICE)
+        }
+        val methods = json.optJSONArray("supportedGenerationMethods") ?: return@filterNot false
+        (0 until methods.length()).any { methods.optString(it) == "generateContent" }
+    }
+
     suspend fun speakers(audio: GeminiAudioSlice): List<GeminiSpeechWord> {
         val settings = JSONObject().put("audioTranscriptionConfig", JSONObject().put("mode", "VERBATIM")
             .put("diarization", true).put("wordTimestamp", true))
@@ -189,7 +217,7 @@ internal class GeminiDubApi(private val config: GeminiDubConfig, private val htt
         return parseGeminiNotes(parseObject(json, DubIssue.GEMINI_ANALYSIS), scene, attribution)
     }
 
-    suspend fun synthesize(take: GeminiTake, line: Int): ByteArray {
+    suspend fun synthesize(take: GeminiTake, line: Int? = null): ByteArray {
         val parts = generate(GeminiDubModel.SPEAK, takeRequest(take), MAX_TTS_JSON, line)
         val audio = parts.mapNotNull { it.optJSONObject("inlineData") }.singleOrNull()
             ?: throw DubFailure(DubIssue.AUDIO_FORMAT, line)
@@ -203,9 +231,21 @@ internal class GeminiDubApi(private val config: GeminiDubConfig, private val htt
     }
 
     private suspend fun generate(model: GeminiDubModel, body: RequestBody, limit: Long, line: Int? = null): List<JSONObject> {
+        val response = fetch(config.request(model, body), limit, line)
+        val json = parseObject(response, DubIssue.GEMINI_SERVICE, line)
+        val reason = json.optJSONArray("candidates")?.optJSONObject(0)?.optString("finishReason")
+        if (json.optJSONObject("promptFeedback")?.optString("blockReason").orEmpty().isNotEmpty() ||
+            reason in setOf("SAFETY", "PROHIBITED_CONTENT", "RECITATION", "SPII")) throw DubFailure(DubIssue.GEMINI_BLOCKED, line)
+        val parts = json.optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")
+        if (reason != "STOP" || parts == null) throw DubFailure(
+            if (model == GeminiDubModel.SPEAK) DubIssue.SYNTHESIS else DubIssue.GEMINI_ANALYSIS, line)
+        return objects(parts).filterNot { it.optBoolean("thought") }
+    }
+
+    private suspend fun fetch(request: Request, limit: Long, line: Int? = null): String {
         currentCoroutineContext().ensureActive()
-        val response = suspendCancellableCoroutine { continuation ->
-            val call = http.newCall(config.request(model, body))
+        return suspendCancellableCoroutine { continuation ->
+            val call = http.newCall(request)
             continuation.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
@@ -225,13 +265,6 @@ internal class GeminiDubApi(private val config: GeminiDubConfig, private val htt
                 }
             })
         }
-        val json = parseObject(response, DubIssue.GEMINI_SERVICE, line)
-        val reason = json.optJSONArray("candidates")?.optJSONObject(0)?.optString("finishReason")
-        if (json.optJSONObject("promptFeedback")?.optString("blockReason").orEmpty().isNotEmpty() ||
-            reason in setOf("SAFETY", "PROHIBITED_CONTENT", "RECITATION", "SPII")) throw DubFailure(DubIssue.GEMINI_BLOCKED, line)
-        val parts = json.optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")
-        if (reason != "STOP" || parts == null) throw DubFailure(if (line == null) DubIssue.GEMINI_ANALYSIS else DubIssue.SYNTHESIS, line)
-        return objects(parts).filterNot { it.optBoolean("thought") }
     }
 }
 
@@ -242,18 +275,24 @@ private fun Response.readAtMost(limit: Long): String? {
     return source.readUtf8()
 }
 
-private fun Response.geminiIssue(): DubIssue = when (code) {
-    401, 403 -> DubIssue.GEMINI_AUTH
-    402, 429 -> DubIssue.GEMINI_LIMIT
-    404 -> DubIssue.GEMINI_MODEL
-    413 -> DubIssue.GEMINI_SIZE
-    400 -> {
+private fun Response.geminiIssue(): DubIssue {
+    if (code == 400 || code == 403) {
+        // Google's typed error details, never the untrusted message (which could contain a secret).
         val error = readAtMost(8 * 1024)?.let { try { JSONObject(it).optJSONObject("error") } catch (_: JSONException) { null } }
-        val details = objects(error?.optJSONArray("details"))
-        if (details.any { it.optString("reason") in setOf("API_KEY_INVALID", "API_KEY_EXPIRED", "API_KEY_SERVICE_BLOCKED") })
-            DubIssue.GEMINI_AUTH else DubIssue.GEMINI_SERVICE
+        val reasons = objects(error?.optJSONArray("details")).map { it.optString("reason") }
+        if (reasons.any { it in setOf("API_KEY_INVALID", "API_KEY_EXPIRED") }) return DubIssue.GEMINI_KEY_REJECTED
+        if (reasons.any { it in setOf("API_KEY_SERVICE_BLOCKED", "SERVICE_DISABLED") }) return DubIssue.GEMINI_AUTH
+        if (error?.optString("status") == "FAILED_PRECONDITION") return DubIssue.GEMINI_PROJECT
     }
-    else -> DubIssue.GEMINI_SERVICE
+    return when (code) {
+        401 -> DubIssue.GEMINI_KEY_REJECTED
+        403 -> DubIssue.GEMINI_AUTH
+        402 -> DubIssue.GEMINI_PROJECT
+        429 -> DubIssue.GEMINI_LIMIT
+        404 -> DubIssue.GEMINI_MODEL
+        413 -> DubIssue.GEMINI_SIZE
+        else -> DubIssue.GEMINI_SERVICE
+    }
 }
 
 private fun parseObject(text: String, issue: DubIssue, line: Int? = null): JSONObject =

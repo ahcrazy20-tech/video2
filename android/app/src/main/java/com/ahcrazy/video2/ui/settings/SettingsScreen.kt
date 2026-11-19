@@ -18,6 +18,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,6 +39,9 @@ import com.ahcrazy.video2.core.model.RefinerProvider
 import com.ahcrazy.video2.core.model.STTProvider
 import com.ahcrazy.video2.core.model.TranslatorProvider
 import com.ahcrazy.video2.core.util.L10n
+import com.ahcrazy.video2.data.dubbing.GeminiDubApi
+import com.ahcrazy.video2.data.dubbing.loadGeminiDubConfig
+import com.ahcrazy.video2.data.dubbing.testGeminiSpeech
 import com.ahcrazy.video2.ui.browser.SmartServerDisclosure
 import com.ahcrazy.video2.ui.components.GlassCard
 import com.ahcrazy.video2.ui.components.PickerRow
@@ -50,7 +54,8 @@ import java.io.File
 import java.io.IOException
 
 @Composable
-fun SettingsScreen(ar: Boolean, onLangChange: (String) -> Unit, onLockNow: () -> Unit) {
+fun SettingsScreen(ar: Boolean, onLangChange: (String) -> Unit, onLockNow: () -> Unit,
+                   apiKeyRequest: String? = null, onApiKeyRequestHandled: () -> Unit = {}) {
     val ctx = LocalContext.current
     val app = (ctx as android.app.Activity).app()
     val scope = rememberCoroutineScope()
@@ -86,8 +91,21 @@ fun SettingsScreen(ar: Boolean, onLangChange: (String) -> Unit, onLockNow: () ->
     val settingsScroll = rememberScrollState()
     val focus = LocalFocusManager.current
     var keysOpen by rememberSaveable { mutableStateOf(false) }
+    var initialKey by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(apiKeyRequest) {
+        if (apiKeyRequest != null) {
+            initialKey = apiKeyRequest
+            keysOpen = true
+            onApiKeyRequestHandled()
+        }
+    }
     if (keysOpen) {
-        ApiKeysScreen(ar, app.settings::hasKey, app.settings::setKey, app.settings::deleteKey) { keysOpen = false }
+        val checks = remember(app) {
+            GeminiKeyChecks(models = { GeminiDubApi(loadGeminiDubConfig(app.settings)).unavailableModels() },
+                speech = { testGeminiSpeech(app.cacheDir, GeminiDubApi(loadGeminiDubConfig(app.settings))) })
+        }
+        ApiKeysScreen(ar, app.settings::hasKey, app.settings::setKey, app.settings::deleteKey,
+            initialProvider = initialKey, geminiChecks = checks) { keysOpen = false; initialKey = null }
         return
     }
 

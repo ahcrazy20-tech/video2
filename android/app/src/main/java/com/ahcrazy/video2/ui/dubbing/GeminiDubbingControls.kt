@@ -29,9 +29,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ahcrazy.video2.core.dubbing.DubPlan
-import com.ahcrazy.video2.core.dubbing.GEMINI_MAX_CUES
-import com.ahcrazy.video2.core.dubbing.GEMINI_MAX_SECONDS
-import com.ahcrazy.video2.core.dubbing.GEMINI_MAX_SPEAKERS
+import com.ahcrazy.video2.core.dubbing.MAX_DUB_SECONDS
 import com.ahcrazy.video2.core.dubbing.GeminiDirection
 import com.ahcrazy.video2.core.dubbing.GeminiOptions
 import com.ahcrazy.video2.core.dubbing.GeminiRegister
@@ -41,7 +39,8 @@ import com.ahcrazy.video2.data.dubbing.GeminiStep
 import com.ahcrazy.video2.ui.theme.V2
 
 internal data class GeminiPanelState(val configured: Boolean = false, val inputError: String? = null,
-                                    val direction: GeminiDirection? = null, val stage: GeminiStage? = null)
+                                    val direction: GeminiDirection? = null, val stage: GeminiStage? = null,
+                                    val keyError: String? = null)
 
 @Composable
 internal fun GeminiDubbingControls(ar: Boolean, state: GeminiPanelState, plan: DubPlan?, loading: Boolean, busy: Boolean,
@@ -51,15 +50,19 @@ internal fun GeminiDubbingControls(ar: Boolean, state: GeminiPanelState, plan: D
     Text(if (ar) "كادر بيختار صوت ثابت لكل متحدث وبيحاكي طريقة كلامه وضحكه أو تنهيدته لما تكون واضحة. دي أصوات جاهزة، مش استنساخ."
         else "Kadr casts a consistent stock voice per speaker and follows audible delivery and reactions. It doesn't clone voices.",
         style = MaterialTheme.typography.bodySmall, color = V2.TextDim)
-    Text(if (ar) "تجريبي: ملف محلي لحد ${GEMINI_MAX_SECONDS / 60} دقايق و$GEMINI_MAX_CUES سطر. لحد $GEMINI_MAX_SPEAKERS متحدثين؛ التداخل وتشابه الأصوات ممكن يلخبطوا الاختيار."
-        else "Experimental: local files up to ${GEMINI_MAX_SECONDS / 60} minutes and $GEMINI_MAX_CUES cues. Up to $GEMINI_MAX_SPEAKERS speakers; similar or overlapping voices may be mixed up.",
+    Text(if (ar) "الفيديو الطويل بيتحلّل على أجزاء. حد الدبلجة على الجهاز ${MAX_DUB_SECONDS / 3600} ساعة، حسب مساحة التخزين وحصة Gemini."
+        else "Long videos are analyzed in parts. The on-device dubbing limit is ${MAX_DUB_SECONDS / 3600} hours, subject to storage and Gemini quota.",
         style = MaterialTheme.typography.bodySmall, color = V2.TextDim)
     if (!loading && !state.configured) {
-        Text(if (ar) "حط مفتاح Gemini من Google AI Studio في الإعدادات ← مفاتيح الـAPI ← Gemini. اشتراك Gemini Pro لوحده مش مفتاح."
-            else "Add your Google AI Studio key in Settings → API keys → Gemini. A Gemini Pro subscription alone isn't an API key.",
+        Text(state.keyError ?: if (ar) "أضف مفتاحك من Google AI Studio. اشتراك Gemini Pro لوحده مش مفتاح."
+            else "Add your Google AI Studio key. A Gemini Pro subscription alone isn't an API key.",
             style = MaterialTheme.typography.bodySmall, color = V2.Gold)
-        if (onSettings != null) OutlinedButton(onClick = onSettings, modifier = Modifier.fillMaxWidth().testTag("dubbing.gemini.settings")) {
-            Text(if (ar) "افتح الإعدادات" else "Open Settings")
+    }
+    if (!loading && !busy && onSettings != null) {
+        OutlinedButton(onClick = onSettings, modifier = Modifier.fillMaxWidth().testTag("dubbing.gemini.settings")) {
+            Text(if (state.configured) {
+                if (ar) "اختبر مفتاح Gemini في الإعدادات" else "Test Gemini key in Settings"
+            } else if (ar) "افتح إعدادات مفتاح Gemini" else "Open Gemini key settings")
         }
     }
     state.inputError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = V2.Danger) }
@@ -69,8 +72,8 @@ internal fun GeminiDubbingControls(ar: Boolean, state: GeminiPanelState, plan: D
             options.egyptianArabic, enabled) { onOptions(options.copy(egyptianArabic = it)) }
         GeminiToggle("reactions", if (ar) "ردود الفعل المسموعة (ضحك، تنهيدة…)" else "Audible vocal reactions (laughs, sighs…)",
             options.reactions, enabled) { onOptions(options.copy(reactions = it)) }
-        Text(if (ar) "حتى المعاينة بتحتاج تحليل صوت المقطع كله؛ التوليد نفسه لعيّنة قصيرة. الاستخدام حسب حصة وفوترة مشروع المفتاح. في الحصة المجانية، جوجل ممكن تستخدم المدخلات لتحسين خدماتها."
-            else "Even a preview analyzes the clip's full audio, then synthesizes a short sample. Usage follows the key's project quota and billing. Google may use free-tier inputs to improve its services.",
+        Text(if (ar) "المعاينة الأولى بتحلّل أجزاء الصوت حوالين السطور، وبتولّد عيّنة قصيرة بس. الدبلجة الكاملة ممكن تحتاج لحد ${plan.lines.size} طلب توليد، غير التحليل. الاستخدام حسب حصة وفوترة مشروعك، وجوجل ممكن تستخدم المدخلات لتحسين خدماتها في الحصة المجانية."
+            else "The first preview analyzes audio around the subtitles, then generates only a short sample. A full dub may need up to ${plan.lines.size} speech requests plus analysis. Usage follows your project's quota and billing; Google may use free-tier inputs to improve its services.",
             style = MaterialTheme.typography.bodySmall, color = V2.TextDim)
         GeminiToggle("audio", if (ar) "أسمح بإرسال الصوت الأصلي إلى Gemini للتحليل (من غير صورة الفيديو)."
             else "Allow Gemini to analyze the original audio (no video frames).", options.allowAudio, enabled) {
@@ -82,11 +85,15 @@ internal fun GeminiDubbingControls(ar: Boolean, state: GeminiPanelState, plan: D
         }
         state.direction?.let { direction ->
             val roles = direction.cast.size
-            Text(if (ar) "اتوزّع الصوت تلقائيًا على $roles متحدث. الاختيار مبني على نبرة الصوت، مش تحديد هوية الشخص."
-                else "Automatically cast $roles speakers by vocal sound, not personal identity.",
+            Text(if (ar) "اتوزّعت أصوات جاهزة على $roles مجموعة كلام، من غير تحديد هوية الأشخاص."
+                else "Assigned stock voices to $roles speech groups, without identifying anyone.",
                 style = MaterialTheme.typography.bodySmall, color = V2.Mint)
             if (direction.uncertainCount > 0) Text(if (ar) "${direction.uncertainCount} سطر تحديد متحدثه مش واضح. تقدر تراجعه."
                 else "${direction.uncertainCount} cues have uncertain speaker assignments. You can review them.",
+                style = MaterialTheme.typography.bodySmall, color = V2.Gold)
+            val unlinked = direction.cast.count { it.unlinked }
+            if (unlinked > 0) Text(if (ar) "$unlinked مجموعة ما قدرناش نربطها بالأجزاء اللي قبلها. لو نفس الشخص ظهر تاني تقدر تدمج مجموعته من توزيع الأصوات."
+                else "$unlinked groups couldn't be linked to earlier parts. If someone returns, you can merge their groups in voice review.",
                 style = MaterialTheme.typography.bodySmall, color = V2.Gold)
             OutlinedButton(onClick = { review = true }, enabled = enabled,
                 modifier = Modifier.fillMaxWidth().testTag("dubbing.gemini.review")) {
@@ -109,14 +116,15 @@ private fun GeminiToggle(id: String, title: String, checked: Boolean, enabled: B
 
 internal fun GeminiStage.label(ar: Boolean) = when (step) {
     GeminiStep.EXTRACT_AUDIO -> if (ar) "بنجهّز الصوت الأصلي على الجهاز…" else "Preparing original audio on your device…"
-    GeminiStep.ASSIGN_SPEAKERS -> if (ar) "Gemini بيفرّق بين المتحدثين…" else "Gemini is identifying speaker turns…"
-    GeminiStep.DIRECT_SCENES -> if (ar) "تحليل النبرة وردود الفعل: $scene / $total" else "Analyzing tone and reactions: $scene / $total"
+    GeminiStep.ASSIGN_SPEAKERS -> if (ar) "تمييز المتحدثين · جزء $part من $total" else "Identifying speakers · part $part of $total"
+    GeminiStep.DIRECT_SCENES -> if (ar) "تحليل النبرة وردود الفعل · مشهد $part من $total" else "Analyzing delivery · scene $part of $total"
 }
 
 private sealed interface GeminiEdit {
     data object Cast : GeminiEdit
     data object Lines : GeminiEdit
     data class Voice(val speaker: Int) : GeminiEdit
+    data class Merge(val speaker: Int) : GeminiEdit
     data class Line(val cue: Int) : GeminiEdit
 }
 
@@ -132,16 +140,23 @@ private fun GeminiCastDialog(ar: Boolean, plan: DubPlan, direction: GeminiDirect
                              onDismiss: () -> Unit) {
     var edit by remember { mutableStateOf<GeminiEdit>(GeminiEdit.Cast) }
     val page = edit
+    val examples = remember(plan, direction.matches) {
+        buildMap {
+            for (line in plan.lines) putIfAbsent(direction.matches.getValue(line.number).speaker, line.text)
+        }
+    }
     fun back() { when (page) {
         GeminiEdit.Cast -> onDismiss()
         GeminiEdit.Lines, is GeminiEdit.Voice -> edit = GeminiEdit.Cast
         is GeminiEdit.Line -> edit = GeminiEdit.Lines
+        is GeminiEdit.Merge -> edit = GeminiEdit.Voice(page.speaker)
     } }
     val title = when (page) {
         GeminiEdit.Cast -> if (ar) "توزيع الأصوات" else "Voice cast"
         GeminiEdit.Lines -> if (ar) "المتحدث لكل سطر" else "Speaker for each cue"
         is GeminiEdit.Voice -> speakerLabel(page.speaker, ar)
         is GeminiEdit.Line -> if (ar) "متحدث السطر ${page.cue}" else "Speaker for cue ${page.cue}"
+        is GeminiEdit.Merge -> if (ar) "ادمج المتحدث ${page.speaker} مع…" else "Merge speaker ${page.speaker} into…"
     }
     AlertDialog(onDismissRequest = ::back, title = { Text(title) }, confirmButton = {
         TextButton(onClick = ::back) { Text(if (ar) "رجوع" else "Back") }
@@ -150,17 +165,18 @@ private fun GeminiCastDialog(ar: Boolean, plan: DubPlan, direction: GeminiDirect
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 310.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 when (page) {
                     GeminiEdit.Cast -> {
+                        item { TextButton(onClick = { edit = GeminiEdit.Lines }, modifier = Modifier.testTag("dubbing.gemini.lines")) {
+                            Text(if (ar) "صحّح متحدث في سطر" else "Correct a cue's speaker")
+                        } }
                         items(direction.cast, key = { it.id }) { character ->
                             val choice = if (character.overridden) (if (ar) "اختيار يدوي" else "Manual choice")
                             else registerLabel(character.register, ar)
-                            ReviewRow("cast.${character.id}", speakerLabel(character.id, ar),
+                            val link = if (character.unlinked) (if (ar) " · ربط غير مؤكد" else " · link unconfirmed") else ""
+                            ReviewRow("cast.${character.id}", speakerLabel(character.id, ar) + link,
                                 "\u2066${character.preset.name}\u2069 · $choice") {
                                 edit = GeminiEdit.Voice(character.id)
                             }
                         }
-                        item { TextButton(onClick = { edit = GeminiEdit.Lines }, modifier = Modifier.testTag("dubbing.gemini.lines")) {
-                            Text(if (ar) "صحّح متحدث في سطر" else "Correct a cue's speaker")
-                        } }
                     }
                     GeminiEdit.Lines -> items(plan.lines.sortedByDescending { direction.matches[it.number]?.uncertain == true }, key = { it.number }) { line ->
                         val match = direction.matches.getValue(line.number)
@@ -171,11 +187,21 @@ private fun GeminiCastDialog(ar: Boolean, plan: DubPlan, direction: GeminiDirect
                     }
                     is GeminiEdit.Voice -> {
                         val character = direction.cast.first { it.id == page.speaker }
+                        if (direction.cast.size > 1) item {
+                            ReviewRow("merge", if (ar) "نفس متحدث تاني؟ ادمج المجموعتين" else "Same person as another group? Merge",
+                                examples[page.speaker].orEmpty()) { edit = GeminiEdit.Merge(page.speaker) }
+                        }
                         val ordered = geminiPresets.sortedWith(compareBy({ it != character.preset }, { it.register != character.register }))
                         items(ordered, key = { it.name }) { preset ->
                             ReviewRow("voice.${preset.name}", preset.name, registerLabel(preset.register, ar)) {
                                 onChange(direction.withVoice(page.speaker, preset)); edit = GeminiEdit.Cast
                             }
+                        }
+                    }
+                    is GeminiEdit.Merge -> items(direction.cast.filter { it.id != page.speaker }, key = { it.id }) { character ->
+                        ReviewRow("merge.${character.id}", "${speakerLabel(character.id, ar)} · ${character.preset.name}",
+                            examples[character.id].orEmpty()) {
+                            onChange(direction.mergeSpeaker(page.speaker, character.id)); edit = GeminiEdit.Cast
                         }
                     }
                     is GeminiEdit.Line -> items(direction.cast, key = { it.id }) { character ->

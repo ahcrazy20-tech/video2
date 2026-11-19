@@ -203,9 +203,11 @@ internal fun DubbingPanel(
         geminiStage?.let {
             Text(it.label(ar), style = MaterialTheme.typography.bodySmall, color = V2.TextDim,
                 modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }.testTag("dubbing.gemini.stage"))
+            if (it.total > 0) LinearProgressIndicator(progress = { (it.part - 1).coerceAtLeast(0).toFloat() / it.total },
+                modifier = Modifier.fillMaxWidth()) else LinearProgressIndicator(Modifier.fillMaxWidth())
         }
         state.progress?.let { p ->
-            if (geminiStage != null) LinearProgressIndicator(Modifier.fillMaxWidth()) else {
+            if (geminiStage == null) {
                 LinearProgressIndicator(progress = { p.done.toFloat() / p.total.coerceAtLeast(1) }, modifier = Modifier.fillMaxWidth())
                 Text(if (ar) "جارٍ التوليد: ${p.done} / ${p.total}" else "Generating: ${p.done} / ${p.total}", style = MaterialTheme.typography.bodySmall)
             }

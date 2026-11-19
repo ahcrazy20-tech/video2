@@ -117,7 +117,7 @@ class DubbingLayoutTest {
 
     @Test fun geminiIsOptInAndPreviewAndSaveRequireSeparateAudioAndTextConsent() {
         val configured = mutableStateOf(false)
-        val source = DubSource(planDub(listOf(SubCue(1, 1.0, 2.0, "إزيّك؟"))), "ar", true, File("sample.srt"), 0, 0)
+        val source = DubSource(planDub(listOf(SubCue(1, 385.0, 386.0, "إزيّك؟")), 720.0), "ar", true, File("sample.srt"), 0, 0)
         val previews = mutableListOf<GeminiOptions>()
         val saves = mutableListOf<GeminiOptions>()
         compose.setContent { Video2Theme(rtl = true) {

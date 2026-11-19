@@ -5,16 +5,17 @@ import com.ahcrazy.video2.core.dubbing.DubFailure
 import com.ahcrazy.video2.core.dubbing.DubIssue
 import com.ahcrazy.video2.core.dubbing.DubLine
 import com.ahcrazy.video2.core.dubbing.DubPlan
-import com.ahcrazy.video2.core.dubbing.GEMINI_MAX_SECONDS
+import com.ahcrazy.video2.core.dubbing.MAX_DUB_SECONDS
 import com.ahcrazy.video2.core.dubbing.GeminiDirection
 import com.ahcrazy.video2.core.dubbing.GeminiOptions
 import com.ahcrazy.video2.core.dubbing.GeminiPerformance
 import com.ahcrazy.video2.core.dubbing.GeminiRegister
+import com.ahcrazy.video2.core.dubbing.GeminiSpeakerTracker
 import com.ahcrazy.video2.core.dubbing.GeminiTake
 import com.ahcrazy.video2.core.dubbing.SpeechPcmHint
-import com.ahcrazy.video2.core.dubbing.attributeGeminiLines
 import com.ahcrazy.video2.core.dubbing.directGeminiCast
 import com.ahcrazy.video2.core.dubbing.geminiScenes
+import com.ahcrazy.video2.core.dubbing.geminiSpeakerParts
 import com.ahcrazy.video2.core.dubbing.readSpeechWav
 import com.ahcrazy.video2.core.dubbing.take
 import com.ahcrazy.video2.core.dubbing.validateGeminiPlan
@@ -33,9 +34,29 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 internal suspend fun loadGeminiDubConfig(settings: AppSettings): GeminiDubConfig = withContext(Dispatchers.IO) {
-    try { GeminiDubConfig.from(settings.getKey("gemini")) ?: throw DubFailure(DubIssue.GEMINI_SETUP) }
+    val key = try { settings.getKey("gemini") }
     catch (e: CancellationException) { throw e }
-    catch (_: Exception) { throw DubFailure(DubIssue.GEMINI_SETUP) }
+    catch (_: Exception) { throw DubFailure(DubIssue.GEMINI_KEY_STORAGE) }
+        ?: throw DubFailure(DubIssue.GEMINI_SETUP)
+    GeminiDubConfig.from(key) ?: throw DubFailure(DubIssue.GEMINI_KEY_FORMAT)
+}
+
+/** Separate, opt-in capability test. Never accepts text from a video, SRT, or draft. */
+internal suspend fun testGeminiSpeech(cacheDir: File, api: GeminiDubApi) = withContext(Dispatchers.IO) {
+    val wav = api.synthesize(GeminiTake("Kore", "أهلًا، ده اختبار صوت من كادر.", "", "ar-EG"))
+    val ctx = currentCoroutineContext()
+    ctx.ensureActive()
+    val sample = File.createTempFile("kadr-voice-test-", ".wav", cacheDir)
+    try {
+        sample.writeBytes(wav)
+        validateGeminiSpeech(sample, null, ctx::ensureActive)
+    } finally { sample.delete() }
+}
+
+private fun validateGeminiSpeech(file: File, line: Int?, check: () -> Unit) {
+    val pcm = try { readSpeechWav(file, SpeechPcmHint.GEMINI_PCM16, check) }
+    catch (e: DubFailure) { throw DubFailure(e.issue, line) }
+    if (pcm.samples.all { it == 0.toShort() }) throw DubFailure(DubIssue.SYNTHESIS, line)
 }
 
 internal class GeminiDubMedia private constructor(val file: File, private val size: Long, private val modified: Long) {
@@ -55,7 +76,7 @@ internal class GeminiDubMedia private constructor(val file: File, private val si
 }
 
 internal enum class GeminiStep { EXTRACT_AUDIO, ASSIGN_SPEAKERS, DIRECT_SCENES }
-internal data class GeminiStage(val step: GeminiStep, val scene: Int = 0, val total: Int = 0)
+internal data class GeminiStage(val step: GeminiStep, val part: Int = 0, val total: Int = 0)
 
 /** In-memory, sheet-scoped audio memo. Same take for preview and export; no extra upload to play it again. */
 private class GeminiTakeCache {
@@ -100,9 +121,7 @@ internal class GeminiDubSession private constructor(private val source: DubSourc
         ctx.ensureActive()
         output.writeBytes(wav)
         if (old == null) {
-            val pcm = try { readSpeechWav(output, SpeechPcmHint.GEMINI_PCM16, ctx::ensureActive) }
-            catch (e: DubFailure) { throw DubFailure(e.issue, line.number) }
-            if (pcm.samples.all { it == 0.toShort() }) throw DubFailure(DubIssue.SYNTHESIS, line.number)
+            validateGeminiSpeech(output, line.number, ctx::ensureActive)
             cache.put(take, wav)
         }
         return SpeechPcmHint.GEMINI_PCM16
@@ -119,16 +138,20 @@ internal suspend fun analyzeGeminiDub(cacheDir: File, source: DubSource, media: 
         val pcm = File.createTempFile("kadr-gemini-", ".pcm", cacheDir)
         try {
             stage(GeminiStage(GeminiStep.EXTRACT_AUDIO))
-            try { decodeLocalPcmBounded(media.file, pcm, GEMINI_MAX_SECONDS, ctx::ensureActive) }
+            try { decodeLocalPcmBounded(media.file, pcm, MAX_DUB_SECONDS, ctx::ensureActive) }
             catch (e: CancellationException) { throw e }
             catch (e: OfflineFailure) { throw DubFailure(when (e.issue) {
-                OfflineIssue.TOO_LONG -> DubIssue.GEMINI_SIZE
+                OfflineIssue.TOO_LONG -> DubIssue.TOO_LARGE
                 OfflineIssue.STORAGE -> DubIssue.DISK
                 else -> DubIssue.GEMINI_AUDIO
             }) }
             catch (_: Exception) { throw DubFailure(DubIssue.GEMINI_AUDIO) }
-            media.check()
-            GeminiDubSession(source, media, directGeminiAudio(pcm, source.plan, api, stage)).also { it.checkSource(source) }
+            GeminiDubSession(source, media, directGeminiAudio(pcm, source.plan, api) { part ->
+                ctx.ensureActive()
+                if (!source.stillExists()) throw DubFailure(DubIssue.SOURCE_CHANGED)
+                media.check()
+                stage(part)
+            }).also { it.checkSource(source) }
         } finally { pcm.delete() }
     }
 
@@ -136,19 +159,31 @@ internal suspend fun directGeminiAudio(pcm: File, plan: DubPlan, api: GeminiDubA
                                       stage: suspend (GeminiStage) -> Unit): GeminiDirection {
     val bytes = pcm.length()
     if (bytes < 2 || bytes % 2 != 0L) throw DubFailure(DubIssue.GEMINI_AUDIO)
-    if (bytes > GEMINI_MAX_SECONDS * SAMPLE_RATE * 2L) throw DubFailure(DubIssue.GEMINI_SIZE)
+    if (bytes > MAX_DUB_SECONDS * SAMPLE_RATE * 2L) throw DubFailure(DubIssue.TOO_LARGE)
+    val ctx = currentCoroutineContext()
     val frames = bytes / 2
-    val audio = GeminiAudioSlice(pcm, 0, frames)
-    stage(GeminiStage(GeminiStep.ASSIGN_SPEAKERS))
-    val attribution = attributeGeminiLines(plan, api.speakers(audio))
-    val scenes = geminiScenes(plan, audio.durationFrames)
+    val audioEnd = frames * DUB_SAMPLE_RATE / SAMPLE_RATE
+    fun slice(start: Long, end: Long): GeminiAudioSlice = GeminiAudioSlice(pcm,
+        start * SAMPLE_RATE / DUB_SAMPLE_RATE, ((end * SAMPLE_RATE + DUB_SAMPLE_RATE - 1) / DUB_SAMPLE_RATE).coerceAtMost(frames))
+
+    val tracker = GeminiSpeakerTracker()
+    val parts = geminiSpeakerParts(plan, audioEnd)
+    parts.forEachIndexed { i, part ->
+        ctx.ensureActive()
+        stage(GeminiStage(GeminiStep.ASSIGN_SPEAKERS, i + 1, parts.size))
+        val audio = slice(part.start, part.end)
+        // Timestamp offsets start at the first sample actually sent (after sample-rate rounding).
+        tracker.add(part.copy(start = audio.startFrame, end = audio.endFrame), api.speakers(audio), ctx::ensureActive)
+    }
+    val attribution = tracker.finish(plan)
+    val scenes = geminiScenes(plan, audioEnd)
     val votes = mutableMapOf<Int, MutableList<GeminiRegister>>()
     val cues = mutableMapOf<Int, GeminiPerformance>()
     scenes.forEachIndexed { i, scene ->
+        ctx.ensureActive()
         stage(GeminiStage(GeminiStep.DIRECT_SCENES, i + 1, scenes.size))
-        val from = scene.start * SAMPLE_RATE / DUB_SAMPLE_RATE
-        val to = ((scene.end * SAMPLE_RATE + DUB_SAMPLE_RATE - 1) / DUB_SAMPLE_RATE).coerceAtMost(frames)
-        val notes = api.notes(GeminiAudioSlice(pcm, from, to), scene, attribution)
+        val audio = slice(scene.start, scene.end)
+        val notes = api.notes(audio, scene.copy(start = audio.startFrame), attribution)
         notes.voices.forEach { (speaker, voice) -> votes.getOrPut(speaker) { mutableListOf() }.add(voice) }
         cues.putAll(notes.cues)
     }

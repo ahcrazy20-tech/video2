@@ -6,15 +6,18 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import com.ahcrazy.video2.ui.settings.ApiKeysEntry
 import com.ahcrazy.video2.ui.settings.ApiKeysScreen
+import com.ahcrazy.video2.ui.settings.GeminiKeyChecks
 import com.ahcrazy.video2.ui.theme.Video2Theme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -59,4 +62,25 @@ class ApiKeysLayoutTest {
         compose.onNodeWithTag("settings.apiKeys.open").assertIsDisplayed()
         compose.onNodeWithTag("settings.apiKeys.input").assertDoesNotExist()
     }
+
+    @Test fun savedGeminiKeyIsNotTestedUntilRequestedAndSpeechNeedsConfirmation() {
+        var keyChecks = 0
+        var speechChecks = 0
+        compose.setContent { Video2Theme(rtl = true) {
+            ApiKeysScreen(ar = true, { it == "gemini" }, { _, _ -> }, {}, initialProvider = "gemini",
+                geminiChecks = GeminiKeyChecks(models = { keyChecks++; emptyList() }, speech = { speechChecks++ })) {}
+        } }
+        fun node(tag: String) = compose.onNodeWithTag("settings.apiKeys.$tag")
+        fun tap(tag: String) = node(tag).performScrollTo().assertIsDisplayed().performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("settings.apiKeys.testGemini").fetchSemanticsNodes().isNotEmpty() }
+        compose.runOnIdle { assertEquals(0, keyChecks); assertEquals(0, speechChecks) }
+        tap("testGemini")
+        node("testResult").assertTextContains("المفتاح صالح", substring = true)
+        tap("testGeminiSpeech")
+        compose.runOnIdle { assertEquals(1, keyChecks); assertEquals(0, speechChecks) }
+        compose.onNodeWithText("اختبر الصوت").assertIsDisplayed().performClick()
+        node("testResult").assertTextContains("اختبار الصوت نجح", substring = true)
+        compose.runOnIdle { assertEquals(1, keyChecks); assertEquals(1, speechChecks) }
+    }
+
 }

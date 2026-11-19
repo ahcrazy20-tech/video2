@@ -135,6 +135,10 @@ internal fun fitSpeech(pcm: SpeechPcm, frames: Int, line: Int, check: () -> Unit
 
 internal data class DubRenderReport(val fittedInGap: Int, val skipped: List<Int>)
 
+internal fun checkDubSpace(directory: File, plan: DubPlan) {
+    if (directory.usableSpace < plan.frames * 2 + 16L * 1024 * 1024) throw DubFailure(DubIssue.DISK)
+}
+
 /** Render at exact starts. Borrow only unused gap, and allow a missing cue only if the caller explicitly agrees. */
 internal suspend fun renderDub(plan: DubPlan, output: File, scratch: File,
                                synthesize: suspend (DubLine, File) -> SpeechPcmHint,
@@ -146,7 +150,7 @@ internal suspend fun renderDub(plan: DubPlan, output: File, scratch: File,
     val skipped = mutableListOf<Int>()
     var fittedInGap = 0
     try {
-        if (output.parentFile?.usableSpace?.let { it < plan.frames * 2 + 16L * 1024 * 1024 } == true) throw DubFailure(DubIssue.DISK)
+        checkDubSpace(output.absoluteFile.parentFile ?: throw DubFailure(DubIssue.DISK), plan)
         RandomAccessFile(output, "rw").use { sink ->
             val timeline = TimedDubWav(sink, plan.frames, check)
             var reservedEnd = 0L

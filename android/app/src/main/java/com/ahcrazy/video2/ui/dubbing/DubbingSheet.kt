@@ -37,9 +37,7 @@ import com.ahcrazy.video2.core.dubbing.DubIssue
 import com.ahcrazy.video2.core.dubbing.DubProvider
 import com.ahcrazy.video2.core.dubbing.DubVoice
 import com.ahcrazy.video2.core.dubbing.DubVoices
-import com.ahcrazy.video2.core.dubbing.GEMINI_MAX_CUES
-import com.ahcrazy.video2.core.dubbing.GEMINI_MAX_SECONDS
-import com.ahcrazy.video2.core.dubbing.GEMINI_MAX_SPEAKERS
+import com.ahcrazy.video2.core.dubbing.MAX_DUB_SECONDS
 import com.ahcrazy.video2.core.dubbing.GeminiOptions
 import com.ahcrazy.video2.core.model.SavedVideo
 import com.ahcrazy.video2.data.dubbing.AndroidDubEngine
@@ -52,6 +50,7 @@ import com.ahcrazy.video2.data.dubbing.GeminiDubSession
 import com.ahcrazy.video2.data.dubbing.GeminiStage
 import com.ahcrazy.video2.data.dubbing.analyzeGeminiDub
 import com.ahcrazy.video2.data.dubbing.auditionDub
+import com.ahcrazy.video2.data.dubbing.checkDubSpace
 import com.ahcrazy.video2.data.dubbing.loadAzureDubConfig
 import com.ahcrazy.video2.data.dubbing.loadDubSource
 import com.ahcrazy.video2.data.dubbing.loadGeminiDubConfig
@@ -74,7 +73,8 @@ private data class TightCueChoice(val line: Int, val answer: CompletableDeferred
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> Unit, onDismiss: () -> Unit) {
+internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> Unit,
+                          onOpenGeminiSettings: () -> Unit, onDismiss: () -> Unit) {
     val activity = LocalContext.current as ComponentActivity
     val ctx = activity.applicationContext
     val app = activity.app()
@@ -87,6 +87,7 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> 
     var catalog by remember { mutableStateOf<DubVoices?>(null) }
     var azureConfigured by remember { mutableStateOf(false) }
     var geminiConfigured by remember { mutableStateOf(false) }
+    var geminiKeyError by remember { mutableStateOf<String?>(null) }
     var geminiMedia by remember { mutableStateOf<GeminiDubMedia?>(null) }
     var geminiInputError by remember { mutableStateOf<String?>(null) }
     var geminiSession by remember { mutableStateOf<GeminiDubSession?>(null) }
@@ -115,7 +116,7 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> 
             val subs = async { dubResult { loadDubSource(current ?: throw DubFailure(DubIssue.SOURCE_CHANGED)) } }
             val engine = async { dubResult { AndroidDubEngine.use(ctx) { it.catalog() } } }
             val azure = async { dubResult { loadAzureDubConfig(app.settings) }.isSuccess }
-            val gemini = async { dubResult { loadGeminiDubConfig(app.settings) }.isSuccess }
+            val gemini = async { dubResult { loadGeminiDubConfig(app.settings) } }
             val subtitles = subs.await()
             val captions = subtitles.getOrNull()
             val media = if (current == null || captions == null) null else dubResult {
@@ -126,7 +127,9 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> 
             source = captions
             catalog = voices.getOrNull()
             azureConfigured = azure.await()
-            geminiConfigured = gemini.await()
+            val credential = gemini.await()
+            geminiConfigured = credential.isSuccess
+            geminiKeyError = credential.exceptionOrNull()?.dubMessage(ar)
             geminiMedia = media?.getOrNull()
             geminiInputError = media?.exceptionOrNull()?.dubMessage(ar)
             sourceError = subtitles.exceptionOrNull()?.dubMessage(ar)
@@ -209,6 +212,8 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> 
         renderJob = scope.launch {
             try {
                 pending?.join()
+                // Fail before spending analysis quota if the complete output would not fit.
+                withContext(Dispatchers.IO) { checkDubSpace(library.dubsDir, captions.plan) }
                 var skipRemaining = false
                 val report = saveDub(ctx, library, snapshot, captions, pick(captions), onUnfittable = { line ->
                     withContext(Dispatchers.Main.immediate) {
@@ -235,7 +240,7 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> 
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         DubbingPanel(video.title, ar, DubbingPanelState(source, catalog, loading, listOfNotNull(sourceError),
             preview, progress, notice, azureConfigured, androidError,
-            GeminiPanelState(geminiConfigured, geminiInputError, geminiSession?.direction, geminiStage)),
+            GeminiPanelState(geminiConfigured, geminiInputError, geminiSession?.direction, geminiStage, geminiKeyError)),
             onPreview = { voice ->
                 val engine = catalog?.preferredEngine
                 startPreview { selection(voice, engine) }
@@ -249,7 +254,7 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> 
             onChoiceChanged = { previewJob?.cancel(); notice = null },
             onRefresh = ::reload,
             onSettings = { openSettings(false) }, onInstall = { openSettings(true) },
-            onAzureSettings = onOpenSettings, onGeminiSettings = onOpenSettings,
+            onAzureSettings = onOpenSettings, onGeminiSettings = onOpenGeminiSettings,
             onGeminiPreview = { options -> startPreview { geminiSelection(it, options) } },
             onGeminiSave = { options -> startSave(gemini = true) { geminiSelection(it, options) } },
             onGeminiDirection = { direction -> geminiSession = geminiSession?.withDirection(direction); notice = null })
@@ -296,12 +301,13 @@ private suspend fun <T> dubResult(action: suspend () -> T): Result<T> = try { Re
 catch (e: CancellationException) { throw e }
 catch (e: Exception) { Result.failure(e) }
 
-private fun Throwable.dubMessage(ar: Boolean): String {
+internal fun Throwable.dubMessage(ar: Boolean): String {
     val failure = this as? DubFailure
     val text = when (failure?.issue) {
         DubIssue.NO_SUBTITLES -> if (ar) "الفيديو محتاج ترجمة محفوظة أو نص أصلي محفوظ (SRT) الأول." else "This video needs a saved subtitle file (SRT) first."
         DubIssue.TIMING -> if (ar) "فيه توقيت غير صالح في ملف الـSRT." else "The subtitle file has an invalid timestamp."
-        DubIssue.TOO_LARGE -> if (ar) "المدة أو ملف الـSRT أكبر من الحد المدعوم للدبلجة." else "The duration or subtitle file exceeds the dubbing limit."
+        DubIssue.TOO_LARGE -> if (ar) "الملف أكبر من حدود الدبلجة على الجهاز: ${MAX_DUB_SECONDS / 3600} ساعة، و25 ألف سطر، و8 ميجابايت للـSRT."
+            else "This file exceeds an on-device dubbing limit: ${MAX_DUB_SECONDS / 3600} hours, 25,000 cues or an 8 MiB SRT."
         DubIssue.NO_ENGINE -> if (ar) "محرّك النطق ما اشتغلش. راجع إعدادات النطق وحدّث القائمة." else "The speech engine didn't initialize. Check speech settings and refresh."
         DubIssue.VOICE_CHANGED -> if (ar) "الصوت المختار بقى مش متاح. حدّث القائمة وجرّب المعاينة تاني." else "The selected voice is no longer available. Refresh the list and preview again."
         DubIssue.NEEDS_DOWNLOAD -> if (ar) "نزّل بيانات الصوت من إعدادات النطق وارجع حدّث القائمة." else "Download the voice data in speech settings, then refresh."
@@ -317,20 +323,29 @@ private fun Throwable.dubMessage(ar: Boolean): String {
         DubIssue.AZURE_SERVICE -> if (ar) "Azure ما قدرش يولّد الصوت. راجع المنطقة أو جرّب صوت تاني بعد شوية." else "Azure couldn't synthesize this voice. Check the region or try again with a different voice."
         DubIssue.AZURE_NETWORK -> if (ar) "ما قدرناش نتصل بـ Azure. راجع النت وجرّب المعاينة تاني." else "Couldn't connect to Azure. Check your internet connection and preview again."
         DubIssue.GEMINI_SETUP -> if (ar) "أضف مفتاح Gemini من Google AI Studio في الإعدادات ← مفاتيح الـAPI." else "Add a Google AI Studio key under Settings → API keys → Gemini."
+        DubIssue.GEMINI_KEY_FORMAT -> if (ar) "المحفوظ مش باين إنه مفتاح كامل. انسخ المفتاح نفسه من AI Studio، مش الرابط أو الجزء المخفي."
+            else "The saved value isn't in a usable format. Copy the full API key from AI Studio, not a link or masked preview."
+        DubIssue.GEMINI_KEY_STORAGE -> if (ar) "ما قدرناش نقرأ المفتاح من التخزين المشفّر. راجع مفاتيح الـAPI."
+            else "Couldn't read the key from encrypted storage. Check API keys in Settings."
+        DubIssue.GEMINI_KEY_REJECTED -> if (ar) "Google رفضت المفتاح: غير صالح أو انتهت صلاحيته. انسخ المفتاح الكامل من AI Studio."
+            else "Google rejected the API key as invalid or expired. Copy the full key from AI Studio."
         DubIssue.GEMINI_CONSENT -> if (ar) "اسمح بإرسال الصوت الأصلي للتحليل والنص للتوليد الأول." else "Allow both original-audio analysis and subtitle-text synthesis first."
         DubIssue.GEMINI_LOCAL -> if (ar) "Gemini محتاج ملف صوت أو فيديو محلي، مش رابط أو قائمة بث. جرّب ملف MP4 محفوظ." else "Gemini needs a local audio or video file, not a stream or playlist. Try a saved MP4."
-        DubIssue.GEMINI_SIZE -> if (ar) "دبلجة Gemini التجريبية تدعم لحد ${GEMINI_MAX_SECONDS / 60} دقايق و$GEMINI_MAX_CUES سطر. جرّب مقطع أقصر أو صوت Android/Azure."
-            else "Experimental Gemini dubbing supports up to ${GEMINI_MAX_SECONDS / 60} minutes and $GEMINI_MAX_CUES cues. Try a shorter clip or Android/Azure."
+        DubIssue.GEMINI_SIZE -> if (ar) "Gemini رفض حجم طلب التحليل، مش مدة الفيديو بالكامل. جرّب صوت Android أو Azure."
+            else "A Gemini analysis request was too large, not the entire video's duration. Try Android or Azure voices."
         DubIssue.GEMINI_AUDIO -> if (ar) "ما قدرناش نقرأ مسار الصوت الأصلي على الجهاز. جرّب ملف MP4 فيه صوت شغّال." else "Couldn't decode the original audio track on-device. Try an MP4 with playable audio."
-        DubIssue.GEMINI_CAST -> if (ar) "Gemini رجّع أكتر من $GEMINI_MAX_SPEAKERS متحدثين. جرّب مشهد أقصر." else "Gemini returned more than $GEMINI_MAX_SPEAKERS speakers. Try a shorter scene."
+        DubIssue.GEMINI_CAST -> if (ar) "Gemini رجّع عدد متحدثين أكبر من اللي يقدر يحلّله في جزء واحد."
+            else "Gemini returned more speaker labels than it supports in a single audio part."
         DubIssue.GEMINI_ANALYSIS -> if (ar) "Gemini ما رجّعش تحليل صالح للمشهد. جرّب حوار أوضح واتأكد إن توقيت الـSRT ماشي مع الصوت."
             else "Gemini didn't return a usable scene analysis. Try clearer dialogue and check that the SRT timing matches the audio."
-        DubIssue.GEMINI_AUTH -> if (ar) "Gemini رفض مفتاح الـAPI أو صلاحيات المشروع. راجع المفتاح وإعدادات مشروعه في Google AI Studio."
-            else "Gemini refused the API key or project access. Check your key and project in Google AI Studio."
-        DubIssue.GEMINI_LIMIT -> if (ar) "وصلت لحد طلبات أو حصة Gemini API. راجع حدود مشروع المفتاح في AI Studio وجرّب بعدين."
-            else "Gemini API hit a rate or quota limit. Check the key's project limits in AI Studio and try again later."
+        DubIssue.GEMINI_AUTH -> if (ar) "مشروع المفتاح مرفوض أو Gemini API مش مسموح له. راجع صلاحيات المشروع في AI Studio."
+            else "The key's project lacks access. Check its Gemini API permissions in AI Studio."
+        DubIssue.GEMINI_PROJECT -> if (ar) "Google طلبت مراجعة إتاحة المشروع أو الفوترة أو الرصيد. كادر مش هيغيّر أي حاجة في حسابك."
+            else "Google reported a project, billing or credit requirement. Kadr won't change your account."
+        DubIssue.GEMINI_LIMIT -> if (ar) "Google أوقفت الطلب بسبب معدل الاستخدام أو الحصة. راجع حدود مشروعك في AI Studio أو اختار صوت Android على الجهاز."
+            else "Google stopped the request because of a rate or quota limit. Check your project limits or choose an offline Android voice."
         DubIssue.GEMINI_MODEL -> if (ar) "موديل الدبلجة مش متاح لمشروع المفتاح. راجع الإتاحة في Google AI Studio." else "A dubbing model is unavailable to this API project. Check availability in Google AI Studio."
-        DubIssue.GEMINI_SERVICE -> if (ar) "Gemini ما قدرش يكمل الطلب. جرّب معاينة مقطع أقصر أو ارجع بعد شوية." else "Gemini couldn't complete the request. Try a shorter clip or try again later."
+        DubIssue.GEMINI_SERVICE -> if (ar) "Gemini ما قدرش يكمل الطلب. جرّب تاني بعد شوية أو اختبر المفتاح في الإعدادات." else "Gemini couldn't complete the request. Try again later or test the key in Settings."
         DubIssue.GEMINI_NETWORK -> if (ar) "الاتصال بـ Gemini اتقطع أو الطلب أخد وقت طويل. راجع النت وجرّب تاني." else "The Gemini connection failed or timed out. Check your internet and try again."
         DubIssue.GEMINI_BLOCKED -> if (ar) "Gemini ما رجّعش نتيجة بسبب فلترة المحتوى. الدبلجة القديمة ما اتغيّرتش." else "Gemini blocked the request. The previous dub hasn't changed."
         null -> if (this is IOException) {

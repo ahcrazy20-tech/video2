@@ -8,6 +8,7 @@ import android.os.CancellationSignal
 import android.os.SystemClock
 import java.io.File
 import java.io.FileInputStream
+import java.io.FilterOutputStream
 import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -40,14 +41,15 @@ internal fun decodeLocalPcmBounded(input: File, output: File, maxSeconds: Int, c
             val durationUs = if (format.containsKey(MediaFormat.KEY_DURATION)) format.getLong(MediaFormat.KEY_DURATION) else 0L
             if (durationUs > maxSeconds * 1_000_000L) throw OfflineFailure(OfflineIssue.TOO_LONG)
             val pcmBytes = durationUs.coerceAtLeast(0L) * SAMPLE_RATE * 2 / 1_000_000L
-            if (output.parentFile!!.usableSpace < pcmBytes + 128 * MIB) throw OfflineFailure(OfflineIssue.STORAGE)
+            val directory = output.absoluteFile.parentFile ?: throw OfflineFailure(OfflineIssue.STORAGE)
+            if (directory.usableSpace < pcmBytes + PCM_DISK_RESERVE) throw OfflineFailure(OfflineIssue.STORAGE)
             extractor.selectTrack(track)
             val codec = MediaCodec.createDecoderByType(mime)
             try {
                 codec.configure(format, null, null, 0)
                 codec.start()
                 output.outputStream().use { stream ->
-                    val sink = TimedPcmSink(stream, maxSeconds * SAMPLE_RATE.toLong(), check)
+                    val sink = TimedPcmSink(storageGuard(stream, directory), maxSeconds * SAMPLE_RATE.toLong(), check)
                     val info = MediaCodec.BufferInfo()
                     var spec: PcmFormat? = null
                     var inputDone = false
@@ -107,6 +109,23 @@ internal fun decodeLocalPcmBounded(input: File, output: File, maxSeconds: Int, c
             } finally { codec.release() }
         }
     } finally { extractor.release() }
+}
+
+private const val PCM_DISK_RESERVE = 128 * MIB
+
+/** Metadata can be missing or underreport duration; never let a long scratch decode fill the device. */
+private fun storageGuard(stream: OutputStream, directory: File): OutputStream = object : FilterOutputStream(stream) {
+    private var remaining = 0L
+    private fun beforeWrite(bytes: Int) {
+        if (bytes > remaining) {
+            val batch = 8 * MIB
+            if (directory.usableSpace < PCM_DISK_RESERVE + maxOf(bytes.toLong(), batch)) throw OfflineFailure(OfflineIssue.STORAGE)
+            remaining = batch
+        }
+        remaining -= bytes
+    }
+    override fun write(b: Int) { beforeWrite(1); out.write(b) }
+    override fun write(b: ByteArray, off: Int, len: Int) { beforeWrite(len); out.write(b, off, len) }
 }
 
 internal data class PcmFormat(val rate: Int, val channels: Int, val encoding: Int) {

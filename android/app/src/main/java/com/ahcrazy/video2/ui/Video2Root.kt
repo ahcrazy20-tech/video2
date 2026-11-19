@@ -99,6 +99,7 @@ fun Video2Root() {
     var translatePreselect by remember { mutableStateOf<SavedVideo?>(null) }
     var reviewJob by remember { mutableStateOf<TranslationJob?>(null) }
     var dubTarget by remember { mutableStateOf<SavedVideo?>(null) }
+    var apiKeyRequest by remember { mutableStateOf<String?>(null) }
     var showConvert by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
@@ -133,7 +134,7 @@ fun Video2Root() {
                         AppTab.DOWNLOADS -> DownloadsScreen(ar, onOpenSource = { job -> browserRecovery = job; tab = AppTab.BROWSER },
                             onOpenLibrary = { tab = AppTab.LIBRARY })
                         AppTab.SETTINGS -> SettingsScreen(ar, onLangChange = { code -> scope.launch { app.settings.setLang(code) } },
-                            onLockNow = { locked = true })
+                            onLockNow = { locked = true }, apiKeyRequest = apiKeyRequest, onApiKeyRequestHandled = { apiKeyRequest = null })
                         AppTab.MAGIC -> MagicSearchScreen(ar, magicSearch, scope,
                             onPlayStream = { u, t -> playingStream = BrowserStream(DetectedMedia(u, t, MediaKind.infer(u, null)), DownloadAuth.default) },
                             onOpenInBrowser = { u -> browserUrl = u; tab = AppTab.BROWSER }, onOpenDownloads = { tab = AppTab.DOWNLOADS })
@@ -141,7 +142,8 @@ fun Video2Root() {
                 }
             }
             if (!locked) dubTarget?.let { v ->
-                DubbingSheet(v, ar, onOpenSettings = { dubTarget = null; selectTab(AppTab.SETTINGS) }) { dubTarget = null }
+                DubbingSheet(v, ar, onOpenSettings = { dubTarget = null; selectTab(AppTab.SETTINGS) },
+                    onOpenGeminiSettings = { dubTarget = null; apiKeyRequest = "gemini"; selectTab(AppTab.SETTINGS) }) { dubTarget = null }
             }
         }
     }
