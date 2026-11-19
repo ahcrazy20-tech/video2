@@ -9,7 +9,7 @@ internal const val MAX_DUB_SECONDS = 12 * 60 * 60
 internal const val MAX_DUB_FRAMES = MAX_DUB_SECONDS * DUB_SAMPLE_RATE.toLong()
 
 internal enum class DubIssue { NO_SUBTITLES, TIMING, TOO_LARGE, NO_ENGINE, VOICE_CHANGED, NEEDS_DOWNLOAD, NEEDS_NETWORK,
-    SYNTHESIS, CUE_TOO_LONG, AUDIO_FORMAT, DISK, SOURCE_CHANGED }
+    SYNTHESIS, CUE_TOO_LONG, AUDIO_FORMAT, DISK, SOURCE_CHANGED, AZURE_SETUP, AZURE_AUTH, AZURE_LIMIT, AZURE_SERVICE, AZURE_NETWORK }
 internal class DubFailure(val issue: DubIssue, val line: Int? = null) : Exception(issue.name)
 
 internal data class DubLine(val number: Int, val start: Long, val end: Long, val text: String) {
@@ -53,8 +53,11 @@ internal fun planDub(cues: List<SubCue>, videoDurationSec: Double? = null): DubP
     return DubPlan(lines, maxOf(lines.maxOf { it.end }, (duration * DUB_SAMPLE_RATE).roundToLong()))
 }
 
+internal enum class DubProvider(val id: String) { ANDROID("android-tts"), AZURE("azure-neural") }
+
 internal data class DubVoice(val id: String, val tag: String, val network: Boolean, val needsDownload: Boolean,
-                            val quality: Int, val latency: Int) {
+                            val quality: Int, val latency: Int, val provider: DubProvider = DubProvider.ANDROID,
+                            val label: String? = null, val labelAr: String? = null) {
     val language: String get() = Locale.forLanguageTag(tag).language
 }
 

@@ -1,7 +1,9 @@
 package com.ahcrazy.video2
 
 import androidx.activity.ComponentActivity
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -10,6 +12,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import com.ahcrazy.video2.core.dubbing.DubVoice
 import com.ahcrazy.video2.core.dubbing.DubVoices
+import com.ahcrazy.video2.core.dubbing.azureDubVoices
 import com.ahcrazy.video2.core.dubbing.planDub
 import com.ahcrazy.video2.core.model.SubCue
 import com.ahcrazy.video2.core.model.SubLang
@@ -67,6 +70,45 @@ class DubbingLayoutTest {
         compose.runOnIdle {
             assertEquals(listOf(sa, eg), heard)
             assertEquals(listOf(eg), saved)
+        }
+    }
+
+    @Test fun azureRequiresSetupAndNewConsentAndKeepsTheAuditionedVoiceForSave() {
+        val configured = mutableStateOf(false)
+        val source = DubSource(planDub(listOf(SubCue(1, 3.0, 5.0, "صباح الخير"))), "ar", true, File("sample.srt"), 0, 0)
+        val played = mutableListOf<DubVoice>()
+        val saved = mutableListOf<DubVoice>()
+        compose.setContent { Video2Theme(rtl = true) {
+            DubbingPanel("عنوان", true, DubbingPanelState(source, null, azureConfigured = configured.value),
+                onPreview = { played += it }, onStopPreview = {}, onSave = { saved += it }, onCancelSave = {},
+                onChoiceChanged = {}, onRefresh = {}, onSettings = {}, onInstall = {})
+        } }
+        fun node(tag: String) = compose.onNodeWithTag("dubbing.$tag")
+        fun tap(tag: String) = node(tag).performScrollTo().assertIsDisplayed().performClick()
+        fun provider(id: String) {
+            tap("provider")
+            node("provider.$id").assertIsDisplayed().performClick()
+        }
+        provider("azure-neural")
+        node("preview").assertIsNotEnabled()
+        node("network").assertIsNotEnabled()
+        compose.runOnIdle { configured.value = true }
+        node("preview").assertIsNotEnabled()
+        node("save").assertIsNotEnabled()
+        tap("voice")
+        node("voice.ar-EG-ShakirNeural").assertIsDisplayed().performClick()
+        tap("network")
+        tap("preview")
+        tap("save")
+        provider("android-tts")
+        provider("azure-neural")
+        node("network").assertIsOff()
+        node("preview").assertIsNotEnabled()
+        node("save").assertIsNotEnabled()
+        compose.runOnIdle {
+            val chosen = azureDubVoices.voices.first { it.id == "ar-EG-ShakirNeural" }
+            assertEquals(listOf(chosen), played)
+            assertEquals(played, saved)
         }
     }
 

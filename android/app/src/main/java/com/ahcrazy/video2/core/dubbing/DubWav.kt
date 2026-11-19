@@ -7,7 +7,7 @@ import java.nio.ByteOrder
 import kotlin.math.roundToInt
 
 internal data class SpeechPcm(val rate: Int, val samples: ShortArray)
-internal enum class SpeechPcmHint { HEADER, FLOAT32 }
+internal enum class SpeechPcmHint { HEADER, FLOAT32, AZURE_PCM16 }
 private const val HEADER = 44L
 private const val CHUNK_FRAMES = 8192
 private const val MAX_SPEECH_BYTES = 32L * 1024 * 1024
@@ -23,7 +23,10 @@ internal fun readSpeechWav(file: File, hint: SpeechPcmHint = SpeechPcmHint.HEADE
     fun invalid(): Nothing = throw DubFailure(DubIssue.AUDIO_FORMAT)
     if (input.length() !in HEADER..(MAX_SPEECH_BYTES + 1024 * 1024)) invalid()
     if (input.tag() != "RIFF") invalid()
-    val end = input.u32() + 8
+    val riffSize = input.u32()
+    // Some services deliver the complete RIFF in a stream with unknown lengths in its header.
+    val streamed = hint == SpeechPcmHint.AZURE_PCM16 && riffSize == 0xffff_ffffL
+    val end = if (streamed) input.length() else riffSize + 8
     if (end !in HEADER..input.length() || input.tag() != "WAVE") invalid()
     var encoding = 0
     var channels = 0
@@ -34,8 +37,9 @@ internal fun readSpeechWav(file: File, hint: SpeechPcmHint = SpeechPcmHint.HEADE
     var dataSize = 0L
     while (input.filePointer + 8 <= end) {
         val tag = input.tag()
-        val size = input.u32()
+        val chunkSize = input.u32()
         val start = input.filePointer
+        val size = if (streamed && tag == "data" && chunkSize == 0xffff_ffffL) end - start else chunkSize
         if (size > end - start) invalid()
         if (tag == "fmt " && size >= 16 && encoding == 0) {
             encoding = input.u16()
@@ -58,6 +62,7 @@ internal fun readSpeechWav(file: File, hint: SpeechPcmHint = SpeechPcmHint.HEADE
         dataSize % block != 0L || dataSize / block > rate * 90L) invalid()
     // Android's file synthesis callback can mark 32-bit floats as integer PCM in the WAV header.
     if (hint == SpeechPcmHint.FLOAT32 && bits != 32) invalid()
+    if (hint == SpeechPcmHint.AZURE_PCM16 && (encoding != 1 || channels != 1 || bits != 16 || rate != DUB_SAMPLE_RATE)) invalid()
     val floating = encoding == 3 || hint == SpeechPcmHint.FLOAT32
     val samples = ShortArray((dataSize / block).toInt())
     val bytes = ByteArray(CHUNK_FRAMES * block)

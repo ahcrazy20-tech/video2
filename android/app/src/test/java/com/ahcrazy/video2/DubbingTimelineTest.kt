@@ -83,6 +83,26 @@ class DubbingTimelineTest {
         assertEquals(9_000, result[50_400].toInt())
     }
 
+    @Test fun naturalPacingUsesFreeSilenceBeforeSpeedingUpAndKeepsTheNextCueStart() = inDirectory { dir ->
+        val plan = planDub(listOf(SubCue(0, 1.0, 1.5, "Voice at its original pace"), SubCue(1, 2.0, 2.2, "Next")), 2.4)
+        val out = File(dir, "natural.wav")
+        val report = runBlocking {
+            renderDub(plan, out, File(dir, "cue.wav"), { line, file ->
+                writePcm16(file, if (line.number == 1) ShortArray(18_000) { 3_000 } else shortArrayOf(9_000))
+                SpeechPcmHint.AZURE_PCM16
+            }, preferNaturalPacing = true)
+        }
+        val samples = readSpeechWav(out).samples
+        assertEquals(1, report.fittedInGap)
+        assertTrue(report.skipped.isEmpty())
+        assertEquals(0, samples[23_999].toInt())
+        assertEquals(3_000, samples[24_000].toInt())
+        assertEquals(3_000, samples[41_999].toInt())
+        assertEquals(0, samples[42_000].toInt())
+        assertEquals(0, samples[47_999].toInt())
+        assertEquals(9_000, samples[48_000].toInt())
+    }
+
     @Test fun choosingToSkipDoesNotReRenderEarlierCuesAndKeepsLaterSpeech() = inDirectory { dir ->
         val cues = (0..32).map { i -> SubCue(i, i * .2, i * .2 + .10, "line ${i + 1}") }
         val plan = planDub(cues, 8.0)

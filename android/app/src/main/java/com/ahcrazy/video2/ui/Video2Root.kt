@@ -17,14 +17,17 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -42,6 +45,7 @@ import com.ahcrazy.video2.core.model.SavedVideo
 import com.ahcrazy.video2.core.model.TranslationJob
 import com.ahcrazy.video2.ui.browser.BrowserScreen
 import com.ahcrazy.video2.ui.browser.BrowserSession
+import com.ahcrazy.video2.ui.browser.BrowserSessionStore
 import com.ahcrazy.video2.ui.browser.BrowserStream
 import com.ahcrazy.video2.ui.downloads.DownloadsScreen
 import com.ahcrazy.video2.ui.library.LibraryScreen
@@ -57,7 +61,9 @@ import com.ahcrazy.video2.ui.translate.ConversionScreen
 import com.ahcrazy.video2.ui.dubbing.DubbingSheet
 import com.ahcrazy.video2.ui.translate.SubtitleReviewScreen
 import com.ahcrazy.video2.ui.translate.TranslateScreen
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun Video2Root() {
@@ -71,9 +77,23 @@ fun Video2Root() {
     var locked by remember { mutableStateOf(app.settings.hasAppPassword()) }
     var playingVideo by remember { mutableStateOf<SavedVideo?>(null) }
     var playingStream by remember { mutableStateOf<BrowserStream?>(null) }
-    val browser = remember { BrowserSession() }
+    val browserStore = remember(app) { BrowserSessionStore(app) }
+    // Own live WebViews above all app tabs. If Android recreates the Activity, restore addresses
+    // before mounting the browser; the new WebView loads the page only when the tab is visible.
+    val browser by produceState<BrowserSession?>(null, browserStore) {
+        val pages = withContext(Dispatchers.IO) { browserStore.load() }
+        value = BrowserSession(pages)
+    }
+    val session = browser
     val magicSearch = remember { MagicSearchState() }
-    DisposableEffect(browser) { onDispose { browser.destroy() } }
+    DisposableEffect(session) { onDispose { session?.destroy() } }
+    LaunchedEffect(session) {
+        if (session != null) snapshotFlow { session.pages() }.collect(browserStore::save)
+    }
+    fun selectTab(next: AppTab) {
+        if (tab == AppTab.BROWSER && next != tab) session?.pages()?.let(browserStore::save)
+        tab = next
+    }
     var browserUrl by remember { mutableStateOf<String?>(null) }
     var browserRecovery by remember { mutableStateOf<DownloadJob?>(null) }
     var translatePreselect by remember { mutableStateOf<SavedVideo?>(null) }
@@ -92,10 +112,15 @@ fun Video2Root() {
                     onBack = { playingVideo = null; playingStream = null })
                 reviewJob != null -> SubtitleReviewScreen(reviewJob!!, ar) { reviewJob = null }
                 showConvert -> ConversionScreen(ar) { showConvert = false }
-                else -> AppTabs(tab, lang, tabState, onSelect = { tab = it }, immersive = tab == AppTab.BROWSER && browser.current.fullscreen != null) { active ->
+                else -> AppTabs(tab, lang, tabState, onSelect = ::selectTab,
+                    immersive = tab == AppTab.BROWSER && session?.current?.fullscreen != null) { active ->
                     when (active) {
-                        AppTab.BROWSER -> BrowserScreen(ar, browser, browserUrl, { browserUrl = null }, onPlayStream = { playingStream = it },
-                            onOpenDownloads = { tab = AppTab.DOWNLOADS }, recoverFrom = browserRecovery, onConsumeRecovery = { browserRecovery = null })
+                        AppTab.BROWSER -> if (session == null) {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Text(if (ar) "بنرجّع صفحة المتصفح…" else "Restoring the browser…", color = V2.TextDim)
+                            }
+                        } else BrowserScreen(ar, session, browserUrl, { browserUrl = null }, onPlayStream = { playingStream = it },
+                            onOpenDownloads = { selectTab(AppTab.DOWNLOADS) }, recoverFrom = browserRecovery, onConsumeRecovery = { browserRecovery = null })
                         AppTab.LIBRARY -> LibraryScreen(ar,
                             onPlay = { playingVideo = it },
                             onTranslate = { translatePreselect = it; tab = AppTab.TRANSLATE },
@@ -115,7 +140,9 @@ fun Video2Root() {
                     }
                 }
             }
-            if (!locked) dubTarget?.let { v -> DubbingSheet(v, ar) { dubTarget = null } }
+            if (!locked) dubTarget?.let { v ->
+                DubbingSheet(v, ar, onAzureSettings = { dubTarget = null; selectTab(AppTab.SETTINGS) }) { dubTarget = null }
+            }
         }
     }
 }

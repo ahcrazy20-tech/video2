@@ -136,6 +136,7 @@ internal data class DubRenderReport(val fittedInGap: Int, val skipped: List<Int>
 /** Render at exact starts. Borrow only unused gap, and allow a missing cue only if the caller explicitly agrees. */
 internal suspend fun renderDub(plan: DubPlan, output: File, scratch: File,
                                synthesize: suspend (DubLine, File) -> SpeechPcmHint,
+                               preferNaturalPacing: Boolean = false,
                                onUnfittable: suspend (Int) -> Boolean = { false },
                                progress: suspend (Int, Int) -> Unit = { _, _ -> }): DubRenderReport {
     val context = currentCoroutineContext()
@@ -158,8 +159,11 @@ internal suspend fun renderDub(plan: DubPlan, output: File, scratch: File,
                 val endWithGap = if (reservedEnd <= line.end) {
                     minOf(next, plan.frames, line.end + MAX_GAP_FRAMES).coerceAtLeast(line.end)
                 } else line.end
-                val fitted = tryFitSpeech(speech, line.frames, check)
-                    ?: if (endWithGap > line.end) tryFitSpeech(speech, (endWithGap - line.start).toInt(), check) else null
+                val gapFrames = (endWithGap - line.start).toInt()
+                // Natural voices can use the same bounded silence first to avoid squeezing their pace.
+                val fitted = if (preferNaturalPacing) tryFitSpeech(speech, gapFrames, check) else
+                    tryFitSpeech(speech, line.frames, check)
+                        ?: if (endWithGap > line.end) tryFitSpeech(speech, gapFrames, check) else null
                 if (fitted == null) {
                     if (!onUnfittable(line.number)) throw DubFailure(DubIssue.CUE_TOO_LONG, line.number)
                     check()
@@ -178,24 +182,43 @@ internal suspend fun renderDub(plan: DubPlan, output: File, scratch: File,
     } finally { scratch.delete() }
 }
 
-private suspend fun renderWithEngine(context: Context, plan: DubPlan, voice: DubVoice, preferredEngine: String?, output: File,
+internal sealed interface DubSelection {
+    val voice: DubVoice
+    class Device(override val voice: DubVoice, val preferredEngine: String?) : DubSelection
+    class Azure(override val voice: DubVoice, val config: AzureDubConfig) : DubSelection
+}
+
+private suspend fun renderWithEngine(context: Context, plan: DubPlan, selection: DubSelection, output: File,
                                      onUnfittable: suspend (Int) -> Boolean = { false },
-                                     progress: suspend (Int, Int) -> Unit = { _, _ -> }) = AndroidDubEngine.use(context) { engine ->
-    engine.select(voice, preferredEngine)
-    val scratch = File.createTempFile("kadr-cue-", ".wav", context.cacheDir)
-    renderDub(plan, output, scratch, engine::synthesize, onUnfittable, progress)
+                                     progress: suspend (Int, Int) -> Unit = { _, _ -> }): DubRenderReport = withContext(Dispatchers.IO) {
+    suspend fun render(synthesize: suspend (DubLine, File) -> SpeechPcmHint): DubRenderReport {
+        val scratch = File.createTempFile("kadr-cue-", ".wav", context.cacheDir)
+        return renderDub(plan, output, scratch, synthesize, preferNaturalPacing = selection is DubSelection.Azure,
+            onUnfittable = onUnfittable, progress = progress)
+    }
+    when (selection) {
+        is DubSelection.Device -> AndroidDubEngine.use(context) { engine ->
+            engine.select(selection.voice, selection.preferredEngine)
+            render(engine::synthesize)
+        }
+        is DubSelection.Azure -> {
+            val engine = AzureDubEngine(selection.config)
+            render { line, scratch -> engine.synthesize(selection.voice, line, scratch) }
+        }
+    }
 }
 
-internal suspend fun auditionDub(context: Context, source: DubSource, voice: DubVoice, preferredEngine: String?, output: File) {
-    renderWithEngine(context, source.plan.preview(), voice, preferredEngine, output)
+internal suspend fun auditionDub(context: Context, source: DubSource, selection: DubSelection, output: File) {
+    if (!withContext(Dispatchers.IO) { source.stillExists() }) throw DubFailure(DubIssue.SOURCE_CHANGED)
+    renderWithEngine(context, source.plan.preview(), selection, output)
 }
 
-internal suspend fun saveDub(context: Context, library: LibraryStore, video: SavedVideo, source: DubSource, voice: DubVoice,
-                             preferredEngine: String?, onUnfittable: suspend (Int) -> Boolean,
-                             progress: suspend (Int, Int) -> Unit): DubRenderReport {
-    val info = DubbedInfo("android-tts", voice.id, voice.tag, System.currentTimeMillis(), source.plan.frames.toDouble() / DUB_SAMPLE_RATE)
+internal suspend fun saveDub(context: Context, library: LibraryStore, video: SavedVideo, source: DubSource, selection: DubSelection,
+                             onUnfittable: suspend (Int) -> Boolean, progress: suspend (Int, Int) -> Unit): DubRenderReport {
+    val voice = selection.voice
+    val info = DubbedInfo(voice.provider.id, voice.id, voice.tag, System.currentTimeMillis(), source.plan.frames.toDouble() / DUB_SAMPLE_RATE)
     return publishDub(library, video, source, info) { staged ->
-        renderWithEngine(context, source.plan, voice, preferredEngine, staged, onUnfittable, progress)
+        renderWithEngine(context, source.plan, selection, staged, onUnfittable, progress)
     }
 }
 

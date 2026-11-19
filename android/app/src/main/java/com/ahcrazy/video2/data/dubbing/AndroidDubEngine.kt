@@ -9,6 +9,7 @@ import android.speech.tts.Voice
 import com.ahcrazy.video2.core.dubbing.DubFailure
 import com.ahcrazy.video2.core.dubbing.DubIssue
 import com.ahcrazy.video2.core.dubbing.DubLine
+import com.ahcrazy.video2.core.dubbing.DubProvider
 import com.ahcrazy.video2.core.dubbing.DubVoice
 import com.ahcrazy.video2.core.dubbing.DubVoices
 import com.ahcrazy.video2.core.dubbing.SpeechPcmHint
@@ -36,7 +37,7 @@ internal class AndroidDubEngine private constructor(private val tts: TextToSpeec
     }
 
     fun select(voice: DubVoice, preferredEngine: String?) {
-        if (tts.defaultEngine != preferredEngine) throw DubFailure(DubIssue.VOICE_CHANGED)
+        if (voice.provider != DubProvider.ANDROID || tts.defaultEngine != preferredEngine) throw DubFailure(DubIssue.VOICE_CHANGED)
         val actual = tts.voices.orEmpty().firstOrNull { it.name == voice.id && it.locale.toLanguageTag() == voice.tag }
             ?: throw DubFailure(DubIssue.VOICE_CHANGED)
         val access = actual.toChoice()

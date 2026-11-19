@@ -12,6 +12,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -43,6 +44,32 @@ class BrowserAdWebViewTest {
             tab.adBlockPaused = false
             tab.mount(box, "", rules, "", BrowserAdMode.STRICT)
             assertTrue(view.webViewClient.shouldOverrideUrlLoading(view, ad))
+        } finally { tab.destroy() }
+    }
+
+    @Test fun downloadNavigationKeepsTheDisplayedDocumentAndItsReferer() {
+        val tab = BrowserTab()
+        val box = FrameLayout(RuntimeEnvironment.getApplication())
+        val rules = BrowserAdRules(emptyList(), emptyList())
+        val page = "https://publisher.example.org/video/7"
+        val file = "https://publisher.example.org/download?id=7"
+        try {
+            tab.open(page)
+            tab.mount(box, "", rules, "", BrowserAdMode.BALANCED)
+            val view = box.getChildAt(0) as WebView
+            val shadow = shadowOf(view)
+            shadow.pushEntryToHistory("https://publisher.example.org/")
+            shadow.pushEntryToHistory(page)
+            view.webViewClient.onPageStarted(view, file, null)
+            shadow.downloadListener.onDownloadStart(file, "fixture-ua", "attachment; filename=example.mp4", "video/mp4", 500)
+            assertEquals(page, tab.url)
+            assertEquals(page, tab.address)
+            assertFalse(tab.loading)
+            assertTrue(tab.canGoBack)
+            assertEquals(file, tab.detected.single().url)
+            assertEquals(page, tab.detected.single().pageUrl)
+            assertEquals(page, tab.detected.single().requestReferer)
+            assertEquals(0, shadow.reloadInvocations)
         } finally { tab.destroy() }
     }
 

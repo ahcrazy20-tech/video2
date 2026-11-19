@@ -34,12 +34,16 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.ahcrazy.video2.app
 import com.ahcrazy.video2.core.dubbing.DubFailure
 import com.ahcrazy.video2.core.dubbing.DubIssue
+import com.ahcrazy.video2.core.dubbing.DubProvider
+import com.ahcrazy.video2.core.dubbing.DubVoice
 import com.ahcrazy.video2.core.dubbing.DubVoices
 import com.ahcrazy.video2.core.model.SavedVideo
 import com.ahcrazy.video2.data.dubbing.AndroidDubEngine
 import com.ahcrazy.video2.data.dubbing.DubRenderReport
+import com.ahcrazy.video2.data.dubbing.DubSelection
 import com.ahcrazy.video2.data.dubbing.DubSource
 import com.ahcrazy.video2.data.dubbing.auditionDub
+import com.ahcrazy.video2.data.dubbing.loadAzureDubConfig
 import com.ahcrazy.video2.data.dubbing.loadDubSource
 import com.ahcrazy.video2.data.dubbing.saveDub
 import com.ahcrazy.video2.ui.theme.V2
@@ -60,17 +64,20 @@ private data class TightCueChoice(val line: Int, val answer: CompletableDeferred
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onDismiss: () -> Unit) {
+internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onAzureSettings: () -> Unit, onDismiss: () -> Unit) {
     val activity = LocalContext.current as ComponentActivity
     val ctx = activity.applicationContext
-    val library = activity.app().library
+    val app = activity.app()
+    val library = app.library
     val scope = rememberCoroutineScope()
     var loadVersion by remember { mutableIntStateOf(0) }
     var loading by remember { mutableStateOf(true) }
     var sourceVideo by remember { mutableStateOf<SavedVideo?>(null) }
     var source by remember { mutableStateOf<DubSource?>(null) }
     var catalog by remember { mutableStateOf<DubVoices?>(null) }
-    var loadErrors by remember { mutableStateOf(emptyList<String>()) }
+    var azureConfigured by remember { mutableStateOf(false) }
+    var sourceError by remember { mutableStateOf<String?>(null) }
+    var androidError by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<DubNotice?>(null) }
     var preview by remember { mutableStateOf(DubPreview.IDLE) }
     var previewJob by remember { mutableStateOf<Job?>(null) }
@@ -87,16 +94,23 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onDismiss: () -> Unit)
     LaunchedEffect(video.id, loadVersion) {
         previewJob?.join()
         val current = library.byId(video.id)
-        val (subtitles, voices) = coroutineScope {
+        val (subtitles, voices, configured) = coroutineScope {
             val subs = async { dubResult { loadDubSource(current ?: throw DubFailure(DubIssue.SOURCE_CHANGED)) } }
             val engine = async { dubResult { AndroidDubEngine.use(ctx) { it.catalog() } } }
-            subs.await() to engine.await()
+            val cloud = async { dubResult { loadAzureDubConfig(app.settings) }.isSuccess }
+            Triple(subs.await(), engine.await(), cloud.await())
         }
         sourceVideo = current
         source = subtitles.getOrNull()
         catalog = voices.getOrNull()
-        loadErrors = listOfNotNull(subtitles.exceptionOrNull()?.dubMessage(ar), voices.exceptionOrNull()?.dubMessage(ar))
+        azureConfigured = configured
+        sourceError = subtitles.exceptionOrNull()?.dubMessage(ar)
+        androidError = voices.exceptionOrNull()?.dubMessage(ar)
         loading = false
+    }
+    suspend fun selection(voice: DubVoice, engine: String?): DubSelection = when (voice.provider) {
+        DubProvider.ANDROID -> DubSelection.Device(voice, engine)
+        DubProvider.AZURE -> DubSelection.Azure(voice, loadAzureDubConfig(app.settings))
     }
     DisposableEffect(activity) {
         val lifecycle = LifecycleEventObserver { _, event ->
@@ -127,7 +141,8 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onDismiss: () -> Unit)
 
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = V2.Card,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        DubbingPanel(video.title, ar, DubbingPanelState(source, catalog, loading, loadErrors, preview, progress, notice),
+        DubbingPanel(video.title, ar, DubbingPanelState(source, catalog, loading, listOfNotNull(sourceError),
+            preview, progress, notice, azureConfigured, androidError),
             onPreview = listen@{ voice ->
                 val sampleSource = source ?: return@listen
                 if (previewJob?.isActive == true || renderJob?.isActive == true) return@listen
@@ -137,7 +152,7 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onDismiss: () -> Unit)
                 previewJob = scope.launch {
                     val sample = File(ctx.cacheDir, "kadr-preview-${UUID.randomUUID()}.wav")
                     try {
-                        auditionDub(ctx, sampleSource, voice, engine, sample)
+                        auditionDub(ctx, sampleSource, selection(voice, engine), sample)
                         preview = DubPreview.PLAYING
                         playPreview(ctx, sample)
                     } catch (e: CancellationException) { throw e }
@@ -159,7 +174,7 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onDismiss: () -> Unit)
                     try {
                         pending?.join()
                         var skipRemaining = false
-                        val report = saveDub(ctx, library, snapshot, captions, voice, engine, onUnfittable = { line ->
+                        val report = saveDub(ctx, library, snapshot, captions, selection(voice, engine), onUnfittable = { line ->
                             withContext(Dispatchers.Main.immediate) {
                                 if (skipRemaining) true else {
                                     val choice = TightCueChoice(line, CompletableDeferred())
@@ -182,7 +197,7 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onDismiss: () -> Unit)
             onCancelSave = { renderJob?.cancel() },
             onChoiceChanged = { previewJob?.cancel(); notice = null },
             onRefresh = ::reload,
-            onSettings = { openSettings(false) }, onInstall = { openSettings(true) })
+            onSettings = { openSettings(false) }, onInstall = { openSettings(true) }, onAzureSettings = onAzureSettings)
         tightCue?.let { choice -> TightCueDialog(ar, choice.line) { choice.answer.complete(it) } }
     }
 }
@@ -241,6 +256,11 @@ private fun Throwable.dubMessage(ar: Boolean): String {
         DubIssue.DISK -> if (ar) "المساحة مش كفاية أو ملف الدبلجة ما اتحفظش." else "Not enough space, or the dub couldn't be saved."
         DubIssue.SOURCE_CHANGED -> if (ar) "الفيديو أو الـSRT اتغيّر. حدّث الشاشة وجرّب تاني." else "The video or subtitle file changed. Refresh and try again."
         DubIssue.SYNTHESIS -> if (ar) "المحرّك ما قدرش يولّد الصوت. جرّب صوت تاني أو حدّث القائمة." else "The engine couldn't synthesize audio. Try another voice or refresh."
+        DubIssue.AZURE_SETUP -> if (ar) "راجع مفتاح Azure Speech ومنطقة المورد في الإعدادات." else "Check the Azure Speech key and resource region in Settings."
+        DubIssue.AZURE_AUTH -> if (ar) "Azure رفض المفتاح. اتأكد إنه مفتاح مورد Speech وإن المنطقة مطابقة." else "Azure refused the key. Check that it belongs to a Speech resource in the selected region."
+        DubIssue.AZURE_LIMIT -> if (ar) "Azure وصل لحد الطلبات أو الحصة. جرّب بعد شوية أو راجع حسابك." else "Azure hit a request limit or quota. Try later or check your account."
+        DubIssue.AZURE_SERVICE -> if (ar) "Azure ما قدرش يولّد الصوت. راجع المنطقة أو جرّب صوت تاني بعد شوية." else "Azure couldn't synthesize this voice. Check the region or try again with a different voice."
+        DubIssue.AZURE_NETWORK -> if (ar) "ما قدرناش نتصل بـ Azure. راجع النت وجرّب المعاينة تاني." else "Couldn't connect to Azure. Check your internet connection and preview again."
         null -> if (this is IOException) {
             if (ar) "حصل خطأ في قراءة أو حفظ الملف. راجع المساحة المتاحة." else "Couldn't read or save a file. Check available storage."
         } else if (ar) "حصل خطأ في الدبلجة. حدّث القائمة وجرّب تاني." else "Dubbing failed. Refresh and try again."

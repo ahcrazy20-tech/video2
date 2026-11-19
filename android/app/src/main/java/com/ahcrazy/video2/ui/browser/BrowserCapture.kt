@@ -47,10 +47,20 @@ import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.UUID
 
-internal class BrowserSession {
-    val tabs = mutableStateListOf(BrowserTab())
-    var currentId by mutableStateOf(tabs.first().id)
+internal class BrowserSession(saved: BrowserPages? = null) {
+    val tabs = mutableStateListOf<BrowserTab>().apply {
+        saved?.tabs?.forEach { page -> add(BrowserTab(page.id, page.url).apply { adBlockPaused = page.shieldPaused }) }
+        if (isEmpty()) add(BrowserTab())
+    }
+    var currentId by mutableStateOf(saved?.selectedId?.takeIf { id -> tabs.any { it.id == id } } ?: tabs.first().id)
     val current: BrowserTab get() = tabs.first { it.id == currentId }
+
+    /** Keep the selected tab even when more tabs are open than the bounded disk snapshot allows. */
+    fun pages(): BrowserPages {
+        val selected = current
+        val keep = tabs.filter { it !== selected }.takeLast(SAVED_BROWSER_TABS - 1).toSet() + selected
+        return BrowserPages(selected.id, tabs.filter { it in keep }.map { BrowserPage(it.id, it.restorablePage, it.adBlockPaused) })
+    }
 
     fun add() { BrowserTab().also { tabs.add(it); currentId = it.id } }
 
@@ -59,7 +69,12 @@ internal class BrowserSession {
         val target = httpMediaUrl(page) ?: return null
         val retained = current.takeIf { httpMediaUrl(it.url) == target } ?: tabs.firstOrNull { httpMediaUrl(it.url) == target }
         if (retained != null) { currentId = retained.id; return retained }
-        return current.takeIf { it.open(target.toString()) }
+        // "Open source" is explicit navigation, but shouldn't sacrifice the user's unrelated page.
+        val destination = current.takeIf { it.url.isBlank() } ?: BrowserTab()
+        if (!destination.open(target.toString())) return null
+        if (destination !in tabs) tabs.add(destination)
+        currentId = destination.id
+        return destination
     }
     fun close(tab: BrowserTab) {
         tabs.remove(tab)
@@ -74,11 +89,13 @@ internal enum class PlaybackHint { PLAYER, IN_PAGE, SEGMENTED }
 internal data class WebFullscreen(val view: View, val callback: WebChromeClient.CustomViewCallback)
 
 /** The WebView and all callbacks belong to this tab, independent of Compose selecting another tab. */
-internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
-    var title by mutableStateOf("تبويب جديد")
-    var url by mutableStateOf("")
+internal class BrowserTab(val id: String = UUID.randomUUID().toString(), restoredPage: String = "") {
+    var title by mutableStateOf(httpMediaUrl(restoredPage)?.host ?: "تبويب جديد")
+    var url by mutableStateOf(restoredPage)
         private set
-    var address by mutableStateOf("")
+    var restorablePage by mutableStateOf(savedBrowserPage(restoredPage))
+        private set
+    var address by mutableStateOf(restoredPage)
     var progress by mutableStateOf(0f)
     var loading by mutableStateOf(false)
     val detected = mutableStateListOf<DetectedMedia>()
@@ -223,6 +240,7 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
         resetCapture()
         url = target
         address = target
+        if (target.isEmpty()) restorablePage = "" else rememberPage(target)
         failure = null
         loading = true
         progress = 0f
@@ -233,7 +251,13 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
         val wasEditing = address != url
         resetCapture()
         url = target
+        rememberPage(target)
         if (!wasEditing) address = target
+    }
+
+    private fun rememberPage(target: String) {
+        // A transient media URL or a login redirect must not replace the last restorable page.
+        savedBrowserPage(target).takeIf(String::isNotEmpty)?.let { restorablePage = it }
     }
 
     /** Attach the retained WebView inside a clipped native container for this viewport only. */
@@ -418,8 +442,18 @@ internal class BrowserTab(val id: String = UUID.randomUUID().toString()) {
             val filename = disposition?.let { android.webkit.URLUtil.guessFileName(target, it, mime) }
             val kind = MediaKind.infer(target, mime).takeIf { it != MediaKind.OTHER } ?: MediaKind.infer(filename.orEmpty(), mime)
             if (kind == MediaKind.OTHER || kind == MediaKind.TS) return@setDownloadListener
+            // An attachment can start a navigation without ever replacing the displayed document.
+            // Keep that document as the page (and referer); do not reload it to recover the URL bar.
+            val visiblePage = view.url
+            val referer = httpMediaUrl(visiblePage)
+            if (visiblePage != null && referer != null && referer != remote && httpMediaUrl(url) == remote) {
+                updateRoute(visiblePage)
+                loading = false
+                failure = null
+                updateHistory(view)
+            }
             if (downloadUserAgents.size < 50) ua.safeHeader(512)?.let { downloadUserAgents[remote] = it }
-            candidate(remote, kind, mime, "webview-download", httpMediaUrl(view.url), ad = rules.isAdSource(remote),
+            candidate(remote, kind, mime, "webview-download", referer, ad = rules.isAdSource(remote),
                 label = filename, size = length.takeIf { it > 0 })
         }
         if (!bridge) main.postDelayed(object : Runnable {
