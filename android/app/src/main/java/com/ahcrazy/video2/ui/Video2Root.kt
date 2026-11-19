@@ -54,7 +54,7 @@ import com.ahcrazy.video2.ui.theme.Video2Theme
 import com.ahcrazy.video2.ui.theme.Video2Appearance
 import com.ahcrazy.video2.ui.theme.galaxyBackground
 import com.ahcrazy.video2.ui.translate.ConversionScreen
-import com.ahcrazy.video2.ui.translate.DubbingSheet
+import com.ahcrazy.video2.ui.dubbing.DubbingSheet
 import com.ahcrazy.video2.ui.translate.SubtitleReviewScreen
 import com.ahcrazy.video2.ui.translate.TranslateScreen
 import kotlinx.coroutines.launch

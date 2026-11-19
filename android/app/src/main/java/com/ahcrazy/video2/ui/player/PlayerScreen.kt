@@ -147,10 +147,11 @@ fun PlayerScreen(
     val subMode = chosenMode?.takeIf { it in captionModes } ?: captionModes.last()
     var subSize by remember(player) { mutableIntStateOf(18) }
     val dubPath = remember(video?.dubbedAudioPath) { video?.dubbedAudioPath?.takeIf { File(it).isFile } }
-    val dub = remember(dubPath) {
+    val dub = remember(player, dubPath) {
         dubPath?.let { path -> ExoPlayer.Builder(ctx).build().apply { setMediaItem(MediaItem.fromUri(Uri.fromFile(File(path)))); prepare() } }
     }
     var dubOn by remember(player, dub) { mutableStateOf(dub != null) }
+    var dubPlayback by remember(dub) { mutableStateOf(dub?.playback()) }
     val canDub = dub != null
 
     DisposableEffect(activity) {
@@ -200,7 +201,30 @@ fun PlayerScreen(
             player.release()
         }
     }
-    DisposableEffect(dub) { onDispose { dub?.release() } }
+    DisposableEffect(player, dub) {
+        val listener = object : Player.Listener {
+            override fun onEvents(p: Player, events: Player.Events) {
+                dubPlayback = p.playback()
+                if (p.playerError != null) dubOn = false
+            }
+        }
+        val syncPosition = object : Player.Listener {
+            override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                if (dubOn && dub?.playerError == null) dub?.seekTo(newPosition.positionMs)
+            }
+        }
+        if (dub != null) {
+            player.addListener(syncPosition)
+            dub.addListener(listener)
+        }
+        onDispose {
+            if (dub != null) {
+                player.removeListener(syncPosition)
+                dub.removeListener(listener)
+                dub.release()
+            }
+        }
+    }
     LaunchedEffect(player, playback.playing, playback.buffering) {
         if (!playback.playing && !playback.buffering) return@LaunchedEffect
         while (true) {
@@ -209,19 +233,26 @@ fun PlayerScreen(
             delay(250)
         }
     }
-    val dubActive = dubOn && dub != null && dub.playerError == null
-    LaunchedEffect(player, dub, dubActive, muted, playback.playing, rate) {
-        player.volume = if (muted || dubActive) 0f else 1f
+    val dubLength = dubPlayback?.duration ?: 0L
+    val dubActive = dubOn && dub != null && dubPlayback?.error == null && (dubLength == 0L || position < dubLength)
+    val audibleDub = dubActive && playback.playing && dubPlayback?.playing == true
+    LaunchedEffect(player, dub, muted, audibleDub) {
+        // If the dubbed file hasn't loaded, failed, or ended before the video, don't leave the original muted.
+        player.volume = if (muted || audibleDub) 0f else 1f
+        dub?.volume = if (muted || !audibleDub) 0f else 1f
+    }
+    LaunchedEffect(player, dub, dubActive, playback.playing, rate) {
         if (dub == null) return@LaunchedEffect
-        dub.volume = if (muted) 0f else 1f
+        if (!dubActive || !playback.playing) { dub.pause(); return@LaunchedEffect }
         dub.setPlaybackSpeed(rate)
-        if (!dubActive) { dub.pause(); return@LaunchedEffect }
         dub.seekTo(player.currentPosition)
-        dub.playWhenReady = playback.playing
-        while (playback.playing) {
+        dub.play()
+        while (true) {
             if (dub.playerError != null) { dubOn = false; break }
-            if (abs(dub.currentPosition - player.currentPosition) > 350) dub.seekTo(player.currentPosition)
-            delay(350)
+            if (dub.playbackState == Player.STATE_READY && abs(dub.currentPosition - player.currentPosition) > 200) {
+                dub.seekTo(player.currentPosition)
+            }
+            delay(250)
         }
     }
     LaunchedEffect(player, deadline) {
@@ -250,7 +281,6 @@ fun PlayerScreen(
         val target = to.coerceIn(0L, playback.duration.takeIf { it > 0 } ?: Long.MAX_VALUE)
         player.seekTo(target)
         position = target
-        if (dubActive) dub?.seekTo(target)
         activityTick++
     }
     fun jump(offset: Long) = seek(player.currentPosition + offset)

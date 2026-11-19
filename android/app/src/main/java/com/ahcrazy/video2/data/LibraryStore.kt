@@ -2,6 +2,7 @@ package com.ahcrazy.video2.data
 
 import android.content.Context
 import android.util.AtomicFile
+import com.ahcrazy.video2.core.model.DubbedInfo
 import com.ahcrazy.video2.core.model.LibraryFolder
 import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.model.SavedVideo
@@ -10,6 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 
 /** JSON-index library store in app-private storage — same idea as iOS LibraryStore. */
 class LibraryStore(ctx: Context) {
@@ -43,7 +45,7 @@ class LibraryStore(ctx: Context) {
     }
 
     // Call only while holding the store lock; publish the new state after the complete index is written.
-    private fun commit(videos: List<SavedVideo>, folders: List<LibraryFolder> = _folders.value) {
+    private fun commit(videos: List<SavedVideo>, folders: List<LibraryFolder> = _folders.value, verifyWrite: Boolean = false) {
         val root = JSONObject()
         root.put("videos", JSONArray().apply { videos.forEach { put(videoToJson(it)) } })
         root.put("folders", JSONArray().apply {
@@ -53,10 +55,15 @@ class LibraryStore(ctx: Context) {
         val out = indexFile.startWrite()
         try {
             out.write(data)
+            if (verifyWrite) out.fd.sync()
             indexFile.finishWrite(out)
         } catch (e: Exception) {
             indexFile.failWrite(out)
             throw e
+        }
+        // AtomicFile can log a failed final rename instead of throwing. Don't retire the old dub in that case.
+        if (verifyWrite && !indexFile.openRead().use { it.readBytes().contentEquals(data) }) {
+            throw IOException("Unable to commit the dubbed track to the library index")
         }
         _videos.value = videos
         _folders.value = folders
@@ -98,6 +105,16 @@ class LibraryStore(ctx: Context) {
         update(video.copy(subtitleFiles = files, subtitleTargetLang = target))
         return true
     }
+    /** Attach a finished track without replacing the current video's position, folder or captions. */
+    @Synchronized internal fun attachDub(source: SavedVideo, track: File, info: DubbedInfo): SavedVideo? {
+        val current = byId(source.id)?.takeIf { it.localPath == source.localPath && it.subtitleFiles == source.subtitleFiles &&
+            it.subtitleTargetLang == source.subtitleTargetLang } ?: return null
+        if (!track.isFile) return null
+        val updated = current.copy(dubbedAudioPath = track.absolutePath, dubbedInfo = info)
+        commit(_videos.value.map { if (it.id == current.id) updated else it }, verifyWrite = true)
+        return current
+    }
+
     @Synchronized fun createFolder(name: String) = commit(_videos.value, _folders.value + LibraryFolder(name = name))
     @Synchronized fun deleteFolder(folder: LibraryFolder) {
         commit(_videos.value.map { if (it.folderId == folder.id) it.copy(folderId = null) else it },
@@ -114,6 +131,10 @@ class LibraryStore(ctx: Context) {
         put("subtitleFiles", JSONObject(v.subtitleFiles as Map<*, *>))
         put("subtitleTargetLang", v.subtitleTargetLang ?: JSONObject.NULL)
         put("dubbedAudioPath", v.dubbedAudioPath ?: JSONObject.NULL)
+        v.dubbedInfo?.let { d ->
+            put("dubbedInfo", JSONObject().put("provider", d.provider).put("voice", d.voice).put("language", d.language)
+                .put("createdAt", d.createdAt).put("totalDuration", d.totalDuration))
+        }
     }
 
     private fun videoFromJson(o: JSONObject) = SavedVideo(
@@ -128,7 +149,12 @@ class LibraryStore(ctx: Context) {
             buildMap { j.keys().forEach { k -> put(k, j.getString(k)) } }
         } ?: emptyMap(),
         subtitleTargetLang = o.optStringOrNull("subtitleTargetLang"),
-        dubbedAudioPath = o.optStringOrNull("dubbedAudioPath"), lastPlayedAt = o.optLong("lastPlayedAt")
+        dubbedAudioPath = o.optStringOrNull("dubbedAudioPath"),
+        dubbedInfo = o.optJSONObject("dubbedInfo")?.let { d ->
+            d.optDouble("totalDuration").takeIf { it.isFinite() && it > 0 }?.let {
+                DubbedInfo(d.optString("provider"), d.optString("voice"), d.optString("language"), d.optLong("createdAt"), it)
+            }
+        }, lastPlayedAt = o.optLong("lastPlayedAt")
     )
 
     private fun JSONObject.optStringOrNull(k: String): String? =

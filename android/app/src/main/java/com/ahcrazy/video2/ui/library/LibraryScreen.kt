@@ -316,7 +316,7 @@ private fun LibraryVideoRow(video: SavedVideo, ar: Boolean, folders: List<Librar
                     DropdownMenuItem(text = { Text(if (ar) "ترجمة الفيديو" else "Translate video") },
                         leadingIcon = { Icon(Icons.Outlined.ClosedCaption, null) }, onClick = { menu = false; onTranslate() })
                     DropdownMenuItem(text = { Text(if (ar) "مراجعة وتعديل الترجمة" else "Review & edit subtitles") }, onClick = { menu = false; onReview() })
-                    DropdownMenuItem(text = { Text(if (ar) { if (video.hasDubbedAudio) "إعادة الدبلجة" else "دبلجة عربية" }
+                    DropdownMenuItem(text = { Text(if (ar) { if (video.hasDubbedAudio) "إعادة الدبلجة" else "دبلجة" }
                         else if (video.hasDubbedAudio) "Dub again" else "Arabic dub") },
                         leadingIcon = { Icon(Icons.Outlined.Waves, null) }, onClick = { menu = false; onDub() })
                     DropdownMenuItem(text = { Text(if (ar) "مشاركة" else "Share") }, enabled = video.kind != MediaKind.HLS,

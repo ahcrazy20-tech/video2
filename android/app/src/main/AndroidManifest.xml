@@ -11,6 +11,13 @@
 
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x00402000" android:required="false" />
 
+    <!-- Android 11+ package visibility for the device's selected TTS engine. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:name=".Video2Application"
         android:allowBackup="false"
