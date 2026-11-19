@@ -19,7 +19,7 @@ internal class ProtectedMedia(val drm: DRMKind) : java.io.IOException("بث مح
 internal object Hls {
     private val attrPattern = Regex("(?:^|,)\\s*([A-Z0-9-]+)\\s*=\\s*(\"[^\"]*\"|[^,]*)")
     private val resolutionOrder = compareBy<HlsVariant> { it.height ?: 0 }.thenBy { it.bandwidth }
-    private val copyTags = setOf(
+    val offlinePassthroughTags = setOf(
         "#EXT-X-VERSION", "#EXT-X-TARGETDURATION", "#EXT-X-MEDIA-SEQUENCE",
         "#EXT-X-DISCONTINUITY-SEQUENCE", "#EXT-X-DISCONTINUITY", "#EXT-X-PROGRAM-DATE-TIME",
         "#EXT-X-INDEPENDENT-SEGMENTS", "#EXT-X-I-FRAMES-ONLY", "#EXT-X-BITRATE", "#EXTINF"
@@ -149,7 +149,7 @@ internal object Hls {
                 tag == "#EXT-X-BYTERANGE" -> pendingRange = line.substringAfter(':')
                 tag == "#EXT-X-ENDLIST" -> ended = true
                 tag == "#EXT-X-GAP" -> throw MediaDownloadException("بعض أجزاء بث HLS غير متاحة في المصدر.")
-                tag in copyTags -> {
+                tag in offlinePassthroughTags -> {
                     if (tag == "#EXTINF") {
                         segmentDuration = line.substringAfter(':').substringBefore(',').toDoubleOrNull()
                             ?.takeIf { it.isFinite() && it >= 0 } ?: invalidResource()

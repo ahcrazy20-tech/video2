@@ -31,6 +31,10 @@ internal enum class OfflineModel(
     val id: String, val label: String, val spec: PinnedModel, val extension: String,
     val minTotalRam: Long, val requiredFreeRam: Long
 ) {
+    // Multilingual Small (not small.en). Same publisher revision and byte/digest verification as Medium.
+    WHISPER_SMALL_Q5("whisper-small-q5", "Whisper Small · Q5_1",
+        PinnedModel("$WHISPER/ggml-small-q5_1.bin", 190_085_487, "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"),
+        "bin", 3_072 * MIB, 1_100 * MIB),
     WHISPER_MEDIUM("whisper-medium", "Whisper Medium · F16",
         PinnedModel("$WHISPER/ggml-medium.bin", 1_533_763_059, "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208"),
         "bin", 5_120 * MIB, 2_400 * MIB),
@@ -51,17 +55,18 @@ internal enum class OfflineModel(
         "gguf", 7_168 * MIB, 3_072 * MIB);
 
     val memoryIssue: OfflineIssue get() = when (this) {
-        WHISPER_MEDIUM, WHISPER_MEDIUM_Q5, WHISPER_TURBO -> OfflineIssue.MEMORY
+        WHISPER_SMALL_Q5, WHISPER_MEDIUM, WHISPER_MEDIUM_Q5, WHISPER_TURBO -> OfflineIssue.MEMORY
         WHISPER_LARGE -> OfflineIssue.LARGE_MODEL_MEMORY
         HYMT_LITE, HYMT_Q4 -> OfflineIssue.TRANSLATOR_MEMORY
     }
 
     val installedName get() = "$id-${spec.sha256.take(12)}.$extension"
     val publisherName get() = spec.url.substringAfterLast('/')
-    val supportsFastSpeech get() = this == WHISPER_MEDIUM || this == WHISPER_MEDIUM_Q5 || this == WHISPER_TURBO
+    val supportsFastSpeech get() = this in speechModels && this != WHISPER_LARGE
+    val supportsStreamingSpeech get() = this == WHISPER_SMALL_Q5 || this == WHISPER_MEDIUM_Q5 || this == WHISPER_TURBO
 
     companion object {
-        val speechModels = listOf(WHISPER_MEDIUM_Q5, WHISPER_TURBO, WHISPER_MEDIUM, WHISPER_LARGE)
+        val speechModels = listOf(WHISPER_MEDIUM_Q5, WHISPER_TURBO, WHISPER_MEDIUM, WHISPER_LARGE, WHISPER_SMALL_Q5)
         val translators = listOf(HYMT_LITE, HYMT_Q4)
         fun translatorForJob(id: String?) = translators.firstOrNull { it.id == id }
 
@@ -116,7 +121,7 @@ internal class OfflineModels(private val context: Context, private val work: Off
         context.packageManager.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, 0x00402000) // Vulkan 1.2
 
     fun supportsOverlap(speech: OfflineModel, translator: OfflineModel) = supportsVulkan() &&
-        translator == OfflineModel.HYMT_LITE && speech in setOf(OfflineModel.WHISPER_MEDIUM_Q5, OfflineModel.WHISPER_TURBO) &&
+        translator == OfflineModel.HYMT_LITE && speech.supportsStreamingSpeech &&
         memory().totalMem >= 8_192 * MIB && !manager.isLowRamDevice
 
     private fun thermallyLimited() = Build.VERSION.SDK_INT >= 29 &&

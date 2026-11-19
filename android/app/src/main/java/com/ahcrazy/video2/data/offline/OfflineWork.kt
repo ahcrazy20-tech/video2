@@ -61,12 +61,12 @@ internal enum class OfflineIssue(val en: String, val ar: String) {
 }
 
 internal class OfflineFailure(val issue: OfflineIssue, cause: Throwable? = null) : Exception(issue.en, cause)
-internal enum class OfflineWorkKind { DOWNLOAD, MODEL_BACKUP, MODEL_RESTORE, SUBTITLES }
+internal enum class OfflineWorkKind { DOWNLOAD, MODEL_BACKUP, MODEL_RESTORE, SUBTITLES, LIBRARY_SAVE, LIBRARY_VERIFY, LIBRARY_RESTORE }
 internal data class OfflineWorkStatus(
     val kind: OfflineWorkKind, val key: String, val progress: Double = 0.0, val stopping: Boolean = false
 )
 
-/** One foreground slot for downloads or inference: downloads never run alongside inference. */
+/** One foreground slot for inference or large file transfers so they never compete. */
 internal class OfflineWork(private val context: Context) {
     private data class Task(
         val ticket: Int, val signal: CancellationSignal, val body: (CancellationSignal, (Double) -> Unit) -> Unit,
@@ -209,6 +209,9 @@ class OfflineWorkService : Service() {
             status?.kind == OfflineWorkKind.DOWNLOAD -> "Preparing offline models"
             status?.kind == OfflineWorkKind.MODEL_BACKUP -> "Saving offline models to your folder"
             status?.kind == OfflineWorkKind.MODEL_RESTORE -> "Restoring offline models from your folder"
+            status?.kind == OfflineWorkKind.LIBRARY_SAVE -> "Backing up videos and subtitles"
+            status?.kind == OfflineWorkKind.LIBRARY_VERIFY -> "Checking the library backup"
+            status?.kind == OfflineWorkKind.LIBRARY_RESTORE -> "Restoring videos and subtitles"
             else -> "Generating subtitles on this device"
         }
         return Notification.Builder(this, CHANNEL).setContentTitle("Video2 · Offline").setContentText(text)

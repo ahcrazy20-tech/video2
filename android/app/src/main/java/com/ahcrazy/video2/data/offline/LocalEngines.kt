@@ -26,6 +26,12 @@ internal object JniEngines : LocalEngines {
     private val threads get() = (Runtime.getRuntime().availableProcessors() - 2).coerceIn(2, 6)
     private val whisper: WhisperNative by lazy {
         WhisperJni.ensureLoaded()
+        if (WhisperJni.supportsFp16Dotprod()) {
+            try {
+                WhisperFp16DotprodJni.ensureLoaded()
+                return@lazy WhisperFp16DotprodJni
+            } catch (_: LinkageError) { /* Try the previous FP16/portable backends. */ }
+        }
         if (WhisperJni.supportsFp16()) {
             try {
                 WhisperFp16Jni.ensureLoaded()
@@ -130,6 +136,7 @@ internal object WhisperJni : WhisperNative {
     private val library by lazy { System.loadLibrary("video2_whisper") }
     fun ensureLoaded() { library }
     external fun supportsFp16(): Boolean
+    external fun supportsFp16Dotprod(): Boolean
     external override fun create(): Long
     external override fun cancel(handle: Long)
     external override fun destroy(handle: Long)
@@ -140,6 +147,17 @@ internal object WhisperJni : WhisperNative {
 @Keep
 internal object WhisperFp16Jni : WhisperNative {
     private val library by lazy { System.loadLibrary("video2_whisper_fp16") }
+    fun ensureLoaded() { library }
+    external override fun create(): Long
+    external override fun cancel(handle: Long)
+    external override fun destroy(handle: Long)
+    external override fun load(handle: Long, path: ByteArray, threads: Int)
+    external override fun decode(handle: Long, pcm: ShortArray, lang: ByteArray, previous: ByteArray, fast: Boolean, progress: WhisperProgress): Array<ByteArray>
+}
+
+@Keep
+internal object WhisperFp16DotprodJni : WhisperNative {
+    private val library by lazy { System.loadLibrary("video2_whisper_fp16_dotprod") }
     fun ensureLoaded() { library }
     external override fun create(): Long
     external override fun cancel(handle: Long)

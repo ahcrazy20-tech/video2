@@ -2,7 +2,10 @@ package com.ahcrazy.video2
 
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -23,6 +26,20 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class LibraryLayoutTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test fun emptyArabicLibraryOffersVerificationAndRestoreWithoutASave() {
+        compose.setContent {
+            Video2Theme(rtl = true) {
+                LibraryScreen(ar = true, onPlay = {}, onTranslate = {}, onReview = {}, onDub = {}, onConvert = {})
+            }
+        }
+        compose.onNodeWithContentDescription("خيارات المكتبة").performClick()
+        compose.onNodeWithTag("library.backup").performClick()
+        compose.onNodeWithText("نسخ احتياطي واسترجاع").assertIsDisplayed()
+        compose.onNodeWithTag("library.backup.save").assertIsNotEnabled()
+        compose.onNodeWithTag("library.backup.verify").assertIsEnabled()
+        compose.onNodeWithTag("library.backup.restore").assertIsEnabled()
+    }
 
     @Test fun arabicLibraryResumesLatestVideoAndSearchHidesTheFeature() {
         val library = compose.activity.app().library

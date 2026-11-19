@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -20,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ahcrazy.video2.core.model.GpuFallback
@@ -102,7 +104,8 @@ internal fun PerformanceSheet(job: TranslationJob, ar: Boolean, onDismiss: () ->
                         p.generationCalls == 0 -> Text(if (ar) "اتستخدمت النتيجة المحفوظة." else "Saved translation reused.", fontSize = 12.sp)
                         else -> {
                             Metric("CPU", runDuration(p.translateMs))
-                            Metric(if (ar) "دفعات جديدة / طلبات توليد" else "New batches / generation calls", "${p.generatedBatches} / ${p.generationCalls}")
+                            Metric(if (ar) "دفعات جديدة" else "New batches", "${p.generatedBatches}")
+                            Metric(if (ar) "طلبات توليد" else "Generation calls", "${p.generationCalls}")
                         }
                     }
                     if (p.reusedBatches > 0) Metric(if (ar) "دفعات محفوظة اتستخدمت" else "Reused batches", "${p.reusedBatches}")
@@ -135,7 +138,8 @@ internal fun PerformanceSheet(job: TranslationJob, ar: Boolean, onDismiss: () ->
 @Composable private fun Metric(name: String, value: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(name, modifier = Modifier.weight(1f), color = V2.TextDim, fontSize = 12.sp)
-        Text(value, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+        Text(value, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
+            style = MaterialTheme.typography.bodyMedium.copy(textDirection = TextDirection.Ltr))
     }
 }
 

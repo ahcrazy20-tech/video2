@@ -63,10 +63,33 @@ class LibraryStore(ctx: Context) {
         }
         // AtomicFile can log a failed final rename instead of throwing. Don't retire the old dub in that case.
         if (verifyWrite && !indexFile.openRead().use { it.readBytes().contentEquals(data) }) {
-            throw IOException("Unable to commit the dubbed track to the library index")
+            throw IOException("Unable to commit the library index")
         }
         _videos.value = videos
         _folders.value = folders
+    }
+
+    @Synchronized internal fun archiveSnapshot() = _videos.value to _folders.value
+
+    @Synchronized internal fun addRestored(restored: List<Pair<SavedVideo, String?>>) {
+        val current = _videos.value
+        val existing = current.mapTo(mutableSetOf()) { it.id }
+        val folders = _folders.value.toMutableList()
+        val additions = restored.map { (video, folderName) ->
+            require(existing.add(video.id))
+            val folder = folderName?.let { name ->
+                folders.firstOrNull { it.name == name } ?: LibraryFolder(name = name).also(folders::add)
+            }
+            video.copy(folderId = folder?.id)
+        }
+        commit((additions + current).sortedByDescending { it.createdAt }, folders, verifyWrite = true)
+    }
+
+    internal fun isRestoredItem(video: SavedVideo): Boolean {
+        if (video.extractionMethod != "library-restore") return false
+        val item = File(video.localPath).parentFile ?: return false
+        val pack = item.parentFile ?: return false
+        return item.name == video.id && pack.parentFile == videosDir && RESTORED_DIRECTORY.matches(pack.name)
     }
 
     @Synchronized fun add(video: SavedVideo) = commit(listOf(video) + _videos.value.filterNot { it.id == video.id })
@@ -79,7 +102,10 @@ class LibraryStore(ctx: Context) {
         val f = File(video.localPath)
         val parent = f.parentFile
         // A playlist imported as a regular file lives directly in Videos, not a download's bundle.
-        if (video.kind == MediaKind.HLS && f.name == "index.m3u8" && parent != null && parent.parentFile == videosDir && parent.name == video.id) {
+        if (parent != null && isRestoredItem(video)) {
+            parent.deleteRecursively()
+            parent.parentFile?.delete() // Only remove the containing pack if now empty.
+        } else if (video.kind == MediaKind.HLS && f.name == "index.m3u8" && parent != null && parent.parentFile == videosDir && parent.name == video.id) {
             parent.deleteRecursively()
         } else f.delete()
         video.thumbnailPath?.let { File(it).delete() }
@@ -159,4 +185,8 @@ class LibraryStore(ctx: Context) {
 
     private fun JSONObject.optStringOrNull(k: String): String? =
         if (!has(k) || isNull(k)) null else optString(k).takeIf { it.isNotEmpty() }
+
+    private companion object {
+        val RESTORED_DIRECTORY = Regex("restore-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+    }
 }

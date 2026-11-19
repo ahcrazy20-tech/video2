@@ -26,8 +26,8 @@ android {
         applicationId = "com.ahcrazy.video2"
         minSdk = 26
         targetSdk = 34
-        versionCode = 18
-        versionName = "2.3.1"
+        versionCode = 19
+        versionName = "2.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
     }
@@ -98,7 +98,7 @@ val verifyOfflineDebugApk by tasks.registering {
             .orEmpty().filter { it.extension == "apk" }
         check(apks.isNotEmpty()) { "No debug APK was produced" }
         for (apk in apks) ZipFile(apk).use { zip ->
-            for (engine in listOf("whisper", "whisper_fp16", "whisper_vulkan", "hymt", "hymt_dotprod")) {
+            for (engine in listOf("whisper", "whisper_fp16", "whisper_fp16_dotprod", "whisper_vulkan", "hymt", "hymt_dotprod")) {
                 check(zip.getEntry("lib/arm64-v8a/libvideo2_$engine.so") != null) {
                     "${apk.name} is missing the on-device $engine runtime"
                 }

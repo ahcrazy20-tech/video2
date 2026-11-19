@@ -5,7 +5,7 @@
 #include <memory>
 #include <vector>
 
-#if defined(__ANDROID__) && defined(__aarch64__) && !defined(VIDEO2_WHISPER_FP16) && !defined(VIDEO2_WHISPER_VULKAN)
+#if defined(__ANDROID__) && defined(__aarch64__) && !defined(VIDEO2_WHISPER_FP16) && !defined(VIDEO2_WHISPER_FP16_DOTPROD) && !defined(VIDEO2_WHISPER_VULKAN)
 #include <asm/hwcap.h>
 #include <sys/auxv.h>
 #endif
@@ -13,6 +13,8 @@
 #if defined(VIDEO2_WHISPER_VULKAN)
 #define WHISPER_JNI(name) Java_com_ahcrazy_video2_data_offline_WhisperVulkanJni_##name
 extern "C" bool video2_whisper_uses_vulkan(const whisper_context * ctx);
+#elif defined(VIDEO2_WHISPER_FP16_DOTPROD)
+#define WHISPER_JNI(name) Java_com_ahcrazy_video2_data_offline_WhisperFp16DotprodJni_##name
 #elif defined(VIDEO2_WHISPER_FP16)
 #define WHISPER_JNI(name) Java_com_ahcrazy_video2_data_offline_WhisperFp16Jni_##name
 #else
@@ -38,10 +40,18 @@ struct DecodeProgress {
 };
 } // namespace
 
-#if !defined(VIDEO2_WHISPER_FP16) && !defined(VIDEO2_WHISPER_VULKAN)
+#if !defined(VIDEO2_WHISPER_FP16) && !defined(VIDEO2_WHISPER_FP16_DOTPROD) && !defined(VIDEO2_WHISPER_VULKAN)
 extern "C" JNIEXPORT jboolean JNICALL WHISPER_JNI(supportsFp16)(JNIEnv *, jobject) {
 #if defined(__ANDROID__) && defined(__aarch64__)
     constexpr auto required = HWCAP_FPHP | HWCAP_ASIMDHP;
+    return (getauxval(AT_HWCAP) & required) == required ? JNI_TRUE : JNI_FALSE;
+#else
+    return JNI_FALSE;
+#endif
+}
+extern "C" JNIEXPORT jboolean JNICALL WHISPER_JNI(supportsFp16Dotprod)(JNIEnv *, jobject) {
+#if defined(__ANDROID__) && defined(__aarch64__)
+    constexpr auto required = HWCAP_FPHP | HWCAP_ASIMDHP | HWCAP_ASIMDDP;
     return (getauxval(AT_HWCAP) & required) == required ? JNI_TRUE : JNI_FALSE;
 #else
     return JNI_FALSE;

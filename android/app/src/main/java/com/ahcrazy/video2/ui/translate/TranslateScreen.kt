@@ -28,6 +28,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -250,6 +251,32 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
                 PickerRow(if (ar) "لغة الهدف" else "Target", target, SubLang.entries.filter { it != SubLang.AUTO }, { if (ar) it.nameAr else it.englishName }) { target = it }
                 val manifest = video.kind in setOf(MediaKind.HLS, MediaKind.DASH)
                 if (offline) {
+                    SectionTitle(if (ar) "اختصارات السرعة" else "Speed presets")
+                    fun fasterPath(model: OfflineModel, mt: OfflineModel) = when {
+                        app.offlineModels.supportsOverlap(model, mt) -> OfflinePreset.OVERLAP
+                        vulkan -> OfflinePreset.VULKAN
+                        else -> OfflinePreset.CPU
+                    }
+                    OutlinedButton(onClick = {
+                        fastSpeech = speech.supportsFastSpeech
+                        preset = fasterPath(speech, localTranslator)
+                    }, modifier = Modifier.fillMaxWidth(), enabled = work == null && (speech.supportsFastSpeech || vulkan)) {
+                        Text(if (ar) "سرّع بنفس الموديلات" else "Speed up with the same models")
+                    }
+                    val smallCompatible = remember(app) {
+                        OfflineModel.pack(OfflineModel.WHISPER_SMALL_Q5, OfflineModel.HYMT_LITE).all(app.offlineModels::compatible)
+                    }
+                    OutlinedButton(onClick = {
+                        speech = OfflineModel.WHISPER_SMALL_Q5
+                        localTranslator = OfflineModel.HYMT_LITE
+                        fastSpeech = true
+                        preset = fasterPath(speech, localTranslator)
+                    }, modifier = Modifier.fillMaxWidth(), enabled = work == null && smallCompatible) {
+                        Text(if (ar) "وضع سريع · كلام واضح" else "Fast preset · clear speech")
+                    }
+                    Text(if (ar) "الوضع السريع يختار Whisper Small (١٩٠ MB) مع 1.8B. الكلام المشوّش أو الصعب ممكن يحتاج Medium للدقة. الاختيار ما بينزّلش حاجة لوحده."
+                        else "Fast selects Whisper Small (190 MB) with 1.8B. Use Medium for difficult or noisy speech. Nothing downloads automatically.",
+                        color = V2.TextDim, fontSize = 12.sp)
                     OfflineModelPanel(app, ar, speech, { speech = it }, localTranslator, { localTranslator = it })
                     if (speech.supportsFastSpeech) {
                         PickerRow(if (ar) "سرعة التفريغ" else "Transcription speed", fastSpeech, listOf(false, true), {
@@ -264,12 +291,15 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
                         if (ar) "Vulkan 1.2 مش متاح على الجهاز ده. التقرير هيقيس الـCPU." else "Vulkan 1.2 is unavailable. The report measures CPU."
                     } else if (effective == OfflinePreset.CPU) {
                         if (ar) "جرّب نفس الفيديو تاني بمسار GPU عشان تقارن التقريرين." else "Run the same clip with GPU to compare reports."
+                    } else if (effective == OfflinePreset.OVERLAP) {
+                        if (ar) "تجريبي: الترجمة على CPU بتبدأ بعد أول سطور ثابتة وهو لسه بيفرّغ على Vulkan. لو الرام أو الحرارة ما سمحتش، يكمل بالتتابع."
+                        else "Experimental: CPU translation starts as stable cues become available during Vulkan speech decoding. Falls back to sequential work under pressure."
                     } else {
                         if (ar) "تجريبي: Whisper على Vulkan والمترجم على CPU. لو الجهاز ماقدرش، التفريغ يكمل على CPU." else
                             "Experimental: Whisper on Vulkan, translation on CPU. Falls back to CPU if needed."
                     }, color = V2.TextDim, fontSize = 12.sp)
-                    if (vulkan && !overlap) Text(if (ar) "التداخل متاح مع Turbo أو Medium Q5 + مترجم 1.8B وعلى جهاز برام كافية." else
-                        "Overlap requires Turbo or Medium Q5, the 1.8B translator, and sufficient device RAM.", color = V2.TextDim, fontSize = 11.sp)
+                    if (vulkan && !overlap) Text(if (ar) "التداخل متاح مع Small أو Medium Q5 أو Turbo + مترجم 1.8B وعلى جهاز برام كافية." else
+                        "Overlap requires Small, Medium Q5 or Turbo, the 1.8B translator, and sufficient device RAM.", color = V2.TextDim, fontSize = 11.sp)
                     if (manifest) Text(if (ar) "اختار ملف فيديو أو صوت محفوظ واحد، مش قائمة HLS أو DASH." else "Choose a single saved video or audio file, not an HLS or DASH playlist.",
                         color = V2.Gold, fontSize = 12.sp)
                 } else {
@@ -317,6 +347,7 @@ private fun OfflineModelPanel(
     SectionTitle(if (ar) "الموديلات المحلية" else "Local models")
     PickerRow(if (ar) "موديل التفريغ" else "Speech model", speech, OfflineModel.speechModels, {
         val hint = when (it) {
+            OfflineModel.WHISPER_SMALL_Q5 -> if (ar) "الأخف · للكلام الواضح" else "Lightest · clear speech"
             OfflineModel.WHISPER_MEDIUM_Q5 -> if (ar) "أخف · للصوت الواضح" else "Smaller · clear speech"
             OfflineModel.WHISPER_TURBO -> if (ar) "نسخة Turbo من Large-v3" else "Faster decoder than Large-v3"
             OfflineModel.WHISPER_LARGE -> if (ar) "للصوت الأصعب" else "Challenging speech"

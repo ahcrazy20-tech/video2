@@ -83,6 +83,7 @@ build() {
   local variant_args=()
   if [[ "$engine" == whisper ]]; then
     variant_args+=("-DVIDEO2_WHISPER_FP16=$([[ "$variant" == whisper_fp16 ]] && echo ON || echo OFF)")
+    variant_args+=("-DVIDEO2_WHISPER_FP16_DOTPROD=$([[ "$variant" == whisper_fp16_dotprod ]] && echo ON || echo OFF)")
     if [[ "$variant" == whisper_vulkan ]]; then
       vulkan_tools
       # Unlike the API 26 CPU variants, this links Vulkan 1.1 core loader symbols.
@@ -110,6 +111,7 @@ whisper=(whisper whisper.cpp d1be6fde11ac6e0407606b4e42fe72d34add8037 645445da88
 build "${whisper[@]}"
 if [[ "$mode" == android ]]; then
   build "${whisper[@]}" whisper_fp16
+  build "${whisper[@]}" whisper_fp16_dotprod
   build "${whisper[@]}" whisper_vulkan
 fi
 hymt=(hymt llama.cpp 4577932fab595eaa8b27ad71734d5de1f3c07d8c cb0058aa0d883a1f8b3704b85158776dd0c67fbd1e6922a361ec1f74d82f9381)
@@ -119,7 +121,7 @@ if [[ "$mode" == android ]]; then build "${hymt[@]}" hymt_dotprod; fi
 if [[ "$mode" == android ]]; then
   # Android 15+ devices can use 16 KiB pages; reject a misaligned engine before packaging.
   readelf="$sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
-  for so in "$out/libvideo2_whisper.so" "$out/libvideo2_whisper_fp16.so" "$out/libvideo2_whisper_vulkan.so" "$out/libvideo2_hymt.so" "$out/libvideo2_hymt_dotprod.so"; do
+  for so in "$out/libvideo2_whisper.so" "$out/libvideo2_whisper_fp16.so" "$out/libvideo2_whisper_fp16_dotprod.so" "$out/libvideo2_whisper_vulkan.so" "$out/libvideo2_hymt.so" "$out/libvideo2_hymt_dotprod.so"; do
     loads=$("$readelf" -lW "$so")
     # Pass numeric comparison to bash: awk implementations differ on coercing hexadecimal text.
     mapfile -t alignments < <(awk '$1 == "LOAD" { print $NF }' <<< "$loads")

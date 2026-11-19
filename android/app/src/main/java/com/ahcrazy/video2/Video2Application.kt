@@ -11,6 +11,7 @@ import com.ahcrazy.video2.data.ResolverType
 import com.ahcrazy.video2.data.SmartDownloads
 import com.ahcrazy.video2.data.SmartServers
 import com.ahcrazy.video2.data.TranslationManager
+import com.ahcrazy.video2.data.backup.LibraryBackup
 import com.ahcrazy.video2.data.offline.OfflineModels
 import com.ahcrazy.video2.data.offline.OfflineWork
 
@@ -29,6 +30,7 @@ class Video2Application : Application() {
     }
     internal val offlineWork by lazy { OfflineWork(this) }
     internal val offlineModels by lazy { OfflineModels(this, offlineWork) }
+    internal val libraryBackup by lazy { LibraryBackup(this, library, offlineWork) }
     lateinit var settings: AppSettings
     lateinit var library: LibraryStore
     lateinit var downloads: DownloadManager

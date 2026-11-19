@@ -52,6 +52,7 @@ import com.ahcrazy.video2.core.model.SavedVideo
 import com.ahcrazy.video2.core.util.L10n
 import com.ahcrazy.video2.core.util.MagicDuration
 import com.ahcrazy.video2.data.LibraryStore
+import com.ahcrazy.video2.data.backup.LibraryTransfer
 import com.ahcrazy.video2.ui.components.EmptyState
 import com.ahcrazy.video2.ui.player.sharePlayerFile
 import com.ahcrazy.video2.ui.theme.V2
@@ -69,7 +70,8 @@ fun LibraryScreen(
     onReview: (SavedVideo) -> Unit, onDub: (SavedVideo) -> Unit, onConvert: () -> Unit
 ) {
     val ctx = LocalContext.current
-    val library = (ctx as android.app.Activity).app().library
+    val app = (ctx as android.app.Activity).app()
+    val library = app.library
     val videos by library.videos.collectAsState()
     val folders by library.folders.collectAsState()
     val scope = rememberCoroutineScope()
@@ -85,6 +87,16 @@ fun LibraryScreen(
     var newFolder by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     var importing by remember { mutableStateOf(false) }
+    var archiveSheet by rememberSaveable { mutableStateOf(false) }
+    var archiveVideoId by rememberSaveable { mutableStateOf<String?>(null) }
+    val archiveResult by app.libraryBackup.result.collectAsState()
+    LaunchedEffect(archiveResult) {
+        if (archiveResult?.let { it.action == LibraryTransfer.RESTORE && it.report != null } == true) {
+            query = ""
+            folderFilter = null
+            audioOnly = false
+        }
+    }
 
     fun warn(message: String) { scope.launch { snackbars.showSnackbar(message) } }
     fun editLibrary(action: () -> Unit) {
@@ -138,6 +150,9 @@ fun LibraryScreen(
                             Icon(Icons.Filled.MoreVert, if (ar) "خيارات المكتبة" else "Library options", tint = V2.TextDim)
                         }
                         DropdownMenu(menu, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(text = { Text(if (ar) "نسخ احتياطي واسترجاع" else "Backup & restore") },
+                                modifier = Modifier.testTag("library.backup"),
+                                onClick = { menu = false; archiveVideoId = null; archiveSheet = true })
                             DropdownMenuItem(text = { Text(if (ar) "مجلد جديد" else "New folder") },
                                 leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, null) },
                                 onClick = { menu = false; titleInput = ""; newFolder = true })
@@ -208,6 +223,7 @@ fun LibraryScreen(
                     LibraryVideoRow(video, ar, folders, onPlay = { focus.clearFocus(); onPlay(video) },
                         onTranslate = { onTranslate(video) }, onReview = { onReview(video) }, onDub = { onDub(video) },
                         onRename = { editing = video; titleInput = video.title }, onDelete = { deleting = video },
+                        onBackup = { archiveVideoId = video.id; archiveSheet = true },
                         onShare = {
                             if (!sharePlayerFile(ctx, video)) warn(if (ar) "المشاركة مش متاحة للملف ده" else "Couldn't share this file")
                         }, onMove = { id -> editLibrary { library.setFolder(video, id) } })
@@ -217,6 +233,11 @@ fun LibraryScreen(
         SnackbarHost(snackbars, Modifier.align(Alignment.BottomCenter))
     }
 
+    if (archiveSheet) {
+        val selected = videos.firstOrNull { it.id == archiveVideoId }
+        LibraryBackupSheet(app, ar, selected, archiveVideoId, canSave = !importing &&
+            (if (archiveVideoId != null) selected != null else videos.isNotEmpty())) { archiveSheet = false }
+    }
     if (editing != null || newFolder) {
         val target = editing
         fun dismiss() { editing = null; newFolder = false }
@@ -285,7 +306,8 @@ private fun ResumeCover(video: SavedVideo, ar: Boolean, onPlay: () -> Unit) {
 @Composable
 private fun LibraryVideoRow(video: SavedVideo, ar: Boolean, folders: List<LibraryFolder>, onPlay: () -> Unit,
                             onTranslate: () -> Unit, onReview: () -> Unit, onDub: () -> Unit,
-                            onRename: () -> Unit, onDelete: () -> Unit, onShare: () -> Unit, onMove: (String?) -> Unit) {
+                            onRename: () -> Unit, onDelete: () -> Unit, onShare: () -> Unit, onBackup: () -> Unit,
+                            onMove: (String?) -> Unit) {
     val art by libraryArtwork(video)
     val duration = video.durationSec?.takeIf { it.isFinite() && it > 0 } ?: art.duration
     val lang = if (ar) "ar" else "en"
@@ -321,6 +343,8 @@ private fun LibraryVideoRow(video: SavedVideo, ar: Boolean, folders: List<Librar
                         leadingIcon = { Icon(Icons.Outlined.Waves, null) }, onClick = { menu = false; onDub() })
                     DropdownMenuItem(text = { Text(if (ar) "مشاركة" else "Share") }, enabled = video.kind != MediaKind.HLS,
                         onClick = { menu = false; onShare() })
+                    DropdownMenuItem(text = { Text(if (ar) "نسخة بالفيديو والترجمة" else "Back up with subtitles") },
+                        onClick = { menu = false; onBackup() })
                     if (folders.isNotEmpty()) {
                         DropdownMenuItem(text = { Text(if (ar) "بدون مجلد" else "No folder") },
                             leadingIcon = { Icon(Icons.Outlined.Folder, null) }, onClick = { menu = false; onMove(null) })

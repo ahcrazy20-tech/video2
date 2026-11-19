@@ -362,6 +362,7 @@ internal class OfflinePipeline(
         private val translated = mutableListOf<SubCue>()
         private var index = 0
         private var engine: LocalTranslator? = null
+        private val retryGuide = if (model == OfflineModel.HYMT_LITE) BatchRetryGuide() else null
         private val seed = 51 // Keep translation sampling comparable across CPU/GPU speech runs.
 
         fun advance(
@@ -400,7 +401,7 @@ internal class OfflinePipeline(
                 }
                 val outputs = stage(OfflineIssue.TRANSLATION, OfflineIssue.TRANSLATOR_MEMORY) {
                     val context = contextForBatch(cues, translated.size, batch.size)
-                    translateLines(batch.map { it.original }, target.englishName, seed + index * 7919, context) { prompt, callSeed ->
+                    translateLines(batch.map { it.original }, target.englishName, seed + index * 7919, context, retryGuide) { prompt, callSeed ->
                         signal.throwIfCanceled()
                         val overlapping = checkOverlap()
                         checkTranslationMemory()

@@ -125,10 +125,34 @@ internal fun contextForBatch(cues: List<SubCue>, start: Int, size: Int): Subtitl
     return SubtitleContext(before.asReversed(), after)
 }
 
+/** A compact translator sometimes repeatedly merges a larger group. Skip that size for a few
+ * encounters after two failures, then sample it again. Keep the checkpoint partition unchanged.
+ */
+internal class BatchRetryGuide {
+    private val misses = IntArray(7)
+    private val deferred = IntArray(7)
+
+    fun tryGroup(size: Int): Boolean = size !in 3..6 || deferred[size] == 0 || run {
+        deferred[size]--
+        false
+    }
+
+    fun record(size: Int, aligned: Boolean) {
+        if (size !in 3..6) return
+        if (aligned) {
+            misses[size] = 0
+            deferred[size] = 0
+        } else {
+            misses[size] = (misses[size] + 1).coerceAtMost(2)
+            if (misses[size] == 2) deferred[size] = 3
+        }
+    }
+}
+
 /** Validate delimiter alignment; smaller groups are retried locally, preserving their nearby context. */
 internal fun translateLines(
     lines: List<String>, target: String, seed: Int, context: SubtitleContext = SubtitleContext(),
-    generate: (String, Int) -> String?
+    retryGuide: BatchRetryGuide? = null, generate: (String, Int) -> String?
 ): List<String> {
     require(lines.isNotEmpty())
     val background = context.background()
@@ -143,13 +167,18 @@ internal fun translateLines(
         append("\n\n$SOURCE_TEXT\n")
         append(lines.joinToString("\n$SUBTITLE_DELIMITER\n"))
     }
-    if (prompt.length <= 2_000 && (lines.size == 1 || lines.none { it.contains(SUBTITLE_DELIMITER) })) {
+    val canGenerate = prompt.length <= 2_000 && (lines.size == 1 || lines.none { it.contains(SUBTITLE_DELIMITER) })
+    fun attempt(): List<String>? {
         val result = generate(prompt, seed)?.split(SUBTITLE_DELIMITER)?.map { it.replace(WHITESPACE, " ").trim() }
-        if (result?.size == lines.size && result.all {
-                it.isNotBlank() && '\uFFFD' !in it && "```" !in it && "<|" !in it && "<｜" !in it && "<think>" !in it && "<answer>" !in it &&
-                    !it.contains(BACKGROUND, ignoreCase = true) && !it.contains(SOURCE_TEXT, ignoreCase = true)
-            }) return result
+        val aligned = result?.size == lines.size && result.all {
+            it.isNotBlank() && '\uFFFD' !in it && "```" !in it && "<|" !in it && "<｜" !in it && "<think>" !in it && "<answer>" !in it &&
+                !it.contains(BACKGROUND, ignoreCase = true) && !it.contains(SOURCE_TEXT, ignoreCase = true)
+        }
+        retryGuide?.record(lines.size, aligned)
+        return result.takeIf { aligned }
     }
+    val deferred = canGenerate && retryGuide?.tryGroup(lines.size) == false
+    if (canGenerate && !deferred) attempt()?.let { return it }
     if (lines.size == 1) {
         // Split oversized input on a word boundary, keeping both translations in this cue.
         val text = lines.single()
@@ -159,9 +188,9 @@ internal fun translateLines(
                 val left = text.substring(0, space)
                 val right = text.substring(space + 1)
                 return listOf(translateLines(listOf(left), target, seed + 1,
-                    context.copy(after = (listOf(right) + context.after).take(CONTEXT_LINES)), generate).single() + " " +
+                    context.copy(after = (listOf(right) + context.after).take(CONTEXT_LINES)), retryGuide, generate).single() + " " +
                     translateLines(listOf(right), target, seed + 2,
-                        context.copy(before = (context.before + left).takeLast(CONTEXT_LINES)), generate).single())
+                        context.copy(before = (context.before + left).takeLast(CONTEXT_LINES)), retryGuide, generate).single())
             }
         }
         // If generation echoes the context or exhausts the budget, retry only this cue without it.
@@ -171,6 +200,11 @@ internal fun translateLines(
     val middle = lines.size / 2
     val left = lines.take(middle)
     val right = lines.drop(middle)
-    return translateLines(left, target, seed + 1, context.copy(after = (right + context.after).take(CONTEXT_LINES)), generate) +
-        translateLines(right, target, seed + 2, context.copy(before = (context.before + left).takeLast(CONTEXT_LINES)), generate)
+    return try {
+        translateLines(left, target, seed + 1, context.copy(after = (right + context.after).take(CONTEXT_LINES)), retryGuide, generate) +
+            translateLines(right, target, seed + 2, context.copy(before = (context.before + left).takeLast(CONTEXT_LINES)), retryGuide, generate)
+    } catch (e: OfflineFailure) {
+        // A different scene can need the larger group; try it if the smaller form couldn't align.
+        if (deferred && e.issue == OfflineIssue.TRANSLATION) attempt() ?: throw e else throw e
+    }
 }
