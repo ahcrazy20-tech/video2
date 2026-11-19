@@ -12,6 +12,7 @@ import com.ahcrazy.video2.core.dubbing.DubLine
 import com.ahcrazy.video2.core.dubbing.DubPlan
 import com.ahcrazy.video2.core.dubbing.DubVoice
 import com.ahcrazy.video2.core.dubbing.SpeechPcm
+import com.ahcrazy.video2.core.dubbing.SpeechPcmHint
 import com.ahcrazy.video2.core.dubbing.TimedDubWav
 import com.ahcrazy.video2.core.dubbing.planDub
 import com.ahcrazy.video2.core.dubbing.readSpeechWav
@@ -124,7 +125,7 @@ internal fun fitSpeech(pcm: SpeechPcm, frames: Int, line: Int, check: () -> Unit
 
 /** One temp utterance at a time; the output is not published until every cue was added. */
 internal suspend fun renderDub(plan: DubPlan, output: File, scratch: File,
-                               synthesize: suspend (DubLine, File) -> Unit,
+                               synthesize: suspend (DubLine, File) -> SpeechPcmHint,
                                progress: suspend (Int, Int) -> Unit = { _, _ -> }) {
     val context = currentCoroutineContext()
     val check: () -> Unit = { context.ensureActive() }
@@ -135,8 +136,8 @@ internal suspend fun renderDub(plan: DubPlan, output: File, scratch: File,
             progress(0, plan.lines.size)
             plan.lines.forEachIndexed { i, line ->
                 check()
-                synthesize(line, scratch)
-                val pcm = try { readSpeechWav(scratch, check) }
+                val hint = synthesize(line, scratch)
+                val pcm = try { readSpeechWav(scratch, hint, check) }
                 catch (e: DubFailure) { throw DubFailure(e.issue, line.number) }
                 val fitted = fitSpeech(pcm, line.frames, line.number, check)
                 timeline.add(line.start, fitted)

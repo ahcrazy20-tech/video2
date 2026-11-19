@@ -4,6 +4,7 @@ import com.ahcrazy.video2.core.dubbing.DUB_SAMPLE_RATE
 import com.ahcrazy.video2.core.dubbing.DubFailure
 import com.ahcrazy.video2.core.dubbing.DubIssue
 import com.ahcrazy.video2.core.dubbing.SpeechPcm
+import com.ahcrazy.video2.core.dubbing.SpeechPcmHint
 import com.ahcrazy.video2.core.dubbing.TimedDubWav
 import com.ahcrazy.video2.core.dubbing.planDub
 import com.ahcrazy.video2.core.dubbing.readSpeechWav
@@ -35,6 +36,7 @@ class DubbingTimelineTest {
             renderDub(plan, out, scratch, { line, file ->
                 made += line.text
                 writePcm16(file, shortArrayOf(11_000, 10_000, 9_000))
+                SpeechPcmHint.HEADER
             }) { done, total -> progress = done to total }
         }
         assertEquals(cues.map { it.original }, made)
@@ -86,6 +88,16 @@ class DubbingTimelineTest {
         assertArrayEquals(shortArrayOf(1000, -500), stereo.samples)
         RandomAccessFile(out, "rw").use { it.setLength(60) }
         assertEquals(DubIssue.AUDIO_FORMAT, assertThrows(DubFailure::class.java) { readSpeechWav(out) }.issue)
+    }
+
+    @Test fun readsAndroidFloatOutputEvenWhenTheWavHeaderSaysIntegerPcm() = inDirectory { dir ->
+        val out = File(dir, "float.wav")
+        val pcm = ByteBuffer.allocate(56).order(ByteOrder.LITTLE_ENDIAN)
+        pcm.put("RIFF".toByteArray()).putInt(48).put("WAVEfmt ".toByteArray())
+            .putInt(16).putShort(1).putShort(1).putInt(24_000).putInt(96_000).putShort(4).putShort(32)
+            .put("data".toByteArray()).putInt(12).putFloat(.5f).putFloat(-1f).putFloat(Float.NaN)
+        out.writeBytes(pcm.array())
+        assertArrayEquals(shortArrayOf(16_384, -32_767, 0), readSpeechWav(out, SpeechPcmHint.FLOAT32).samples)
     }
 
     @Test fun resamplesAndSpeedsUpOnlyWhenNeededAndErrorsOnImpossibleCues() {

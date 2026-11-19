@@ -1,6 +1,7 @@
 package com.ahcrazy.video2.data.dubbing
 
 import android.content.Context
+import android.media.AudioFormat
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -10,6 +11,7 @@ import com.ahcrazy.video2.core.dubbing.DubIssue
 import com.ahcrazy.video2.core.dubbing.DubLine
 import com.ahcrazy.video2.core.dubbing.DubVoice
 import com.ahcrazy.video2.core.dubbing.DubVoices
+import com.ahcrazy.video2.core.dubbing.SpeechPcmHint
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -18,6 +20,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 
 private fun Voice.toChoice() = DubVoice(name, locale.toLanguageTag(), isNetworkConnectionRequired,
     TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED in features.orEmpty(), quality, latency)
@@ -45,13 +48,17 @@ internal class AndroidDubEngine private constructor(private val tts: TextToSpeec
         }
     }
 
-    suspend fun synthesize(line: DubLine, output: File) {
+    suspend fun synthesize(line: DubLine, output: File): SpeechPcmHint {
         currentCoroutineContext().ensureActive()
         if (line.text.length > TextToSpeech.getMaxSpeechInputLength()) throw DubFailure(DubIssue.CUE_TOO_LONG, line.number)
         val id = UUID.randomUUID().toString()
         val complete = CompletableDeferred<Int>()
+        val hint = AtomicReference(SpeechPcmHint.HEADER)
         val listener = object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) = Unit
+            override fun onBeginSynthesis(utteranceId: String?, sampleRateInHz: Int, audioFormat: Int, channelCount: Int) {
+                if (utteranceId == id && audioFormat == AudioFormat.ENCODING_PCM_FLOAT) hint.set(SpeechPcmHint.FLOAT32)
+            }
             override fun onDone(utteranceId: String?) { if (utteranceId == id) complete.complete(TextToSpeech.SUCCESS) }
             @Deprecated("Legacy engine callback")
             override fun onError(utteranceId: String?) { if (utteranceId == id) complete.complete(TextToSpeech.ERROR) }
@@ -74,6 +81,7 @@ internal class AndroidDubEngine private constructor(private val tts: TextToSpeec
             if (!complete.isCompleted) runCatching { tts.stop() }
             tts.setOnUtteranceProgressListener(null)
         }
+        return hint.get()
     }
 
     companion object {

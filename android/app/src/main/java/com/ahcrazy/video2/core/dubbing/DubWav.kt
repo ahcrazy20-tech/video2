@@ -7,6 +7,7 @@ import java.nio.ByteOrder
 import kotlin.math.roundToInt
 
 internal data class SpeechPcm(val rate: Int, val samples: ShortArray)
+internal enum class SpeechPcmHint { HEADER, FLOAT32 }
 private const val HEADER = 44L
 private const val CHUNK_FRAMES = 8192
 private const val MAX_SPEECH_BYTES = 32L * 1024 * 1024
@@ -18,7 +19,7 @@ private fun RandomAccessFile.put16(n: Int) = writeShort(java.lang.Short.reverseB
 private fun RandomAccessFile.put32(n: Long) = writeInt(Integer.reverseBytes(n.toInt()))
 
 /** Accept PCM WAV output from different Android engines, including metadata and padded RIFF chunks. */
-internal fun readSpeechWav(file: File, check: () -> Unit = {}): SpeechPcm = RandomAccessFile(file, "r").use { input ->
+internal fun readSpeechWav(file: File, hint: SpeechPcmHint = SpeechPcmHint.HEADER, check: () -> Unit = {}): SpeechPcm = RandomAccessFile(file, "r").use { input ->
     fun invalid(): Nothing = throw DubFailure(DubIssue.AUDIO_FORMAT)
     if (input.length() !in HEADER..(MAX_SPEECH_BYTES + 1024 * 1024)) invalid()
     if (input.tag() != "RIFF") invalid()
@@ -55,6 +56,9 @@ internal fun readSpeechWav(file: File, check: () -> Unit = {}): SpeechPcm = Rand
         !(encoding == 1 && bits in setOf(8, 16, 24, 32) || encoding == 3 && bits == 32) ||
         block != channels * (bits / 8) || dataAt < 0 || dataSize !in block.toLong()..MAX_SPEECH_BYTES ||
         dataSize % block != 0L || dataSize / block > rate * 90L) invalid()
+    // Android's file synthesis callback can mark 32-bit floats as integer PCM in the WAV header.
+    if (hint == SpeechPcmHint.FLOAT32 && bits != 32) invalid()
+    val floating = encoding == 3 || hint == SpeechPcmHint.FLOAT32
     val samples = ShortArray((dataSize / block).toInt())
     val bytes = ByteArray(CHUNK_FRAMES * block)
     val view = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
@@ -69,7 +73,7 @@ internal fun readSpeechWav(file: File, check: () -> Unit = {}): SpeechPcm = Rand
             var sum = 0
             repeat(channels) {
                 sum += when {
-                    encoding == 3 -> view.float.let { if (it.isFinite()) (it.coerceIn(-1f, 1f) * 32767).roundToInt() else 0 }
+                    floating -> view.float.let { if (it.isFinite()) (it.coerceIn(-1f, 1f) * 32767).roundToInt() else 0 }
                     bits == 8 -> ((view.get().toInt() and 0xff) - 128) shl 8
                     bits == 16 -> view.short.toInt()
                     bits == 24 -> { view.get(); (view.get().toInt() and 0xff) or (view.get().toInt() shl 8) }
