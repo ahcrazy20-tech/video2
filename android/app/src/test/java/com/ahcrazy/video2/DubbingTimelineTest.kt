@@ -63,6 +63,65 @@ class DubbingTimelineTest {
         assertEquals(0, pcm.last().toInt())
     }
 
+    @Test fun shortCueCanUseOnlyTheGapAndLaterStartsStayExact() = inDirectory { dir ->
+        val plan = planDub(listOf(SubCue(0, 1.0, 1.18, "needs nearby silence"), SubCue(1, 2.1, 2.2, "next cue")), 3.0)
+        val out = File(dir, "borrow.wav")
+        val scratch = File(dir, "scratch.wav")
+        val report = runBlocking {
+            renderDub(plan, out, scratch, { line, file ->
+                writePcm16(file, if (line.number == 1) ShortArray(18_000) { 3_000 } else shortArrayOf(9_000))
+                SpeechPcmHint.HEADER
+            })
+        }
+        val result = readSpeechWav(out).samples
+        assertEquals(1, report.fittedInGap)
+        assertTrue(report.skipped.isEmpty())
+        assertEquals(0, result[23_999].toInt())
+        assertEquals(3_000, result[24_000].toInt())
+        assertEquals(3_000, result[41_999].toInt())
+        assertEquals(0, result[42_000].toInt())
+        assertEquals(9_000, result[50_400].toInt())
+    }
+
+    @Test fun choosingToSkipDoesNotReRenderEarlierCuesAndKeepsLaterSpeech() = inDirectory { dir ->
+        val cues = (0..32).map { i -> SubCue(i, i * .2, i * .2 + .10, "line ${i + 1}") }
+        val plan = planDub(cues, 8.0)
+        val out = File(dir, "continue.wav")
+        val scratch = File(dir, "scratch.wav")
+        val asked = mutableListOf<Int>()
+        val rendered = mutableListOf<Int>()
+        val report = runBlocking {
+            renderDub(plan, out, scratch, { line, file ->
+                rendered += line.number
+                writePcm16(file, if (line.number == 30) ShortArray(DUB_SAMPLE_RATE) { 4_000 } else shortArrayOf(8_000))
+                SpeechPcmHint.HEADER
+            }, onUnfittable = { line -> asked += line; true })
+        }
+        assertEquals((1..33).toList(), rendered)
+        assertEquals(listOf(30), asked)
+        assertEquals(listOf(30), report.skipped)
+        assertFalse(scratch.exists())
+        val result = readSpeechWav(out).samples
+        assertEquals(0, result[plan.lines[29].start.toInt()].toInt())
+        assertEquals(8_000, result[plan.lines[30].start.toInt()].toInt())
+    }
+
+    @Test fun decliningTheSkipStopsAtTheActualCue() = inDirectory { dir ->
+        val plan = planDub(listOf(SubCue(0, 0.0, .1, "too tight"), SubCue(1, .11, .2, "later")))
+        val scratch = File(dir, "scratch.wav")
+        val stopped = assertThrows(DubFailure::class.java) {
+            runBlocking {
+                renderDub(plan, File(dir, "unused.wav"), scratch, { _, file ->
+                    writePcm16(file, ShortArray(DUB_SAMPLE_RATE) { 1_000 })
+                    SpeechPcmHint.HEADER
+                }, onUnfittable = { false })
+            }
+        }
+        assertEquals(DubIssue.CUE_TOO_LONG, stopped.issue)
+        assertEquals(1, stopped.line)
+        assertFalse(scratch.exists())
+    }
+
     @Test fun overlappingSpeechIsMixedAtItsOwnStartAndSaturatesWithoutWrapping() = inDirectory { dir ->
         val out = File(dir, "overlap.wav")
         RandomAccessFile(out, "rw").use { file ->

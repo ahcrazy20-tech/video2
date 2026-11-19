@@ -52,7 +52,7 @@ internal enum class OfflineIssue(val en: String, val ar: String) {
     AUDIO("This file doesn't have a supported local audio track. Try a saved MP4 or audio file.", "الملف مفيهوش مسار صوت محلي مدعوم. جرّب ملف MP4 أو صوت محفوظ."),
     TOO_LONG("This file exceeds the 12-hour local audio limit.", "الملف أطول من حد التفريغ المحلي: ١٢ ساعة."),
     NO_SPEECH("Whisper didn't find clear speech in this audio.", "Whisper ما قدرش يلاقي كلام واضح في الصوت."),
-    LANGUAGE("The detected source language isn't supported by this translator. If detection was wrong, pick the source manually in a new job.", "اللغة اللي اتكشفت مش مدعومة في الترجمة. لو الكشف غلط، اختار لغة المصدر يدويًا في مهمة جديدة."),
+    LANGUAGE("Couldn't identify a supported source language. Review the saved transcript, or pick the source language manually in a new job.", "ما قدرناش نحدد لغة مصدر مدعومة. راجع التفريغ المحفوظ أو اختار لغة الكلام يدويًا في مهمة جديدة."),
     TRANSCRIPTION("On-device transcription failed. Check free RAM and resume.", "التفريغ على الجهاز فشل. راجع الرام المتاحة وحاول تستأنف."),
     TRANSLATION("The on-device model couldn't return a complete translation. Resume to retry the remaining lines.", "الموديل المحلي ما رجّعش ترجمة كاملة. استأنف لإعادة محاولة السطور المتبقية."),
     SAVE("Couldn't save the local result. Check storage and resume.", "تعذر حفظ النتيجة على الجهاز. راجع المساحة وحاول تستأنف.");

@@ -109,50 +109,81 @@ private fun sonic(samples: ShortArray, rate: Int, speed: Float, check: () -> Uni
     } finally { sonic.reset() }
 }
 
-/** Natural speed when it fits, pitch-preserving speed-up when short on space, never drop the end of a line. */
-internal fun fitSpeech(pcm: SpeechPcm, frames: Int, line: Int, check: () -> Unit = {}): ShortArray {
-    val spoken = sonic(pcm.samples, pcm.rate, 1f, check).withoutEnginePadding()
-    if (spoken.isEmpty()) throw DubFailure(DubIssue.SYNTHESIS, line)
+private const val MAX_GAP_FRAMES = DUB_SAMPLE_RATE * 5L / 4L // about 1.25 seconds
+
+private fun prepareSpeech(pcm: SpeechPcm, line: Int, check: () -> Unit): ShortArray =
+    sonic(pcm.samples, pcm.rate, 1f, check).withoutEnginePadding().also {
+        if (it.isEmpty()) throw DubFailure(DubIssue.SYNTHESIS, line)
+    }
+
+/** Natural speed when it fits, pitch-preserving speed-up when short on space, never cut a line. */
+private fun tryFitSpeech(spoken: ShortArray, frames: Int, check: () -> Unit): ShortArray? {
     if (spoken.size <= frames) return spoken
     val factor = spoken.size / frames.toFloat()
-    if (factor > 2f) throw DubFailure(DubIssue.CUE_TOO_LONG, line)
-    for (speed in listOf((factor * 1.006f).coerceAtMost(2.05f), (factor * 1.032f).coerceAtMost(2.05f))) {
+    if (factor > 2.05f) return null
+    for (speed in listOf((factor * 1.006f).coerceAtMost(2.05f), (factor * 1.035f).coerceAtMost(2.05f), 2.05f).distinct()) {
         val fitted = sonic(spoken, DUB_SAMPLE_RATE, speed, check).withoutEnginePadding()
         if (fitted.isNotEmpty() && fitted.size <= frames) return fitted
     }
-    throw DubFailure(DubIssue.CUE_TOO_LONG, line)
+    return null
 }
 
-/** One temp utterance at a time; the output is not published until every cue was added. */
+internal fun fitSpeech(pcm: SpeechPcm, frames: Int, line: Int, check: () -> Unit = {}): ShortArray =
+    tryFitSpeech(prepareSpeech(pcm, line, check), frames, check) ?: throw DubFailure(DubIssue.CUE_TOO_LONG, line)
+
+internal data class DubRenderReport(val fittedInGap: Int, val skipped: List<Int>)
+
+/** Render at exact starts. Borrow only unused gap, and allow a missing cue only if the caller explicitly agrees. */
 internal suspend fun renderDub(plan: DubPlan, output: File, scratch: File,
                                synthesize: suspend (DubLine, File) -> SpeechPcmHint,
-                               progress: suspend (Int, Int) -> Unit = { _, _ -> }) {
+                               onUnfittable: suspend (Int) -> Boolean = { false },
+                               progress: suspend (Int, Int) -> Unit = { _, _ -> }): DubRenderReport {
     val context = currentCoroutineContext()
     val check: () -> Unit = { context.ensureActive() }
+    val skipped = mutableListOf<Int>()
+    var fittedInGap = 0
     try {
         if (output.parentFile?.usableSpace?.let { it < plan.frames * 2 + 16L * 1024 * 1024 } == true) throw DubFailure(DubIssue.DISK)
         RandomAccessFile(output, "rw").use { sink ->
             val timeline = TimedDubWav(sink, plan.frames, check)
+            var reservedEnd = 0L
             progress(0, plan.lines.size)
             plan.lines.forEachIndexed { i, line ->
                 check()
                 val hint = synthesize(line, scratch)
                 val pcm = try { readSpeechWav(scratch, hint, check) }
                 catch (e: DubFailure) { throw DubFailure(e.issue, line.number) }
-                val fitted = fitSpeech(pcm, line.frames, line.number, check)
-                timeline.add(line.start, fitted)
+                val speech = prepareSpeech(pcm, line.number, check)
+                val next = plan.lines.getOrNull(i + 1)?.start ?: plan.frames
+                val endWithGap = if (reservedEnd <= line.end) {
+                    minOf(next, plan.frames, line.end + MAX_GAP_FRAMES).coerceAtLeast(line.end)
+                } else line.end
+                val fitted = tryFitSpeech(speech, line.frames, check)
+                    ?: if (endWithGap > line.end) tryFitSpeech(speech, (endWithGap - line.start).toInt(), check) else null
+                if (fitted == null) {
+                    if (!onUnfittable(line.number)) throw DubFailure(DubIssue.CUE_TOO_LONG, line.number)
+                    check()
+                    skipped += line.number
+                } else {
+                    timeline.add(line.start, fitted)
+                    if (line.start + fitted.size > line.end) fittedInGap++
+                }
+                reservedEnd = maxOf(reservedEnd, line.end, line.start + (fitted?.size ?: 0))
                 progress(i + 1, plan.lines.size)
             }
+            if (skipped.size == plan.lines.size) throw DubFailure(DubIssue.CUE_TOO_LONG, skipped.firstOrNull())
             timeline.finish()
         }
+        return DubRenderReport(fittedInGap, skipped.toList())
     } finally { scratch.delete() }
 }
 
 private suspend fun renderWithEngine(context: Context, plan: DubPlan, voice: DubVoice, preferredEngine: String?, output: File,
+                                     onUnfittable: suspend (Int) -> Boolean = { false },
                                      progress: suspend (Int, Int) -> Unit = { _, _ -> }) = AndroidDubEngine.use(context) { engine ->
     engine.select(voice, preferredEngine)
     val scratch = File.createTempFile("kadr-cue-", ".wav", context.cacheDir)
-    renderDub(plan, output, scratch, engine::synthesize, progress)
+    renderDub(plan, output, scratch, engine::synthesize, onUnfittable, progress)
 }
 
 internal suspend fun auditionDub(context: Context, source: DubSource, voice: DubVoice, preferredEngine: String?, output: File) {
@@ -160,16 +191,17 @@ internal suspend fun auditionDub(context: Context, source: DubSource, voice: Dub
 }
 
 internal suspend fun saveDub(context: Context, library: LibraryStore, video: SavedVideo, source: DubSource, voice: DubVoice,
-                             preferredEngine: String?, progress: suspend (Int, Int) -> Unit) {
+                             preferredEngine: String?, onUnfittable: suspend (Int) -> Boolean,
+                             progress: suspend (Int, Int) -> Unit): DubRenderReport {
     val info = DubbedInfo("android-tts", voice.id, voice.tag, System.currentTimeMillis(), source.plan.frames.toDouble() / DUB_SAMPLE_RATE)
-    publishDub(library, video, source, info) { staged ->
-        renderWithEngine(context, source.plan, voice, preferredEngine, staged, progress)
+    return publishDub(library, video, source, info) { staged ->
+        renderWithEngine(context, source.plan, voice, preferredEngine, staged, onUnfittable, progress)
     }
 }
 
 /** The library only sees a fully built track; errors and cancellation leave its previous track in place. */
-internal suspend fun publishDub(library: LibraryStore, video: SavedVideo, source: DubSource, info: DubbedInfo,
-                                render: suspend (File) -> Unit) = withContext(Dispatchers.IO) {
+internal suspend fun <T> publishDub(library: LibraryStore, video: SavedVideo, source: DubSource, info: DubbedInfo,
+                                    render: suspend (File) -> T): T = withContext(Dispatchers.IO) {
     if (!source.stillExists()) throw DubFailure(DubIssue.SOURCE_CHANGED)
     val dir = File(library.dubsDir, video.id)
     if (dir.canonicalFile.parentFile != library.dubsDir.canonicalFile || (!dir.isDirectory && !dir.mkdirs())) {
@@ -179,7 +211,7 @@ internal suspend fun publishDub(library: LibraryStore, video: SavedVideo, source
     val result = File(dir, "dub-${UUID.randomUUID()}.wav")
     var attached = false
     try {
-        render(staged)
+        val report = render(staged)
         currentCoroutineContext().ensureActive()
         if (!source.stillExists()) throw DubFailure(DubIssue.SOURCE_CHANGED)
         if (!staged.renameTo(result)) throw DubFailure(DubIssue.DISK)
@@ -190,6 +222,7 @@ internal suspend fun publishDub(library: LibraryStore, video: SavedVideo, source
         old.dubbedAudioPath?.let { path -> runCatching {
             File(path).takeIf { it.canonicalFile.parentFile == dir.canonicalFile && it != result }?.delete()
         } }
+        report
     } finally {
         staged.delete()
         if (!attached) result.delete()

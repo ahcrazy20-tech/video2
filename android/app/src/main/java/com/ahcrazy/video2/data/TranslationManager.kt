@@ -29,7 +29,9 @@ import com.ahcrazy.video2.data.offline.OfflineWork
 import com.ahcrazy.video2.data.offline.OfflineWorkKind
 import com.ahcrazy.video2.data.offline.RETIRED_TRANSLATOR_ID
 import com.ahcrazy.video2.data.offline.atomicText
+import com.ahcrazy.video2.data.offline.detectedSourceCode
 import com.ahcrazy.video2.data.offline.hasCheckpoint
+import com.ahcrazy.video2.data.offline.hymtSourceLanguages
 import com.ahcrazy.video2.data.offline.readCheckpoint
 import com.ahcrazy.video2.data.offline.readOfflinePerformance
 import com.ahcrazy.video2.data.offline.toJson
@@ -43,11 +45,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.nio.ByteBuffer
 import java.util.UUID
+
+internal data class SavedSourcePreview(val detectedCode: String?, val sample: List<String>)
 
 /** Library subtitle jobs, with a persisted, no-fallback split between local and cloud inference. */
 class TranslationManager internal constructor(
@@ -96,10 +101,41 @@ class TranslationManager internal constructor(
         return true
     }
 
+    private fun savedTranscript(job: TranslationJob): File? {
+        if (runCatching { UUID.fromString(job.id).toString() }.getOrNull() != job.id) return null
+        val dir = File(root, job.id)
+        return dir.takeIf { listOf("cues-original.json", "offline-language.txt", "offline-source.json")
+            .all { name -> hasCheckpoint(File(dir, name)) } }
+    }
+
+    internal fun canCorrectSource(job: TranslationJob): Boolean = job.mode == TranslationMode.ON_DEVICE &&
+        job.phase == TranslationPhase.FAILED && job.offlineIssue == OfflineIssue.LANGUAGE.name &&
+        OfflineModel.translatorForJob(job.offlineModel) != null && OfflineModel.speechForJob(job.offlineSpeechModel) != null &&
+        savedTranscript(job) != null
+
+    internal suspend fun savedSourcePreview(job: TranslationJob): SavedSourcePreview? = withContext(Dispatchers.IO) {
+        if (!canCorrectSource(job)) return@withContext null
+        val dir = savedTranscript(job) ?: return@withContext null
+        runCatching {
+            val code = detectedSourceCode(readCheckpoint(File(dir, "offline-language.txt")))
+            val sample = CueJson.read(File(dir, "cues-original.json")).asSequence().map { it.original.trim() }
+                .filter { it.isNotEmpty() }.take(3).map { it.take(240) }.toList()
+            SavedSourcePreview(code, sample).takeIf { sample.isNotEmpty() }
+        }.getOrNull()
+    }
+
+    /** Keep the original job and use its transcript in a separate, explicitly corrected job. */
+    @Synchronized internal fun translateWithCorrectedSource(id: String, source: SubLang): Boolean {
+        if (source.code !in hymtSourceLanguages || offlineWork.status.value != null) return false
+        val previous = _jobs.value.firstOrNull { it.id == id && canCorrectSource(it) } ?: return false
+        val model = OfflineModel.translatorForJob(previous.offlineModel) ?: return false
+        if (source.code != previous.targetLang && !offlineModels.ready(model)) return false
+        return startFromTranscript(previous, model, source.code)
+    }
+
     internal fun alternateTranslator(job: TranslationJob): OfflineModel? {
-        if (job.mode != TranslationMode.ON_DEVICE || job.phase in ACTIVE || OfflineModel.speechForJob(job.offlineSpeechModel) == null) return null
-        val from = File(root, job.id)
-        if (listOf("cues-original.json", "offline-language.txt", "offline-source.json").any { !hasCheckpoint(File(from, it)) }) return null
+        if (job.mode != TranslationMode.ON_DEVICE || job.phase in ACTIVE || job.offlineIssue == OfflineIssue.LANGUAGE.name ||
+            OfflineModel.speechForJob(job.offlineSpeechModel) == null || savedTranscript(job) == null) return null
         return (if (job.offlineModel == OfflineModel.HYMT_LITE.id) OfflineModel.HYMT_Q4 else OfflineModel.HYMT_LITE)
             .takeIf(offlineModels::compatible)
     }
@@ -108,8 +144,12 @@ class TranslationManager internal constructor(
         if (offlineWork.status.value != null) return false
         val previous = _jobs.value.firstOrNull { it.id == id } ?: return false
         val model = alternateTranslator(previous)?.takeIf(offlineModels::ready) ?: return false
+        return startFromTranscript(previous, model, previous.sourceLang)
+    }
+
+    private fun startFromTranscript(previous: TranslationJob, model: OfflineModel, source: String): Boolean {
         val job = previous.copy(id = UUID.randomUUID().toString(), phase = TranslationPhase.QUEUED,
-            progress = 0.0, cueCount = 0, message = null, createdAt = System.currentTimeMillis(), offlineIssue = null,
+            sourceLang = source, progress = 0.0, cueCount = 0, message = null, createdAt = System.currentTimeMillis(), offlineIssue = null,
             offlineModel = model.id, offlineTranscriptFrom = previous.id, offlinePreset = OfflinePreset.CPU, offlinePerformance = null)
         add(job)
         startOffline(job)
@@ -142,7 +182,7 @@ class TranslationManager internal constructor(
     @Synchronized fun resume(id: String) {
         val job = _jobs.value.firstOrNull { it.id == id && it.phase in RESUMABLE } ?: return
         when (job.mode) {
-            TranslationMode.ON_DEVICE -> startOffline(job)
+            TranslationMode.ON_DEVICE -> if (job.offlineIssue != OfflineIssue.LANGUAGE.name) startOffline(job) else Unit
             TranslationMode.CLOUD -> startCloud(job)
         }
     }
@@ -192,7 +232,7 @@ class TranslationManager internal constructor(
                 val prior = job.offlineTranscriptFrom
                 if (prior != null && !hasCheckpoint(original)) {
                     if (runCatching { UUID.fromString(prior).toString() }.getOrNull() != prior) throw OfflineFailure(OfflineIssue.NO_TRANSCRIPT)
-                    offline.reuseTranscript(File(root, prior), dir, input, signal)
+                    offline.reuseTranscript(File(root, prior), dir, input, signal, source.takeUnless { it == SubLang.AUTO })
                 }
                 // Preflight fresh jobs only. Resumes require just the runtime for unfinished work.
                 if (!hasCheckpoint(original) && !File(dir, "audio-16k.pcm").isFile &&

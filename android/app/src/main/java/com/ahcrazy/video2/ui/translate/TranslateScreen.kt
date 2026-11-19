@@ -82,6 +82,7 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
     var showNew by remember { mutableStateOf(false) }
     var showModels by remember { mutableStateOf(false) }
     var performanceId by rememberSaveable { mutableStateOf<String?>(null) }
+    var correctionId by rememberSaveable { mutableStateOf<String?>(null) }
     var requestedTranslator by remember { mutableStateOf(OfflineModel.HYMT_LITE) }
 
     androidx.compose.runtime.LaunchedEffect(preselected) { if (preselected != null) showNew = true }
@@ -148,7 +149,12 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
                         val issue = if (retired && job.phase != TranslationPhase.DONE) OfflineIssue.RETIRED_TRANSLATOR
                             else OfflineIssue.entries.firstOrNull { it.name == job.offlineIssue }
                         (issue?.text(ar) ?: job.message)?.let { Text(it, fontSize = 11.sp, color = V2.Gold, modifier = Modifier.padding(top = 6.dp)) }
-                        if (!running) app.translations.alternateTranslator(job)?.let { alternate ->
+                        if (issue == OfflineIssue.LANGUAGE && app.translations.canCorrectSource(job)) {
+                            TextButton(enabled = localWork == null, onClick = { correctionId = job.id }) {
+                                Text(if (ar) "راجع التفريغ وصحّح اللغة" else "Review transcript and correct language")
+                            }
+                        }
+                        if (!running && issue != OfflineIssue.LANGUAGE) app.translations.alternateTranslator(job)?.let { alternate ->
                             val ready = installed[alternate]?.installed == true
                             val size = if (alternate == OfflineModel.HYMT_LITE) "1.8B" else "7B"
                             TextButton(enabled = localWork == null, onClick = {
@@ -164,7 +170,7 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
                         if (offline && job.phase == TranslationPhase.DONE) PerformanceButton(job, ar) { performanceId = job.id }
                         Row {
                             if (job.phase == TranslationPhase.DONE) TextButton(onClick = { onReviewJob(job) }) { Text(if (ar) "مراجعة وتعديل" else "Review & edit") }
-                            if (!retired && job.phase in setOf(TranslationPhase.FAILED, TranslationPhase.PAUSED, TranslationPhase.CANCELLED))
+                            if (!retired && issue != OfflineIssue.LANGUAGE && job.phase in setOf(TranslationPhase.FAILED, TranslationPhase.PAUSED, TranslationPhase.CANCELLED))
                                 TextButton(enabled = !offline || localWork == null, onClick = { app.translations.resume(job.id) }) { Text(if (ar) "استئناف" else "Resume") }
                             if (running) TextButton(enabled = !stopping, onClick = { app.translations.cancel(job.id) }) { Text(if (ar) "إيقاف" else "Stop") }
                             Spacer(Modifier.weight(1f))
@@ -176,6 +182,7 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
         }
     }
 
+    jobs.firstOrNull { it.id == correctionId }?.let { SourceLanguageSheet(it, app.translations, localWork != null, ar) { correctionId = null } }
     jobs.firstOrNull { it.id == performanceId }?.let { PerformanceSheet(it, ar) { performanceId = null } }
     if (showNew) NewTranslationSheet(app, ar, videos, preselected, onDismiss = { showNew = false; onConsumePreselected() })
     if (showModels) ModalBottomSheet(onDismissRequest = { showModels = false }) {

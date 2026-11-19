@@ -70,7 +70,7 @@ internal class OfflinePipeline(
         // Read and validate that checkpoint first; Whisper does not load again to translate it.
         signal.throwIfCanceled()
         val cues = CueJson.read(original)
-        val language = readCheckpoint(langFile).trim()
+        val language = detectedSourceCode(readCheckpoint(langFile)) ?: SubLang.AUTO.code
         pcm.delete()
         File(dir, "offline-stt").deleteRecursively()
         if (language !in hymtSourceLanguages) throw OfflineFailure(OfflineIssue.LANGUAGE)
@@ -94,7 +94,7 @@ internal class OfflinePipeline(
     }
 
     /** A new translation job can reuse only the original timed transcript, never previous translated text. */
-    fun reuseTranscript(from: File, to: File, input: File, signal: CancellationSignal) {
+    fun reuseTranscript(from: File, to: File, input: File, signal: CancellationSignal, correctedSource: SubLang? = null) {
         val original = File(from, "cues-original.json")
         val language = File(from, "offline-language.txt")
         val fingerprint = File(from, "offline-source.json")
@@ -105,7 +105,8 @@ internal class OfflinePipeline(
         if (cues.isEmpty()) throw OfflineFailure(OfflineIssue.NO_TRANSCRIPT)
         signal.throwIfCanceled()
         atomicText(File(to, "offline-source.json"), current)
-        atomicText(File(to, "offline-language.txt"), readCheckpoint(language))
+        val source = correctedSource?.code?.takeIf { it in hymtSourceLanguages } ?: readCheckpoint(language)
+        atomicText(File(to, "offline-language.txt"), source)
         CueJson.write(File(to, "cues-original.json"), cues)
     }
 
@@ -201,13 +202,15 @@ internal class OfflinePipeline(
         val checkpoints = File(dir, "offline-stt").apply { mkdirs() }
         val cues = mutableListOf<SubCue>()
         var language = source.code
+        var triedLanguageRescue = false
         var index = 0
         while (index < count) {
             signal.throwIfCanceled()
             val file = File(checkpoints, "$index.json")
             if (!hasCheckpoint(file)) break
             val part = JSONObject(readCheckpoint(file))
-            language = part.getString("language")
+            language = if (source == SubLang.AUTO) part.optString("language", "auto") else source.code
+            triedLanguageRescue = triedLanguageRescue || part.optBoolean("autoSourceProbed")
             cues += CueJson.decode(part.getJSONArray("cues"))
             index++
         }
@@ -254,51 +257,89 @@ internal class OfflinePipeline(
             try {
                 engine = openGpu() ?: openCpu()
                 RandomAccessFile(pcm, "r").use { audio ->
+                    fun readSamples(start: Long, end: Long): ShortArray {
+                        val bytes = ByteArray(((end - start) * 2).toInt())
+                        audio.seek(start * 2)
+                        audio.readFully(bytes)
+                        return ShortArray(bytes.size / 2).also {
+                            ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(it)
+                        }
+                    }
                     while (index < count) {
                         signal.throwIfCanceled()
                         val window = SpeechWindow.at(index, frames)
-                        val bytes = ByteArray(((window.readEnd - window.readStart) * 2).toInt())
-                        audio.seek(window.readStart * 2)
-                        audio.readFully(bytes)
-                        val samples = ShortArray(bytes.size / 2)
-                        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(samples)
+                        val samples = readSamples(window.readStart, window.readEnd)
                         var added = emptyList<SubCue>()
                         if (samples.any { it != 0.toShort() }) {
                             val t = window.readStart.toDouble() / SAMPLE_RATE
                             val prompt = cues.takeLast(8).filter { it.endSec in (t - 8.0)..(t - 0.15) }
                                 .joinToString(" ") { it.original }.takeLast(200)
                             var lastPercent = 0
-                            fun decode(active: LocalSpeech) = stage(OfflineIssue.TRANSCRIPTION, speechModel.memoryIssue) {
-                                val stage = if (active.vulkan) OfflineStats.Stage.GPU_SPEECH else OfflineStats.Stage.CPU_SPEECH
-                                stats.measure(stage) {
-                                    active.decode(samples, language, prompt, fastSpeech) { value ->
-                                        val percent = value.coerceIn(0, 95)
-                                        if (percent > lastPercent) {
-                                            lastPercent = percent
-                                            report(percent / 100.0, checkpoint = false)
+                            fun infer(pcm: ShortArray, hint: String, previous: String, trackProgress: Boolean): SpeechResult {
+                                fun decode(active: LocalSpeech) = stage(OfflineIssue.TRANSCRIPTION, speechModel.memoryIssue) {
+                                    val stage = if (active.vulkan) OfflineStats.Stage.GPU_SPEECH else OfflineStats.Stage.CPU_SPEECH
+                                    stats.measure(stage) {
+                                        active.decode(pcm, hint, previous, fastSpeech) { value ->
+                                            if (trackProgress) {
+                                                val percent = value.coerceIn(0, 95)
+                                                if (percent > lastPercent) {
+                                                    lastPercent = percent
+                                                    report(percent / 100.0, checkpoint = false)
+                                                }
+                                            }
                                         }
                                     }
                                 }
+                                val using = checkNotNull(engine)
+                                return try { decode(using) }
+                                catch (error: OfflineFailure) {
+                                    signal.throwIfCanceled()
+                                    if (!using.vulkan) throw error
+                                    stats.gpuFallback = GpuFallback.ENGINE
+                                    ownedMarker = false
+                                    engine = null
+                                    using.close()
+                                    onGpuLost() // release MT before opening CPU Whisper
+                                    openCpu().also { engine = it }.let(::decode)
+                                }
                             }
-                            val using = checkNotNull(engine)
-                            val result = try { decode(using) }
-                            catch (error: OfflineFailure) {
-                                signal.throwIfCanceled()
-                                if (!using.vulkan) throw error
-                                stats.gpuFallback = GpuFallback.ENGINE
-                                ownedMarker = false
-                                engine = null
-                                using.close()
-                                onGpuLost() // release MT before opening CPU Whisper
-                                openCpu().also { engine = it }.let(::decode)
-                            }
-                            if (engine?.vulkan == true) stats.gpuWindows++ else stats.cpuWindows++
+                            val result = infer(samples, language, prompt, trackProgress = true)
+                            var savedOnGpu = engine?.vulkan == true
                             added = cuesInWindow(window, result, cues.lastOrNull(), cues.size)
-                            if (language == "auto" && added.isNotEmpty() && result.language.isNotBlank()) language = result.language
+                            if (language == SubLang.AUTO.code && added.isNotEmpty()) {
+                                val first = detectedSourceCode(result.language)
+                                if (first != null && first in hymtSourceLanguages) language = first
+                                else {
+                                    if (!triedLanguageRescue) {
+                                        val evidence = LanguageEvidence()
+                                        for (slice in languageRescueSlices(window.readStart, frames)) {
+                                            signal.throwIfCanceled()
+                                            val part = readSamples(slice.start, slice.end)
+                                            if (part.any { it != 0.toShort() }) {
+                                                evidence.observe(infer(part, SubLang.AUTO.code, "", trackProgress = false), part.size)
+                                            }
+                                        }
+                                        triedLanguageRescue = true
+                                        evidence.supportedMajority()?.let { confirmed ->
+                                            // Probe output itself is never saved. Re-decode the whole suspect window.
+                                            val retry = infer(samples, confirmed, prompt, trackProgress = false)
+                                            val corrected = cuesInWindow(window, retry, cues.lastOrNull(), cues.size)
+                                            if (corrected.isNotEmpty()) {
+                                                added = corrected
+                                                language = confirmed
+                                                savedOnGpu = engine?.vulkan == true
+                                            }
+                                        }
+                                    }
+                                    // If contradictory evidence remains, preserve the transcript and report the real gate later.
+                                    if (language == SubLang.AUTO.code && first != null) language = first
+                                }
+                            }
+                            if (savedOnGpu) stats.gpuWindows++ else stats.cpuWindows++
                         }
                         signal.throwIfCanceled()
                         atomicText(File(checkpoints, "$index.json"), JSONObject().put("language", language)
-                            .put("cues", CueJson.encode(added)).toString())
+                            .put("autoSourceProbed", triedLanguageRescue).put("cues", CueJson.encode(added)).toString())
                         cues += added
                         index++
                         report()

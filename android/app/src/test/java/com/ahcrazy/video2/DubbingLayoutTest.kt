@@ -5,16 +5,21 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import com.ahcrazy.video2.core.dubbing.DubVoice
 import com.ahcrazy.video2.core.dubbing.DubVoices
 import com.ahcrazy.video2.core.dubbing.planDub
 import com.ahcrazy.video2.core.model.SubCue
+import com.ahcrazy.video2.core.model.SubLang
+import com.ahcrazy.video2.data.SavedSourcePreview
 import com.ahcrazy.video2.data.dubbing.DubSource
 import com.ahcrazy.video2.ui.dubbing.DubbingPanel
 import com.ahcrazy.video2.ui.dubbing.DubbingPanelState
+import com.ahcrazy.video2.ui.dubbing.TightCueDialog
 import com.ahcrazy.video2.ui.theme.Video2Theme
+import com.ahcrazy.video2.ui.translate.SourceLanguageForm
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -63,5 +68,30 @@ class DubbingLayoutTest {
             assertEquals(listOf(sa, eg), heard)
             assertEquals(listOf(eg), saved)
         }
+    }
+
+    @Test fun tooLongCueAsksBeforeSilencingAnyLine() {
+        val decisions = mutableListOf<Boolean>()
+        compose.setContent { Video2Theme(rtl = true) { TightCueDialog(true, 30) { decisions += it } } }
+        compose.onNodeWithText("السطر 30 أطول من وقته").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(emptyList<Boolean>(), decisions) }
+        compose.onNodeWithText("كمّل وتخطّى").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(listOf(true), decisions) }
+    }
+
+    @Test fun sourceCorrectionNeedsLanguageAndExplicitConfirmation() {
+        val started = mutableListOf<SubLang>()
+        compose.setContent { Video2Theme(rtl = true) {
+            SourceLanguageForm(true, SavedSourcePreview("sv", listOf("This is the saved English transcript.")),
+                loading = false, busy = false) { started += it; true }
+        } }
+        compose.onNodeWithText("This is the saved English transcript.").assertIsDisplayed()
+        compose.onNodeWithTag("translation.source.retry").assertIsNotEnabled()
+        compose.onNodeWithText("لغة الكلام الصحيحة").performScrollTo().assertIsDisplayed().performClick()
+        compose.onNodeWithText("الإنجليزية").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("translation.source.retry").assertIsNotEnabled()
+        compose.onNodeWithTag("translation.source.confirm").performScrollTo().assertIsDisplayed().performClick()
+        compose.onNodeWithTag("translation.source.retry").performScrollTo().assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(listOf(SubLang.EN), started) }
     }
 }

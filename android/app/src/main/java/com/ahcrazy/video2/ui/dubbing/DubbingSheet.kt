@@ -8,8 +8,11 @@ import android.speech.tts.TextToSpeech
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -34,6 +37,7 @@ import com.ahcrazy.video2.core.dubbing.DubIssue
 import com.ahcrazy.video2.core.dubbing.DubVoices
 import com.ahcrazy.video2.core.model.SavedVideo
 import com.ahcrazy.video2.data.dubbing.AndroidDubEngine
+import com.ahcrazy.video2.data.dubbing.DubRenderReport
 import com.ahcrazy.video2.data.dubbing.DubSource
 import com.ahcrazy.video2.data.dubbing.auditionDub
 import com.ahcrazy.video2.data.dubbing.loadDubSource
@@ -51,6 +55,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.IOException
 import java.util.UUID
+
+private data class TightCueChoice(val line: Int, val answer: CompletableDeferred<Boolean>)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -70,6 +76,7 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onDismiss: () -> Unit)
     var previewJob by remember { mutableStateOf<Job?>(null) }
     var progress by remember { mutableStateOf<DubProgress?>(null) }
     var renderJob by remember { mutableStateOf<Job?>(null) }
+    var tightCue by remember { mutableStateOf<TightCueChoice?>(null) }
 
     fun reload() {
         previewJob?.cancel()
@@ -151,10 +158,20 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onDismiss: () -> Unit)
                 renderJob = scope.launch {
                     try {
                         pending?.join()
-                        saveDub(ctx, library, snapshot, captions, voice, engine) { done, total ->
+                        var skipRemaining = false
+                        val report = saveDub(ctx, library, snapshot, captions, voice, engine, onUnfittable = { line ->
+                            withContext(Dispatchers.Main.immediate) {
+                                if (skipRemaining) true else {
+                                    val choice = TightCueChoice(line, CompletableDeferred())
+                                    tightCue = choice
+                                    try { choice.answer.await().also { skipRemaining = it } }
+                                    finally { tightCue = null }
+                                }
+                            }
+                        }) { done, total ->
                             withContext(Dispatchers.Main.immediate) { progress = DubProgress(done, total) }
                         }
-                        notice = DubNotice(if (ar) "الدبلجة اتحفظت. ارجع للمكتبة وشغّل الفيديو." else "Dub saved. Play the video from your library.")
+                        notice = DubNotice(report.savedMessage(ar))
                     } catch (e: CancellationException) {
                         notice = DubNotice(if (ar) "توليد الدبلجة اتوقف." else "Dubbing stopped.")
                         throw e
@@ -166,7 +183,25 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onDismiss: () -> Unit)
             onChoiceChanged = { previewJob?.cancel(); notice = null },
             onRefresh = ::reload,
             onSettings = { openSettings(false) }, onInstall = { openSettings(true) })
+        tightCue?.let { choice -> TightCueDialog(ar, choice.line) { choice.answer.complete(it) } }
     }
+}
+
+@Composable
+internal fun TightCueDialog(ar: Boolean, line: Int, onDecision: (Boolean) -> Unit) {
+    AlertDialog(onDismissRequest = { onDecision(false) },
+        title = { Text(if (ar) "السطر $line أطول من وقته" else "Cue $line is too long") },
+        text = { Text(if (ar) "الصوت مش هيدخل حتى بعد استغلال الفراغ. تقدر تكمّل وتسيب السطور اللي مش هتدخل من غير دبلجة. توقيت باقي السطور وكلام الترجمة مش هيتغيّروا."
+            else "Even with the nearby gap, the speech won't fit. You can continue and leave unfittable cues undubbed. Other cue timings and saved subtitles won't change.") },
+        confirmButton = { TextButton(onClick = { onDecision(true) }) { Text(if (ar) "كمّل وتخطّى" else "Continue and skip") } },
+        dismissButton = { TextButton(onClick = { onDecision(false) }) { Text(if (ar) "وقّف" else "Stop") } })
+}
+
+private fun DubRenderReport.savedMessage(ar: Boolean): String {
+    if (skipped.isEmpty()) return if (ar) "الدبلجة اتحفظت. ارجع للمكتبة وشغّل الفيديو." else "Dub saved. Play the video from your library."
+    val numbers = skipped.take(8).joinToString(", ") + if (skipped.size > 8) "…" else ""
+    return if (ar) "الدبلجة اتحفظت، و${skipped.size} سطر من غير دبلجة بسبب ضيق التوقيت: $numbers."
+        else "Dub saved. ${skipped.size} cues left undubbed because they did not fit: $numbers."
 }
 
 private suspend fun playPreview(context: Context, file: File) {
@@ -201,7 +236,7 @@ private fun Throwable.dubMessage(ar: Boolean): String {
         DubIssue.VOICE_CHANGED -> if (ar) "الصوت المختار بقى مش متاح. حدّث القائمة وجرّب المعاينة تاني." else "The selected voice is no longer available. Refresh the list and preview again."
         DubIssue.NEEDS_DOWNLOAD -> if (ar) "نزّل بيانات الصوت من إعدادات النطق وارجع حدّث القائمة." else "Download the voice data in speech settings, then refresh."
         DubIssue.NEEDS_NETWORK -> if (ar) "المحرّك طلب اتصال بالإنترنت أو الاتصال فشل. جرّب صوت على الجهاز." else "The engine needed a network connection or lost it. Try an on-device voice."
-        DubIssue.CUE_TOO_LONG -> if (ar) "الكلام أطول من الوقت المتاح للصوت ده. جرّب صوت تاني؛ التطبيق مش هيقص الكلام." else "This voice can't fit the text in its cue. Try another voice; speech won't be cut off."
+        DubIssue.CUE_TOO_LONG -> if (ar) "الكلام أطول من الوقت المتاح. جرّب صوت تاني؛ مفيش كلام اتقصّ." else "This voice can't fit the text in its cue. Try another voice; speech wasn't cut off."
         DubIssue.AUDIO_FORMAT -> if (ar) "تعذّر قراءة أو تشغيل الصوت اللي المحرّك ولّده." else "Couldn't read or play the audio produced by the engine."
         DubIssue.DISK -> if (ar) "المساحة مش كفاية أو ملف الدبلجة ما اتحفظش." else "Not enough space, or the dub couldn't be saved."
         DubIssue.SOURCE_CHANGED -> if (ar) "الفيديو أو الـSRT اتغيّر. حدّث الشاشة وجرّب تاني." else "The video or subtitle file changed. Refresh and try again."
