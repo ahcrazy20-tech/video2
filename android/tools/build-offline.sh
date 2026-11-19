@@ -114,8 +114,8 @@ build_foxlet() {
   verified_source foxlet "$foxlet" "https://codeload.github.com/yinvoke/foxlet-translate/tar.gz/$foxlet_rev" \
     0f4a0f1bca29ed60c877895f2092bbcb9f6c383565ee8d175feb6ef66e9e582b
   archive_patch="$root/native/foxlet/archive-build.patch"
-  if ! patch --dry-run --batch -s -R -p1 -d "$foxlet" < "$archive_patch" >/dev/null 2>&1; then
-    patch --batch -p1 -d "$foxlet" --fuzz=0 < "$archive_patch"
+  if ! patch --dry-run --batch --forward --fuzz=0 -s -R -p1 -d "$foxlet" < "$archive_patch" >/dev/null 2>&1; then
+    patch --batch --forward -p1 -d "$foxlet" --fuzz=0 < "$archive_patch"
   fi
   "$cmake" -S "$foxlet" -B "$work/foxlet-build" "${args[@]}" -DANDROID_PLATFORM=android-28 \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_ARCH=armv8-a -DCOMPILE_TESTS=OFF -DGIT_SUBMODULE=OFF \
