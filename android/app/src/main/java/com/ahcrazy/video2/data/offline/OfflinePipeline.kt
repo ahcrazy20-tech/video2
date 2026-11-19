@@ -36,6 +36,7 @@ internal class OfflinePipeline(
     ): List<SubCue> {
         require(speechModel in OfflineModel.speechModels && (!fastSpeech || speechModel.supportsFastSpeech))
         require(translator in OfflineModel.translators)
+        if (!supportsLocalPair(source.code, target.code, speechModel, translator)) throw OfflineFailure(OfflineIssue.FAST_PAIR)
         signal.throwIfCanceled()
         val title = stamp(input)
         val fingerprint = File(dir, "offline-source.json")
@@ -72,8 +73,9 @@ internal class OfflinePipeline(
         val cues = CueJson.read(original)
         val language = detectedSourceCode(readCheckpoint(langFile)) ?: SubLang.AUTO.code
         pcm.delete()
-        File(dir, "offline-stt").deleteRecursively()
+        speechCheckpoint(dir, speechModel).deleteRecursively()
         if (language !in hymtSourceLanguages) throw OfflineFailure(OfflineIssue.LANGUAGE)
+        if (!supportsLocalPair(language, target.code, speechModel, translator)) throw OfflineFailure(OfflineIssue.FAST_PAIR)
         if (language == target.code) {
             stats.sameLanguage = true
             return cues.map { it.copy(translated = it.original) }
@@ -86,7 +88,13 @@ internal class OfflinePipeline(
             if (matchesTranslation(cues, saved)) {
                 // Interrupted export: no engine was rerun in this attempt.
                 stats.resumed = true
-                planTranslation(cues).indices.forEach { stats.batch(it, fresh = false) }
+                var consumed = 0
+                var index = 0
+                while (consumed < cues.size) {
+                    val batch = checkNotNull(translationBatch(cues, consumed, true, translator))
+                    consumed += batch.size
+                    stats.batch(index++, fresh = false)
+                }
                 return saved
             }
         }
@@ -129,7 +137,7 @@ internal class OfflinePipeline(
             active.get()?.stop()
         }
         try {
-            val tryOverlap = preset == OfflinePreset.OVERLAP && overlapSupported(speech, translator)
+            val tryOverlap = preset == OfflinePreset.OVERLAP && !speech.isMoonshine && !translator.isFirefox && overlapSupported(speech, translator)
             if (preset == OfflinePreset.OVERLAP && !tryOverlap) stats.overlapDeferred = true
             fun stopOverlap() {
                 active.getAndSet(null)?.let { stats.overlapDeferred = true; it.close() }
@@ -199,7 +207,7 @@ internal class OfflinePipeline(
         if (frames > MAX_LOCAL_SECONDS * SAMPLE_RATE.toLong()) throw OfflineFailure(OfflineIssue.TOO_LONG)
         stats.audioMs = frames * 1000 / SAMPLE_RATE
         val count = ((frames + SpeechWindow.CORE - 1) / SpeechWindow.CORE).toInt()
-        val checkpoints = File(dir, "offline-stt").apply { mkdirs() }
+        val checkpoints = speechCheckpoint(dir, speechModel).apply { mkdirs() }
         val cues = mutableListOf<SubCue>()
         var language = source.code
         var triedLanguageRescue = false
@@ -226,10 +234,12 @@ internal class OfflinePipeline(
             fun openCpu(): LocalSpeech = stage(OfflineIssue.TRANSCRIPTION, speechModel.memoryIssue) {
                 // A failed GPU attempt may have changed available memory, even after it closes.
                 val cpuPath = if (stats.gpuFallback == GpuFallback.ENGINE) modelPath(speechModel) else path
-                stats.measure(OfflineStats.Stage.CPU_SPEECH) { engines.speech(cpuPath, signal) }
+                stats.measure(OfflineStats.Stage.CPU_SPEECH) {
+                    if (speechModel.isMoonshine) engines.speechMoonshine(cpuPath, signal) else engines.speech(cpuPath, signal)
+                }
             }
             fun openGpu(): LocalSpeech? {
-                if (preset == OfflinePreset.CPU) return null
+                if (preset == OfflinePreset.CPU || speechModel.isMoonshine) return null
                 stats.gpuFallback = when {
                     hasCheckpoint(marker) -> GpuFallback.INTERRUPTED
                     !vulkanSupported() -> GpuFallback.UNAVAILABLE
@@ -369,7 +379,7 @@ internal class OfflinePipeline(
             cues: List<SubCue>, final: Boolean, progress: (TranslationPhase, Double, Int, Boolean) -> Unit,
             speechRunning: () -> Boolean = { false }
         ): List<SubCue> {
-            fun next() = nextTranslationBatch(cues, translated.size, final)
+            fun next() = translationBatch(cues, translated.size, final, model)
             fun report() {
                 if (final) progress(TranslationPhase.TRANSLATING, 0.62 + 0.34 * translated.size / cues.size, cues.size, true)
             }
@@ -392,7 +402,7 @@ internal class OfflinePipeline(
             while (true) {
                 signal.throwIfCanceled()
                 val batch = next() ?: break
-                val llm = engine ?: stage(OfflineIssue.TRANSLATION, OfflineIssue.TRANSLATOR_MEMORY) {
+                val mt = engine ?: stage(OfflineIssue.TRANSLATION, OfflineIssue.TRANSLATOR_MEMORY) {
                     val overlapping = checkOverlap()
                     val path = modelPath(model)
                     stats.measure(OfflineStats.Stage.TRANSLATE) {
@@ -400,16 +410,34 @@ internal class OfflinePipeline(
                     }.also { engine = it }
                 }
                 val outputs = stage(OfflineIssue.TRANSLATION, OfflineIssue.TRANSLATOR_MEMORY) {
-                    val context = contextForBatch(cues, translated.size, batch.size)
-                    translateLines(batch.map { it.original }, target.englishName, seed + index * 7919, context, retryGuide) { prompt, callSeed ->
-                        signal.throwIfCanceled()
-                        val overlapping = checkOverlap()
+                    val originals = batch.map { it.original }
+                    if (model.isFirefox) {
                         checkTranslationMemory()
-                        if (overlapping) stats.overlapped = true
                         stats.generationCalls++
                         stats.measure(OfflineStats.Stage.TRANSLATE) {
-                            llm.setOverlapping(overlapping)
-                            llm.translate(prompt, callSeed)
+                            val output = mt.translateBatch(originals)
+                            // This is a batch of independent model inputs, not prompt concatenation.
+                            // Never commit a short or blank response or apply it to shifted timings.
+                            if (output.size != batch.size) throw OfflineFailure(OfflineIssue.TRANSLATION)
+                            output.mapIndexed { i, line ->
+                                line.trim().ifBlank {
+                                    originals[i].takeUnless { it.any(Char::isLetter) }
+                                        ?: throw OfflineFailure(OfflineIssue.TRANSLATION)
+                                }
+                            }
+                        }
+                    } else {
+                        val context = contextForBatch(cues, translated.size, batch.size)
+                        translateLines(originals, target.englishName, seed + index * 7919, context, retryGuide) { prompt, callSeed ->
+                            signal.throwIfCanceled()
+                            val overlapping = checkOverlap()
+                            checkTranslationMemory()
+                            if (overlapping) stats.overlapped = true
+                            stats.generationCalls++
+                            stats.measure(OfflineStats.Stage.TRANSLATE) {
+                                mt.setOverlapping(overlapping)
+                                mt.translate(prompt, callSeed)
+                            }
                         }
                     }
                 }
@@ -427,6 +455,9 @@ internal class OfflinePipeline(
     }
 
     companion object {
+        private fun speechCheckpoint(dir: File, speech: OfflineModel) =
+            File(dir, if (speech.isMoonshine) "offline-stt-${speech.id}" else "offline-stt")
+
         // Same directory as older 7B Q4 jobs; never mix their batches with 1.8B.
         fun translatedCuesFile(dir: File, target: String, translator: OfflineModel?) = File(dir,
             if (translator == null || translator == OfflineModel.HYMT_Q4) "cues-translated-$target.json"

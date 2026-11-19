@@ -13,10 +13,12 @@ internal interface LocalSpeech : AutoCloseable {
 }
 internal interface LocalTranslator : AutoCloseable {
     fun setOverlapping(value: Boolean) {}
-    fun translate(prompt: String, seed: Int): String?
+    fun translate(prompt: String, seed: Int): String? = error("Prompt translation unavailable")
+    fun translateBatch(lines: List<String>): List<String> = error("Direct translation unavailable")
 }
 internal interface LocalEngines {
     fun speech(model: File, signal: CancellationSignal): LocalSpeech
+    fun speechMoonshine(model: File, signal: CancellationSignal): LocalSpeech = error("Moonshine unavailable")
     fun speechVulkan(model: File, signal: CancellationSignal): LocalSpeech = error("Vulkan backend unavailable")
     fun translator(model: File, kind: OfflineModel, signal: CancellationSignal): LocalTranslator
     fun translatorForOverlap(model: File, kind: OfflineModel, signal: CancellationSignal): LocalTranslator = translator(model, kind, signal)
@@ -41,6 +43,8 @@ internal object JniEngines : LocalEngines {
     }
 
     override fun speech(model: File, signal: CancellationSignal) = openSpeech(model, signal, whisper, threads, false)
+
+    override fun speechMoonshine(model: File, signal: CancellationSignal) = openMoonshine(model, signal)
 
     override fun speechVulkan(model: File, signal: CancellationSignal): LocalSpeech {
         WhisperVulkanJni.ensureLoaded()
@@ -84,13 +88,14 @@ internal object JniEngines : LocalEngines {
         } else HymtJni
     }
 
-    override fun translator(model: File, kind: OfflineModel, signal: CancellationSignal) = openTranslator(model, kind, signal, false)
+    override fun translator(model: File, kind: OfflineModel, signal: CancellationSignal) =
+        if (kind.isFirefox) openFirefox(model, signal) else openTranslator(model, kind, signal, false)
 
     override fun translatorForOverlap(model: File, kind: OfflineModel, signal: CancellationSignal) =
         openTranslator(model, kind, signal, true)
 
     private fun openTranslator(model: File, kind: OfflineModel, signal: CancellationSignal, overlap: Boolean): LocalTranslator {
-        require(kind in OfflineModel.translators)
+        require(kind in OfflineModel.translators && !kind.isFirefox)
         val native = hymt
         val full = threads
         val shared = minOf(full, 3)

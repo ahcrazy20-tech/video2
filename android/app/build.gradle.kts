@@ -10,6 +10,7 @@ plugins {
 }
 
 val offlineLibs = layout.buildDirectory.dir("generated/offline/jniLibs")
+val offlineNotices = layout.buildDirectory.dir("generated/offline/assets")
 // A local/release operator can use the original signing key without putting it in the repo.
 // Unconfigured CI still uses its own debug signing key; that is not an upgrade guarantee.
 val signingStore = providers.environmentVariable("VIDEO2_SIGNING_STORE").orNull
@@ -18,6 +19,7 @@ fun signingSecret(name: String): String = providers.environmentVariable(name).or
 
 android {
     sourceSets.getByName("main").jniLibs.srcDir(offlineLibs)
+    sourceSets.getByName("main").assets.srcDir(offlineNotices)
     namespace = "com.ahcrazy.video2"
     compileSdk = 34
     ndkVersion = "27.3.13750724"
@@ -26,8 +28,11 @@ android {
         applicationId = "com.ahcrazy.video2"
         minSdk = 26
         targetSdk = 34
-        versionCode = 19
-        versionName = "2.4"
+        versionCode = 20
+        versionName = "2.5"
+        // Keep the same ABI as the existing offline APK. The Moonshine AAR also
+        // ships other ABIs, but they don't have the rest of Kadr's local runtimes.
+        ndk { abiFilters += "arm64-v8a" }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
     }
@@ -79,15 +84,15 @@ val compileOfflineRuntimes by tasks.registering(Exec::class) {
     val script = rootProject.file("tools/build-offline.sh")
     inputs.file(script)
     inputs.dir(rootProject.file("native"))
-    outputs.dir(offlineLibs)
+    outputs.dirs(offlineLibs, offlineNotices)
     doFirst {
         commandLine("bash", script, "android", layout.buildDirectory.dir("intermediates/offline").get().asFile,
-            offlineLibs.get().asFile, sdkDir.get().asFile)
+            offlineLibs.get().asFile, sdkDir.get().asFile, offlineNotices.get().asFile)
     }
 }
 // Order packaging's jniLibs merge explicitly as well as preBuild.
 tasks.named("preBuild") { dependsOn(compileOfflineRuntimes) }
-tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }
+tasks.matching { it.name.startsWith("merge") && (it.name.endsWith("JniLibFolders") || it.name.endsWith("Assets")) }
     .configureEach { dependsOn(compileOfflineRuntimes) }
 
 // The existing APK workflow verifies that the assembled debug APK includes the baseline and accelerated engines.
@@ -103,7 +108,12 @@ val verifyOfflineDebugApk by tasks.registering {
                     "${apk.name} is missing the on-device $engine runtime"
                 }
             }
+            for (engine in listOf("foxlet", "moonshine-jni")) {
+                check(zip.getEntry("lib/arm64-v8a/lib$engine.so") != null) { "${apk.name} is missing the $engine runtime" }
+            }
+            check(zip.getEntry("assets/licenses/foxlet-THIRD-PARTY.txt") != null) { "Missing Foxlet notices" }
             check(zip.entries().asSequence().none { it.name.endsWith(".gguf") ||
+                it.name.substringAfterLast('/') in setOf("encoder.ort", "decoder_kv.ort", "model.enar.intgemm.alphas.bin") ||
                 it.name.substringAfterLast('/').let { name -> name.startsWith("ggml-") && name.endsWith(".bin") } }) {
                 "Model weights must remain outside the APK"
             }
@@ -132,6 +142,7 @@ dependencies {
     implementation(libs.androidx.media3.session)
     implementation(libs.androidx.media3.datasource.okhttp)
     implementation(libs.okhttp)
+    implementation("ai.moonshine:moonshine-voice:0.1.6")
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.security.crypto)

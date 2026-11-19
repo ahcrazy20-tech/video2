@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 internal data class PinnedModel(val url: String, val bytes: Long, val sha256: String)
+internal data class ModelAsset(val name: String, val spec: PinnedModel, val backupName: String, val importName: String? = null)
 internal const val MIB = 1024L * 1024
 private const val HF = "https://huggingface.co"
 private const val WHISPER = "$HF/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1"
@@ -28,8 +29,8 @@ private const val HYMT_LITE_REV = "$HF/tencent/Hy-MT2-1.8B-GGUF/resolve/b27182d8
 private const val HYMT = "$HF/tencent/Hy-MT2-7B-GGUF/resolve/ab8472660ac61fac25f1af43fac2599d52a8a775"
 
 internal enum class OfflineModel(
-    val id: String, val label: String, val spec: PinnedModel, val extension: String,
-    val minTotalRam: Long, val requiredFreeRam: Long
+    val id: String, val label: String, val assets: List<ModelAsset>,
+    val minTotalRam: Long, val requiredFreeRam: Long, val minSdk: Int = 26
 ) {
     // Multilingual Small (not small.en). Same publisher revision and byte/digest verification as Medium.
     WHISPER_SMALL_Q5("whisper-small-q5", "Whisper Small · Q5_1",
@@ -52,22 +53,33 @@ internal enum class OfflineModel(
         "gguf", 4_096 * MIB, 1_400 * MIB),
     HYMT_Q4("hymt2-7b-q4", "Hy-MT2 7B · Q4_K_M",
         PinnedModel("$HYMT/Hy-MT2-7B-Q4_K_M.gguf", 4_624_648_896, "9f96256500f3fc1ab4d64336b58f52a949a95ad7516b0c229476eef782f9f77b"),
-        "gguf", 7_168 * MIB, 3_072 * MIB);
+        "gguf", 7_168 * MIB, 3_072 * MIB),
+    MOONSHINE_EN(MOONSHINE_ID, "Moonshine Small · English", moonshineAssets, 3_072 * MIB, 800 * MIB),
+    FIREFOX_EN_AR(FIREFOX_ID, "Firefox Translations · EN → AR", firefoxAssets, 3_072 * MIB, 600 * MIB, minSdk = 28);
+
+    constructor(id: String, label: String, spec: PinnedModel, extension: String, minTotalRam: Long, requiredFreeRam: Long) :
+        this(id, label, listOf(singleAsset(id, spec, extension)), minTotalRam, requiredFreeRam)
+
+    val bytes = assets.sumOf { it.spec.bytes }
+    val isBundle get() = assets.size > 1
+    val spec get() = assets.single().spec // The historical one-file weight pins.
+    val installedName get() = if (isBundle) id else assets.single().name
+    val publisherName get() = assets.single().importName
+    val isMoonshine get() = this == MOONSHINE_EN
+    val isFirefox get() = this == FIREFOX_EN_AR
 
     val memoryIssue: OfflineIssue get() = when (this) {
-        WHISPER_SMALL_Q5, WHISPER_MEDIUM, WHISPER_MEDIUM_Q5, WHISPER_TURBO -> OfflineIssue.MEMORY
+        WHISPER_SMALL_Q5, WHISPER_MEDIUM, WHISPER_MEDIUM_Q5, WHISPER_TURBO, MOONSHINE_EN -> OfflineIssue.MEMORY
         WHISPER_LARGE -> OfflineIssue.LARGE_MODEL_MEMORY
-        HYMT_LITE, HYMT_Q4 -> OfflineIssue.TRANSLATOR_MEMORY
+        HYMT_LITE, HYMT_Q4, FIREFOX_EN_AR -> OfflineIssue.TRANSLATOR_MEMORY
     }
 
-    val installedName get() = "$id-${spec.sha256.take(12)}.$extension"
-    val publisherName get() = spec.url.substringAfterLast('/')
-    val supportsFastSpeech get() = this in speechModels && this != WHISPER_LARGE
+    val supportsFastSpeech get() = this in speechModels && this != WHISPER_LARGE && !isMoonshine
     val supportsStreamingSpeech get() = this == WHISPER_SMALL_Q5 || this == WHISPER_MEDIUM_Q5 || this == WHISPER_TURBO
 
     companion object {
-        val speechModels = listOf(WHISPER_MEDIUM_Q5, WHISPER_TURBO, WHISPER_MEDIUM, WHISPER_LARGE, WHISPER_SMALL_Q5)
-        val translators = listOf(HYMT_LITE, HYMT_Q4)
+        val speechModels = listOf(WHISPER_MEDIUM_Q5, WHISPER_TURBO, WHISPER_MEDIUM, WHISPER_LARGE, WHISPER_SMALL_Q5, MOONSHINE_EN)
+        val translators = listOf(HYMT_LITE, HYMT_Q4, FIREFOX_EN_AR)
         fun translatorForJob(id: String?) = translators.firstOrNull { it.id == id }
 
         // Version 1.7 always used Large-v3, before jobs stored a speech model ID.
@@ -78,6 +90,11 @@ internal enum class OfflineModel(
             return listOf(speech, translator)
         }
     }
+}
+
+private fun singleAsset(id: String, spec: PinnedModel, extension: String): ModelAsset {
+    val name = "$id-${spec.sha256.take(12)}.$extension"
+    return ModelAsset(name, spec, name, spec.url.substringAfterLast('/'))
 }
 
 // Translation weights are file-backed mmap pages, not a 4.62 GB heap allocation.
@@ -109,11 +126,11 @@ internal class OfflineModels(private val context: Context, private val work: Off
 
     // Prefer already-installed models to avoid unnecessary downloads.
     val defaultSpeech: OfflineModel
-        get() = OfflineModel.speechModels.firstOrNull { ready(it) && compatible(it) } ?: OfflineModel.WHISPER_MEDIUM_Q5
+        get() = OfflineModel.speechModels.firstOrNull { !it.isMoonshine && ready(it) && compatible(it) } ?: OfflineModel.WHISPER_MEDIUM_Q5
 
-    val defaultTranslator: OfflineModel get() = OfflineModel.translators.firstOrNull { ready(it) && compatible(it) } ?: OfflineModel.HYMT_LITE
+    val defaultTranslator: OfflineModel get() = OfflineModel.translators.firstOrNull { !it.isFirefox && ready(it) && compatible(it) } ?: OfflineModel.HYMT_LITE
 
-    fun compatible(model: OfflineModel): Boolean = Build.SUPPORTED_ABIS.firstOrNull() == "arm64-v8a" &&
+    fun compatible(model: OfflineModel): Boolean = Build.VERSION.SDK_INT >= model.minSdk && Build.SUPPORTED_ABIS.firstOrNull() == "arm64-v8a" &&
         !manager.isLowRamDevice && memory().totalMem >= model.minTotalRam
 
     // Vulkan is optional; the driver and actual native backend are checked again on load.
@@ -137,14 +154,16 @@ internal class OfflineModels(private val context: Context, private val work: Off
         return !thermallyLimited() && !ram.lowMemory && ram.availMem >= maxOf(2_048 * MIB, ram.threshold + 512 * MIB)
     }
 
-    fun ready(model: OfflineModel) = file(model).let { it.isFile && it.length() == model.spec.bytes }
+    fun ready(model: OfflineModel) = model.assets.all { ready(model, it) }
+
+    private fun ready(model: OfflineModel, asset: ModelAsset) = file(model, asset).let { it.isFile && it.length() == asset.spec.bytes }
 
     fun path(model: OfflineModel): File {
         if (!ready(model)) throw OfflineFailure(OfflineIssue.MISSING_MODELS)
         if (!compatible(model)) throw OfflineFailure(OfflineIssue.NOT_SUPPORTED)
         val ram = memory()
         if (!canOpenModel(model, ram.totalMem, ram.availMem, ram.threshold, ram.lowMemory)) throw OfflineFailure(model.memoryIssue)
-        return file(model)
+        return File(root, model.installedName)
     }
 
     fun checkTranslationMemory() {
@@ -162,7 +181,7 @@ internal class OfflineModels(private val context: Context, private val work: Off
         _transferCount.value = null
         val backup = folder.value
         if (pack.any { !compatible(it) }) { _issue.value = OfflineIssue.NOT_SUPPORTED; return }
-        val bytes = pack.sumOf { it.spec.bytes }
+        val bytes = pack.sumOf { it.bytes }
         val total = bytes * (if (backup == null) 1 else 2)
         try {
             work.submit(OfflineWorkKind.DOWNLOAD, pack.joinToString("/") { it.id }, onFinish = { error ->
@@ -172,25 +191,32 @@ internal class OfflineModels(private val context: Context, private val work: Off
                 }
             }) { signal, notify ->
                 root.mkdirs()
-                val needed = pack.filterNot(::ready).sumOf { it.spec.bytes - partial(it).length().coerceIn(0, it.spec.bytes) }
+                val needed = pack.sumOf { it.bytes - state(it).downloaded }
                 if (needed > 0 && root.usableSpace < needed + 256 * MIB) throw OfflineFailure(OfflineIssue.STORAGE)
                 var done = 0L
                 for (model in pack) {
-                    signal.throwIfCanceled()
-                    if (!ready(model)) {
-                        try {
-                            downloadModel(http, model.spec, partial(model), file(model), signal) { count ->
-                                _models.value = _models.value + (model to ModelState(count, false))
-                                notify((done + count).toDouble() / total)
+                    var inModel = 0L
+                    for (asset in model.assets) {
+                        signal.throwIfCanceled()
+                        if (!ready(model, asset)) {
+                            try {
+                                val dest = file(model, asset)
+                                dest.parentFile?.mkdirs()
+                                downloadModel(http, asset.spec, partial(model, asset), dest, signal) { count ->
+                                    // Include already-installed later assets (e.g. from a partial SAF restore).
+                                    _models.value = _models.value + (model to state(model))
+                                    notify((done + inModel + count).toDouble() / total)
+                                }
+                            } catch (e: IOException) {
+                                if (root.usableSpace < 128 * MIB) throw OfflineFailure(OfflineIssue.STORAGE, e)
+                                throw OfflineFailure(OfflineIssue.DOWNLOAD, e)
                             }
-                        } catch (e: IOException) {
-                            if (root.usableSpace < 128 * MIB) throw OfflineFailure(OfflineIssue.STORAGE, e)
-                            throw OfflineFailure(OfflineIssue.DOWNLOAD, e)
                         }
-                        _models.value = status()
+                        inModel += asset.spec.bytes
+                        notify((done + inModel).toDouble() / total)
                     }
-                    done += model.spec.bytes
-                    notify(done.toDouble() / total)
+                    _models.value = status()
+                    done += model.bytes
                 }
                 if (backup != null) {
                     val count = folderOperation(OfflineIssue.MODEL_BACKUP) {
@@ -220,55 +246,58 @@ internal class OfflineModels(private val context: Context, private val work: Off
 
     fun backUpInstalled() = transfer(OfflineWorkKind.MODEL_BACKUP, OfflineIssue.MODEL_BACKUP) { f, signal, notify ->
         val models = OfflineModel.entries.filter(::ready)
-        val total = models.sumOf { it.spec.bytes }.coerceAtLeast(1)
+        val total = models.sumOf { it.bytes }.coerceAtLeast(1)
         backUp(models, f, signal) { notify(it.toDouble() / total) }
     }
 
     fun restoreModels() = transfer(OfflineWorkKind.MODEL_RESTORE, OfflineIssue.MODEL_RESTORE) { folder, signal, notify ->
         val documents = folder.documents()
-        val copies = OfflineModel.entries.filter { !ready(it) }.mapNotNull { model ->
-            folder.candidate(documents, model)?.let { model to it }
+        val candidates = OfflineModel.entries.associateWith { model ->
+            model.assets.associateWith { folder.candidate(documents, it) }
         }
+        // A backup may contain only part of a bundle. Resume with the files it actually contains,
+        // but a bundle is not ready (nor counted as restored) until every verified asset is present.
+        val copies = candidates.flatMap { (model, assets) -> assets.mapNotNull { (asset, doc) ->
+            doc?.takeUnless { ready(model, asset) }?.let { Triple(model, asset, it) }
+        } }
         if (copies.isEmpty()) {
-            if (OfflineModel.entries.none { folder.candidate(documents, it) != null }) throw OfflineFailure(OfflineIssue.EMPTY_MODEL_FOLDER)
-            return@transfer 0 // Everything in the selected folder was already installed.
+            if (candidates.values.none { assets -> assets.values.any { it != null } }) throw OfflineFailure(OfflineIssue.EMPTY_MODEL_FOLDER)
+            return@transfer 0
         }
-        val total = copies.sumOf { (model, _) -> model.spec.bytes }
-        // Remove only our private staging files left by an interrupted import.
-        copies.forEach { (model, _) -> restoreStagingFile(file(model)).delete() }
+        val total = copies.sumOf { (_, asset, _) -> asset.spec.bytes }
+        copies.forEach { (model, asset, _) -> restoreStagingFile(file(model, asset)).delete() }
         var done = 0L
-        var restored = 0
         var corrupt = false
-        for ((model, doc) in copies) {
+        for ((model, asset, doc) in copies) {
             signal.throwIfCanceled()
             try {
-                if (doc.size?.let { it != model.spec.bytes } == true) throw OfflineFailure(OfflineIssue.CHECKSUM)
-                if (root.usableSpace < model.spec.bytes + 256 * MIB) throw OfflineFailure(OfflineIssue.STORAGE)
-                restoreVerifiedWeight(model.spec, file(model), signal, { folder.open(doc) }) { count ->
+                if (doc.size?.let { it != asset.spec.bytes } == true) throw OfflineFailure(OfflineIssue.CHECKSUM)
+                if (root.usableSpace < asset.spec.bytes + 256 * MIB) throw OfflineFailure(OfflineIssue.STORAGE)
+                val dest = file(model, asset)
+                dest.parentFile?.mkdirs()
+                restoreVerifiedWeight(asset.spec, dest, signal, { folder.open(doc) }) { count ->
                     notify((done + count).toDouble() / total)
                 }
-                partial(model).delete()
-                restored++
+                partial(model, asset).delete()
                 _models.value = status()
             } catch (error: OfflineFailure) {
                 if (error.issue != OfflineIssue.CHECKSUM) throw error
                 corrupt = true
             }
-            done += model.spec.bytes
+            done += asset.spec.bytes
             notify(done.toDouble() / total)
         }
         if (corrupt) _issue.value = OfflineIssue.MODEL_RESTORE_CHECKSUM
-        restored
+        copies.map { it.first }.distinct().count(::ready)
     }
 
     private fun backUp(models: List<OfflineModel>, folder: ModelFolder, signal: CancellationSignal, progress: (Long) -> Unit): Int {
         val documents = folder.documents()
         var done = 0L
-        for (model in models) {
+        for (model in models) for (asset in model.assets) {
             signal.throwIfCanceled()
-            folder.save(documents, model, file(model), signal) { count -> progress(done + count) }
-            done += model.spec.bytes
-            progress(done)
+            folder.save(documents, asset, file(model, asset), signal) { count -> progress(done + count) }
+            done += asset.spec.bytes
         }
         return models.size
     }
@@ -299,7 +328,11 @@ internal class OfflineModels(private val context: Context, private val work: Off
     fun remove(model: OfflineModel) {
         if (work.status.value != null) return
         _issue.value = null
-        if (listOf(file(model), partial(model)).any { it.exists() && !it.delete() }) _issue.value = OfflineIssue.SAVE
+        val files = model.assets.flatMap { asset ->
+            listOf(file(model, asset), partial(model, asset), restoreStagingFile(file(model, asset)))
+        }
+        if (files.map { !it.exists() || it.delete() }.any { !it }) _issue.value = OfflineIssue.SAVE
+        if (model.isBundle) File(root, model.installedName).delete()
         _models.value = status()
     }
 
@@ -315,11 +348,19 @@ internal class OfflineModels(private val context: Context, private val work: Off
 
     private fun retiredFiles() = listOf(File(root, RETIRED_FILE), File(root, "$RETIRED_FILE.part"))
     private fun memory() = ActivityManager.MemoryInfo().also(manager::getMemoryInfo)
-    private fun file(model: OfflineModel) = File(root, model.installedName)
-    private fun partial(model: OfflineModel) = File(root, "${file(model).name}.part")
-    private fun status() = OfflineModel.entries.associateWith {
-        if (ready(it)) ModelState(it.spec.bytes, true) else ModelState(partial(it).length().coerceIn(0L, it.spec.bytes), false)
+    private fun file(model: OfflineModel, asset: ModelAsset) = if (model.isBundle) File(File(root, model.installedName), asset.name) else File(root, asset.name)
+    private fun partial(model: OfflineModel, asset: ModelAsset) = file(model, asset).let { File(it.parentFile, "${it.name}.part") }
+    private fun state(model: OfflineModel): ModelState {
+        var all = true
+        val bytes = model.assets.sumOf {
+            if (ready(model, it)) it.spec.bytes else {
+                all = false
+                partial(model, it).length().coerceIn(0L, it.spec.bytes)
+            }
+        }
+        return ModelState(bytes, all)
     }
+    private fun status() = OfflineModel.entries.associateWith(::state)
 }
 
 /** Downloads only public model weights. A final app-private path is never visible until SHA-256 passes. */

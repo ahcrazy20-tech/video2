@@ -42,17 +42,17 @@ internal class ModelFolder(private val resolver: ContentResolver, private val tr
         } ?: throw IOException("Cannot read the model folder")
     }
 
-    fun candidate(documents: List<Document>, model: OfflineModel): Document? =
-        documents.firstOrNull { it.name == model.installedName } ?: documents.firstOrNull { it.name == model.publisherName }
+    fun candidate(documents: List<Document>, asset: ModelAsset): Document? =
+        documents.firstOrNull { it.name == asset.backupName } ?: asset.importName?.let { name -> documents.firstOrNull { it.name == name } }
 
     fun open(doc: Document): InputStream = resolver.openInputStream(doc.uri) ?: throw IOException("Cannot open a model file")
 
-    fun save(documents: List<Document>, model: OfflineModel, source: File, signal: CancellationSignal, progress: (Long) -> Unit) {
-        val existing = documents.firstOrNull { it.name == model.installedName }
+    fun save(documents: List<Document>, asset: ModelAsset, source: File, signal: CancellationSignal, progress: (Long) -> Unit) {
+        val existing = documents.firstOrNull { it.name == asset.backupName }
         if (existing != null) {
             // Never overwrite or delete an existing user file. Verify before reporting a successful backup.
-            if (existing.size?.let { it != model.spec.bytes } == true) throw OfflineFailure(OfflineIssue.MODEL_BACKUP)
-            try { open(existing).use { copyVerifiedWeight(model.spec, it, null, signal, progress) } }
+            if (existing.size?.let { it != asset.spec.bytes } == true) throw OfflineFailure(OfflineIssue.MODEL_BACKUP)
+            try { open(existing).use { copyVerifiedWeight(asset.spec, it, null, signal, progress) } }
             catch (error: OfflineFailure) {
                 if (error.issue == OfflineIssue.CHECKSUM) throw OfflineFailure(OfflineIssue.MODEL_BACKUP, error)
                 throw error
@@ -66,15 +66,15 @@ internal class ModelFolder(private val resolver: ContentResolver, private val tr
             source.inputStream().use { input ->
                 val fd = resolver.openFileDescriptor(pending, "w", signal) ?: throw IOException("Cannot write model backup")
                 ParcelFileDescriptor.AutoCloseOutputStream(fd).use { output ->
-                    copyVerifiedWeight(model.spec, input, output, signal, progress)
+                    copyVerifiedWeight(asset.spec, input, output, signal, progress)
                     output.fd.sync()
                 }
             }
             signal.throwIfCanceled()
-            pending = Docs.renameDocument(resolver, pending, model.installedName) ?: throw IOException("Cannot publish model backup")
+            pending = Docs.renameDocument(resolver, pending, asset.backupName) ?: throw IOException("Cannot publish model backup")
             // The provider may resolve a collision by changing the name. Don't claim that as a valid backup.
             published = resolver.query(pending, arrayOf(Docs.Document.COLUMN_DISPLAY_NAME, Docs.Document.COLUMN_SIZE), null, null, null)?.use {
-                it.moveToFirst() && it.getString(0) == model.installedName && !it.isNull(1) && it.getLong(1) == model.spec.bytes
+                it.moveToFirst() && it.getString(0) == asset.backupName && !it.isNull(1) && it.getLong(1) == asset.spec.bytes
             } ?: false
             if (!published) throw IOException("Model backup name did not match")
         } finally {

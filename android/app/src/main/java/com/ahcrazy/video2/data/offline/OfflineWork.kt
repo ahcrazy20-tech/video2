@@ -28,7 +28,7 @@ import kotlinx.coroutines.launch
 
 internal enum class OfflineIssue(val en: String, val ar: String) {
     BACKGROUND("Couldn't start the background task. Reopen Video2 and retry.", "تعذر بدء المهمة في الخلفية. افتح Video2 وحاول تاني."),
-    NOT_SUPPORTED("On-device models require an ARM64 phone and enough physical RAM.", "الموديلات المحلية تحتاج جهاز ARM64 ورام فعلية كافية."),
+    NOT_SUPPORTED("On-device models need a supported Android version, ARM64 and enough RAM.", "الموديلات المحلية محتاجة إصدار أندرويد مدعوم، جهاز ARM64 ورام كافية."),
     MEMORY("Not enough free RAM. Close other apps, then resume.", "الرام المتاحة مش كفاية. اقفل التطبيقات التانية وبعدها استأنف."),
     LARGE_MODEL_MEMORY("Not enough free RAM for Large-v3. Close other apps, or start a new job with Medium if the speech is clear.", "الرام المتاحة مش كفاية لـLarge-v3. اقفل التطبيقات التانية، أو ابدأ مهمة بـMedium لو الكلام واضح."),
     TRANSLATOR_MEMORY("Transcript saved. Translation paused for memory. Close other apps, then resume from here.",
@@ -51,7 +51,9 @@ internal enum class OfflineIssue(val en: String, val ar: String) {
     VIDEO("The saved file is missing or changed. Start a new job with an existing file.", "الملف المحفوظ اتحذف أو اتغير. ابدأ مهمة جديدة بملف موجود."),
     AUDIO("This file doesn't have a supported local audio track. Try a saved MP4 or audio file.", "الملف مفيهوش مسار صوت محلي مدعوم. جرّب ملف MP4 أو صوت محفوظ."),
     TOO_LONG("This file exceeds the 12-hour local audio limit.", "الملف أطول من حد التفريغ المحلي: ١٢ ساعة."),
-    NO_SPEECH("Whisper didn't find clear speech in this audio.", "Whisper ما قدرش يلاقي كلام واضح في الصوت."),
+    NO_SPEECH("The speech engine didn't find clear speech in this audio.", "محرك التفريغ ما لقاش كلام واضح في الصوت."),
+    FAST_PAIR("Moonshine needs English speech; Firefox Translations here only supports English to Arabic. Pick Whisper and Hy-MT2 for other or mixed speech.",
+        "Moonshine للإنجليزي، وFirefox هنا من الإنجليزي للعربي بس. اختار Whisper وHy‑MT2 للصوت المختلط أو اللغات التانية."),
     LANGUAGE("Couldn't identify a supported source language. Review the saved transcript, or pick the source language manually in a new job.", "ما قدرناش نحدد لغة مصدر مدعومة. راجع التفريغ المحفوظ أو اختار لغة الكلام يدويًا في مهمة جديدة."),
     TRANSCRIPTION("On-device transcription failed. Check free RAM and resume.", "التفريغ على الجهاز فشل. راجع الرام المتاحة وحاول تستأنف."),
     TRANSLATION("The on-device model couldn't return a complete translation. Resume to retry the remaining lines.", "الموديل المحلي ما رجّعش ترجمة كاملة. استأنف لإعادة محاولة السطور المتبقية."),

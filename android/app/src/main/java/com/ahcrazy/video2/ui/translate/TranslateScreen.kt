@@ -63,6 +63,7 @@ import com.ahcrazy.video2.data.offline.OfflineIssue
 import com.ahcrazy.video2.data.offline.OfflineModel
 import com.ahcrazy.video2.data.offline.OfflineWorkKind
 import com.ahcrazy.video2.data.offline.RETIRED_TRANSLATOR_ID
+import com.ahcrazy.video2.data.offline.supportsLocalPair
 import com.ahcrazy.video2.ui.components.ChipPreview
 import com.ahcrazy.video2.ui.components.EmptyState
 import com.ahcrazy.video2.ui.components.GlassCard
@@ -132,6 +133,7 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
                             val model = when (OfflineModel.translatorForJob(job.offlineModel)) {
                                 OfflineModel.HYMT_LITE -> "1.8B Q4"
                                 OfflineModel.HYMT_Q4 -> "7B Q4"
+                                OfflineModel.FIREFOX_EN_AR -> "Firefox Translations"
                                 else -> "Q6".takeIf { retired }
                             }
                             listOfNotNull(local, speech, (if (ar) "سريع" else "Fast").takeIf { job.offlineFastSpeech }, model).joinToString(" · ")
@@ -168,10 +170,23 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
                                 })
                             }
                         }
+                        if (!running && app.translations.canTranslateWithFirefox(job)) {
+                            val ready = installed[OfflineModel.FIREFOX_EN_AR]?.installed == true
+                            TextButton(enabled = localWork == null, onClick = {
+                                if (ready) app.translations.translateSavedWithFirefox(job.id)
+                                else { requestedTranslator = OfflineModel.FIREFOX_EN_AR; showModels = true }
+                            }) {
+                                Text(if (ready) {
+                                    if (ar) "ترجم التفريغ المحفوظ بـFirefox" else "Translate saved transcript with Firefox"
+                                } else {
+                                    if (ar) "نزّل Firefox لإعادة الترجمة فقط" else "Get Firefox to translate without transcribing"
+                                })
+                            }
+                        }
                         if (offline && job.phase == TranslationPhase.DONE) PerformanceButton(job, ar) { performanceId = job.id }
                         Row {
                             if (job.phase == TranslationPhase.DONE) TextButton(onClick = { onReviewJob(job) }) { Text(if (ar) "مراجعة وتعديل" else "Review & edit") }
-                            if (!retired && issue != OfflineIssue.LANGUAGE && job.phase in setOf(TranslationPhase.FAILED, TranslationPhase.PAUSED, TranslationPhase.CANCELLED))
+                            if (!retired && issue !in setOf(OfflineIssue.LANGUAGE, OfflineIssue.FAST_PAIR) && job.phase in setOf(TranslationPhase.FAILED, TranslationPhase.PAUSED, TranslationPhase.CANCELLED))
                                 TextButton(enabled = !offline || localWork == null, onClick = { app.translations.resume(job.id) }) { Text(if (ar) "استئناف" else "Resume") }
                             if (running) TextButton(enabled = !stopping, onClick = { app.translations.cancel(job.id) }) { Text(if (ar) "إيقاف" else "Stop") }
                             Spacer(Modifier.weight(1f))
@@ -231,7 +246,7 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
     val models by app.offlineModels.models.collectAsState()
     val work by app.offlineWork.status.collectAsState()
     val offline = mode == TranslationMode.ON_DEVICE
-    val vulkan = remember(app) { app.offlineModels.supportsVulkan() }
+    val vulkan = remember(app) { app.offlineModels.supportsVulkan() } && !speech.isMoonshine
     val overlap = remember(app, speech, localTranslator) { app.offlineModels.supportsOverlap(speech, localTranslator) }
     val profiles = if (overlap) OfflinePreset.entries else if (vulkan) listOf(OfflinePreset.CPU, OfflinePreset.VULKAN) else listOf(OfflinePreset.CPU)
     val effective = preset.takeIf { it in profiles } ?: if (vulkan) OfflinePreset.VULKAN else OfflinePreset.CPU
@@ -250,11 +265,30 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
                 PickerRow(if (ar) "لغة المصدر" else "Source", source, SubLang.entries, { if (ar) it.nameAr else it.englishName }) { source = it }
                 PickerRow(if (ar) "لغة الهدف" else "Target", target, SubLang.entries.filter { it != SubLang.AUTO }, { if (ar) it.nameAr else it.englishName }) { target = it }
                 val manifest = video.kind in setOf(MediaKind.HLS, MediaKind.DASH)
+                val pairSupported = supportsLocalPair(source.code, target.code, speech, localTranslator)
                 if (offline) {
                     SectionTitle(if (ar) "اختصارات السرعة" else "Speed presets")
+                    val rapidCompatible = remember(app) {
+                        OfflineModel.pack(OfflineModel.MOONSHINE_EN, OfflineModel.FIREFOX_EN_AR).all(app.offlineModels::compatible)
+                    }
+                    OutlinedButton(onClick = {
+                        source = SubLang.EN
+                        target = SubLang.AR
+                        speech = OfflineModel.MOONSHINE_EN
+                        localTranslator = OfflineModel.FIREFOX_EN_AR
+                        fastSpeech = false
+                        preset = OfflinePreset.CPU
+                    }, modifier = Modifier.fillMaxWidth(), enabled = work == null && rapidCompatible) {
+                        Text(if (ar) "مسار سريع جديد · إنجليزي إلى عربي (تجريبي)" else "Rapid English → Arabic (experimental)")
+                    }
+                    Text(if (ar) "Moonshine + Firefox Translations. للكلام الإنجليزي الواضح فقط؛ للعربي أو الكلام المختلط اختار Whisper وHy‑MT2. مفيش تنزيل تلقائي."
+                        else "Moonshine + Firefox Translations for clear English speech. For Arabic or mixed speech, keep Whisper and Hy‑MT2. No automatic download.",
+                        fontSize = 12.sp, color = V2.TextDim)
+                    if (!rapidCompatible) Text(if (ar) "المسار الجديد محتاج أندرويد ٩ أو أحدث وجهاز ARM64 برام كافية."
+                        else "The new route needs Android 9+ on ARM64 with enough RAM.", fontSize = 11.sp, color = V2.Gold)
                     fun fasterPath(model: OfflineModel, mt: OfflineModel) = when {
                         app.offlineModels.supportsOverlap(model, mt) -> OfflinePreset.OVERLAP
-                        vulkan -> OfflinePreset.VULKAN
+                        !model.isMoonshine && app.offlineModels.supportsVulkan() -> OfflinePreset.VULKAN
                         else -> OfflinePreset.CPU
                     }
                     OutlinedButton(onClick = {
@@ -287,7 +321,10 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
                     SectionTitle(if (ar) "مسار التشغيل والقياس" else "Execution & timing")
                     if (vulkan) PickerRow(if (ar) "التفريغ والترجمة" else "Execution path", effective, profiles, { it.title(ar) }) { preset = it }
                     else ChipPreview(OfflinePreset.CPU.title(ar), V2.Sky)
-                    Text(if (!vulkan) {
+                    Text(if (speech.isMoonshine) {
+                        if (ar) "Moonshine بيفرّغ أجزاء من الملف على CPU. التوقيت لكل جملة منطوقة، والإيقاف بعد الجزء الجاري."
+                        else "Moonshine decodes bounded file windows on CPU. Timing is per utterance; Stop waits for the current native call."
+                    } else if (!vulkan) {
                         if (ar) "Vulkan 1.2 مش متاح على الجهاز ده. التقرير هيقيس الـCPU." else "Vulkan 1.2 is unavailable. The report measures CPU."
                     } else if (effective == OfflinePreset.CPU) {
                         if (ar) "جرّب نفس الفيديو تاني بمسار GPU عشان تقارن التقريرين." else "Run the same clip with GPU to compare reports."
@@ -300,6 +337,7 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
                     }, color = V2.TextDim, fontSize = 12.sp)
                     if (vulkan && !overlap) Text(if (ar) "التداخل متاح مع Small أو Medium Q5 أو Turbo + مترجم 1.8B وعلى جهاز برام كافية." else
                         "Overlap requires Small, Medium Q5 or Turbo, the 1.8B translator, and sufficient device RAM.", color = V2.TextDim, fontSize = 11.sp)
+                    if (!pairSupported) Text(OfflineIssue.FAST_PAIR.text(ar), color = V2.Gold, fontSize = 12.sp)
                     if (manifest) Text(if (ar) "اختار ملف فيديو أو صوت محفوظ واحد، مش قائمة HLS أو DASH." else "Choose a single saved video or audio file, not an HLS or DASH playlist.",
                         color = V2.Gold, fontSize = 12.sp)
                 } else {
@@ -321,7 +359,7 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
                         app.translations.start(video.id, source, target, stt, refiner, translator)
                         onDismiss()
                     }
-                }, modifier = Modifier.fillMaxWidth(), enabled = !offline || (ready && work == null && !manifest && compatible)) {
+                }, modifier = Modifier.fillMaxWidth(), enabled = !offline || (ready && work == null && !manifest && compatible && pairSupported)) {
                     Text(if (offline) { if (ar) "ابدأ على الجهاز" else "Start on device" } else { if (ar) "ابدأ بالسحابة" else "Start in cloud" })
                 }
             }
@@ -343,10 +381,11 @@ private fun OfflineModelPanel(
     val pack = OfflineModel.pack(speech, translator)
     val compatible = remember(app, speech, translator) { pack.all(app.offlineModels::compatible) }
     val ready = pack.all { models[it]?.installed == true }
-    val remaining = pack.sumOf { (it.spec.bytes - (models[it]?.downloaded ?: 0)).coerceAtLeast(0) }
+    val remaining = pack.sumOf { (it.bytes - (models[it]?.downloaded ?: 0)).coerceAtLeast(0) }
     SectionTitle(if (ar) "الموديلات المحلية" else "Local models")
     PickerRow(if (ar) "موديل التفريغ" else "Speech model", speech, OfflineModel.speechModels, {
         val hint = when (it) {
+            OfflineModel.MOONSHINE_EN -> if (ar) "إنجليزي فقط · تجريبي" else "English only · experimental"
             OfflineModel.WHISPER_SMALL_Q5 -> if (ar) "الأخف · للكلام الواضح" else "Lightest · clear speech"
             OfflineModel.WHISPER_MEDIUM_Q5 -> if (ar) "أخف · للصوت الواضح" else "Smaller · clear speech"
             OfflineModel.WHISPER_TURBO -> if (ar) "نسخة Turbo من Large-v3" else "Faster decoder than Large-v3"
@@ -356,19 +395,25 @@ private fun OfflineModelPanel(
         "${it.label} · $hint"
     }, onSelect)
     PickerRow(if (ar) "موديل الترجمة" else "Translation model", translator, OfflineModel.translators, {
-        val hint = if (it == OfflineModel.HYMT_LITE) { if (ar) "الأخف" else "Lighter" }
-            else { if (ar) "دقة أعلى · أبطأ" else "Higher quality · slower" }
+        val hint = when (it) {
+            OfflineModel.FIREFOX_EN_AR -> if (ar) "إنجليزي إلى عربي فقط" else "English to Arabic only"
+            OfflineModel.HYMT_LITE -> if (ar) "موديل متعدد اللغات أخف" else "Lighter multilingual model"
+            else -> if (ar) "دقة أعلى · أبطأ" else "Higher quality · slower"
+        }
         "${it.label} · $hint"
     }, onTranslator)
-    Text(if (ar) "الاتنين بياخدوا السطور القريبة كسياق. ابدأ بـ1.8B للسرعة، واختار 7B للنص الصعب لو احتجته." else
-        "Both use nearby lines as context. Start with 1.8B for speed; keep 7B for difficult text if needed.",
+    Text(if (translator.isFirefox) {
+        if (ar) "Firefox بيترجم السطور في دفعات بس من غير سياق السطور المجاورة. راجع المصطلحات والمعنى في المقاطع الصعبة."
+        else "Firefox batches separate cues without surrounding context. Review terminology and meaning in difficult passages."
+    } else if (ar) "Hy‑MT2 بياخد السطور القريبة كسياق. ابدأ بـ1.8B للسرعة، واختار 7B للنص الصعب لو احتجته." else
+        "Hy‑MT2 uses nearby lines as context. Start with 1.8B for speed; keep 7B for difficult text if needed.",
         fontSize = 11.sp, color = V2.TextDim)
     for (asset in pack) {
         val current = models[asset]
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f).padding(vertical = 5.dp)) {
                 Text(asset.label, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                val bytes = gb(asset.spec.bytes)
+                val bytes = gb(asset.bytes)
                 val state = when {
                     current?.installed == true -> if (ar) "مثبّت ومتحقق منه" else "Installed and verified"
                     (current?.downloaded ?: 0) > 0 -> "${gb(current!!.downloaded)} / $bytes"
@@ -494,7 +539,8 @@ private fun RetiredModelCleanup(app: Video2Application, ar: Boolean, idle: Boole
         dismissButton = { TextButton(onClick = { confirm = false }) { Text(if (ar) "إلغاء" else "Cancel") } })
 }
 
-private fun gb(bytes: Long) = String.format(Locale.ROOT, "%.2f GB", bytes / 1_000_000_000.0)
+private fun gb(bytes: Long) = if (bytes < 300_000_000) String.format(Locale.ROOT, "%.1f MB", bytes / 1_000_000.0)
+    else String.format(Locale.ROOT, "%.2f GB", bytes / 1_000_000_000.0)
 
 /** Subtitle review & edit — port of SubtitleReviewView. */
 @OptIn(ExperimentalMaterial3Api::class)

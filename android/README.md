@@ -1,5 +1,9 @@
 # كادر (Kadr) — نسخة Android
 
+## Android 2.5: rapid English → Arabic subtitles (experimental)
+
+In **Translate → + → On device → Speed presets**, select **Rapid English → Arabic** and explicitly download the two models (about **178 MB** combined). Both stages stay on the phone: Moonshine Small transcribes English; an INT8 Firefox Translations model translates the timed cues to Arabic. Whisper and Hy‑MT2 remain available for other languages, mixed speech or more contextual translation. ARM64 / Android 9+; actual speed and quality depend on the clip and phone. [Research, source pins, and the A/B test procedure](../docs/fast-local-subtitles.md).
+
 ## الجديد في 2.4 — أدوات السرعة ونسخة للمكتبة
 
 ### تفريغ وترجمة أسرع على الجهاز

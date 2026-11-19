@@ -93,6 +93,21 @@ internal fun nextTranslationBatch(cues: List<SubCue>, start: Int, final: Boolean
     return if (final || cues.size - end >= CONTEXT_LINES) cues.subList(start, end) else null
 }
 
+/** Bound each native call for memory and Stop; each cue remains its own translation input. */
+internal fun translationBatch(cues: List<SubCue>, start: Int, final: Boolean, model: OfflineModel): List<SubCue>? {
+    if (!model.isFirefox) return nextTranslationBatch(cues, start, final)
+    if (!final || start >= cues.size) return null
+    var end = start + 1
+    var chars = cues[start].original.length
+    while (end < cues.size && end - start < 20) {
+        val next = cues[end].original.length
+        if (chars + next > 1_600) break
+        chars += next
+        end++
+    }
+    return cues.subList(start, end)
+}
+
 internal data class SubtitleContext(val before: List<String> = emptyList(), val after: List<String> = emptyList()) {
     fun background(): String {
         fun excerpt(lines: List<String>, beforeSource: Boolean): String =
