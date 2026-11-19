@@ -13,7 +13,7 @@ internal enum class DubIssue { NO_SUBTITLES, TIMING, TOO_LARGE, NO_ENGINE, VOICE
     GEMINI_SETUP, GEMINI_KEY_FORMAT, GEMINI_KEY_STORAGE, GEMINI_KEY_REJECTED,
     GEMINI_CONSENT, GEMINI_LOCAL, GEMINI_SIZE, GEMINI_AUDIO, GEMINI_CAST, GEMINI_ANALYSIS,
     GEMINI_AUTH, GEMINI_PROJECT, GEMINI_LIMIT, GEMINI_MODEL, GEMINI_SERVICE, GEMINI_NETWORK, GEMINI_BLOCKED }
-internal class DubFailure(val issue: DubIssue, val line: Int? = null) : Exception(issue.name)
+internal open class DubFailure(val issue: DubIssue, val line: Int? = null) : Exception(issue.name)
 
 internal data class DubLine(val number: Int, val start: Long, val end: Long, val text: String) {
     val frames: Int get() = (end - start).toInt()

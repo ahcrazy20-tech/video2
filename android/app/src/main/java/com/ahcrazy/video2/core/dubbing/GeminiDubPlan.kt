@@ -35,7 +35,7 @@ internal enum class GeminiReaction(val tag: String, vararg val caption: String) 
 internal data class GeminiPerformance(val tone: GeminiTone = GeminiTone.NATURAL,
                                       val reaction: GeminiReaction? = null, val reactionFirst: Boolean = false)
 internal data class GeminiSpeechWord(val label: String, val start: Long, val end: Long)
-internal data class GeminiMatch(val speaker: Int, val uncertain: Boolean)
+internal data class GeminiMatch(val speaker: Int, val uncertain: Boolean, val estimated: Boolean = false)
 internal data class GeminiAttribution(val matches: Map<Int, GeminiMatch>, val speakers: List<Int>,
                                      val unlinked: Set<Int> = emptySet())
 internal data class GeminiCharacter(val id: Int, val register: GeminiRegister, val preset: GeminiPreset,
@@ -43,6 +43,7 @@ internal data class GeminiCharacter(val id: Int, val register: GeminiRegister, v
 internal data class GeminiDirection(val cast: List<GeminiCharacter>, val matches: Map<Int, GeminiMatch>,
                                     val performance: Map<Int, GeminiPerformance>) {
     val uncertainCount: Int get() = matches.count { it.value.uncertain }
+    val estimatedCount: Int get() = matches.count { it.value.estimated }
 
     private val voicesBySpeaker = cast.associate { it.id to it.preset }
     fun voiceFor(cue: Int): GeminiPreset = voicesBySpeaker.getValue(matches.getValue(cue).speaker)
@@ -88,7 +89,7 @@ internal data class GeminiDirection(val cast: List<GeminiCharacter>, val matches
 }
 
 internal data class GeminiOptions(val allowAudio: Boolean, val allowText: Boolean, val egyptianArabic: Boolean,
-                                  val reactions: Boolean = true) {
+                                  val reactions: Boolean = true, val allowModelFallback: Boolean = false) {
     val consented: Boolean get() = allowAudio && allowText
     val language: String? get() = if (egyptianArabic) "ar-EG" else null
 }
@@ -123,7 +124,7 @@ internal fun GeminiDirection.take(line: DubLine, options: GeminiOptions): Gemini
     val caption = standaloneReaction(text)
     if (caption != null && !options.reactions) return null // Explicitly disabled, silent in this slot.
     val acting = performance[line.number] ?: GeminiPerformance()
-    val tag = acting.reaction?.tag?.takeIf { options.reactions }
+    val tag = acting.reaction?.tag?.takeIf { options.reactions && matches[line.number]?.estimated == false }
     val transcript = when {
         caption != null -> caption.tag
         tag == null -> text

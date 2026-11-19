@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import com.ahcrazy.video2.data.AppSettings
 import com.ahcrazy.video2.data.dubbing.GeminiDubModel
+import com.ahcrazy.video2.data.dubbing.GeminiTask
 import com.ahcrazy.video2.ui.dubbing.dubMessage
 import com.ahcrazy.video2.ui.theme.V2
 import com.ahcrazy.video2.ui.theme.glassSurface
@@ -214,7 +215,11 @@ private fun KeyEditor(ar: Boolean, provider: KeyProvider, saved: Boolean, busy: 
                         else "Key valid: Google accepted it and the dubbing models are visible. Generation quota hasn't been tested.", true)
                     else {
                         val names = missing.joinToString(", ") { "\u2066${it.id}\u2069" }
-                        KeyTestNotice(if (ar) "موديلات مش متاحة للمشروع: $names" else "Models unavailable to this project: $names")
+                        val accepted = missing.size < GeminiDubModel.entries.size
+                        val result = if (ar) "موديلات مش متاحة للمشروع: $names" else "Models unavailable to this project: $names"
+                        val prefix = if (!accepted) "" else if (ar) "Google قبلت المفتاح. الإتاحة مش ضمان لحصة التوليد.\n" else
+                            "Google accepted the key. Model visibility doesn't guarantee generation quota.\n"
+                        KeyTestNotice(prefix + result, GeminiTask.entries.none { it.primary in missing })
                     }
                 }
             } catch (e: CancellationException) { throw e }
@@ -246,7 +251,7 @@ private fun KeyEditor(ar: Boolean, provider: KeyProvider, saved: Boolean, busy: 
             }
             TextButton(onClick = { confirmSpeech = true }, enabled = !locked && draft.isBlank(),
                 modifier = Modifier.fillMaxWidth().testTag("settings.apiKeys.testGeminiSpeech")) {
-                Text(if (ar) "اختبر توليد الصوت (اختياري)" else "Test speech generation (optional)")
+                Text(if (ar) "اختبر موديل الصوت الأساسي" else "Test the primary speech model")
             }
             if (checking) {
                 LinearProgressIndicator(Modifier.fillMaxWidth())

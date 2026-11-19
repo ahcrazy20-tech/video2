@@ -95,11 +95,13 @@ private fun links(before: List<Track>, now: List<List<Span>>, start: Long, end: 
 internal class GeminiSpeakerTracker {
     private var previous = emptyList<Track>()
     private var previousEnd = 0L
+    private var previousEstimated = false
     private var nextId = 1
     private val unlinked = mutableSetOf<Int>()
+    private val estimatedIds = mutableSetOf<Int>()
     private val scores = mutableMapOf<Int, MutableMap<Int, Long>>()
 
-    fun add(part: GeminiSpeakerPart, words: List<GeminiSpeechWord>, check: () -> Unit = {}) {
+    fun add(part: GeminiSpeakerPart, words: List<GeminiSpeechWord>, estimated: Boolean = false, check: () -> Unit = {}) {
         val length = part.end - part.start
         val groups = words.asSequence().filter { it.start >= 0 && it.end > it.start && it.start < length }
             .sortedBy { it.start }.groupBy { it.label }.values
@@ -116,10 +118,12 @@ internal class GeminiSpeakerTracker {
                 }
             }
         }
-        val inherited = links(previous, spans, part.start, minOf(previousEnd, part.end))
+        // Coarse JSON spans aren't evidence for an acoustic identity match across separate requests.
+        val inherited = if (estimated || previousEstimated) emptyMap() else links(previous, spans, part.start, minOf(previousEnd, part.end))
         val pastFirstSpeech = nextId > 1
         val tracks = spans.mapIndexed { i, rows ->
             val id = inherited[i] ?: (nextId++).also { if (pastFirstSpeech) unlinked += it }
+            if (estimated) estimatedIds += id
             Track(id, rows)
         }
         for (cue in part.cues) {
@@ -137,14 +141,16 @@ internal class GeminiSpeakerTracker {
         }
         previous = tracks
         previousEnd = part.end
+        previousEstimated = estimated
     }
 
     fun finish(plan: DubPlan): GeminiAttribution {
         val matches = plan.lines.map { cue ->
-            val sorted = scores[cue.number]?.entries?.sortedByDescending { it.value }.orEmpty()
+            val sorted = scores[cue.number]?.entries?.sortedWith(compareBy<Map.Entry<Int, Long>> { it.key in estimatedIds }
+                .thenByDescending { it.value }).orEmpty()
             val winner = sorted.firstOrNull() ?: return@map null
             GeminiMatch(winner.key, winner.value < minOf(cue.frames / 2L, DUB_SAMPLE_RATE / 8L) ||
-                (sorted.getOrNull(1)?.value ?: 0L) * 3 > winner.value)
+                (sorted.getOrNull(1)?.value ?: 0L) * 3 > winner.value, estimated = winner.key in estimatedIds)
         }
         val used = matches.filterNotNull().map { it.speaker }.distinct().sorted()
         if (used.isEmpty()) throw DubFailure(DubIssue.GEMINI_ANALYSIS)
@@ -160,7 +166,7 @@ internal class GeminiSpeakerTracker {
                 }
                 val nearest = if (old < 0 || next < matches.size &&
                     plan.lines[next].start - plan.lines[i].start < plan.lines[i].start - plan.lines[old].start) next else old
-                GeminiMatch(requireNotNull(matches[nearest]).speaker, true)
+                requireNotNull(matches[nearest]).copy(uncertain = true)
             }
             if (matches[i] != null) old = i
             plan.lines[i].number to match.copy(speaker = display.getValue(match.speaker))

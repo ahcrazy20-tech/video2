@@ -51,6 +51,7 @@ import com.ahcrazy.video2.core.dubbing.GeminiDirection
 import com.ahcrazy.video2.core.dubbing.GeminiOptions
 import com.ahcrazy.video2.core.dubbing.azureDubVoices
 import com.ahcrazy.video2.data.dubbing.DubSource
+import com.ahcrazy.video2.data.dubbing.GeminiTask
 import com.ahcrazy.video2.ui.theme.V2
 import java.util.Locale
 
@@ -75,7 +76,7 @@ internal fun DubbingPanel(
     onChoiceChanged: () -> Unit, onRefresh: () -> Unit, onSettings: () -> Unit, onInstall: () -> Unit,
     onAzureSettings: (() -> Unit)? = null, onGeminiSettings: (() -> Unit)? = null,
     onGeminiPreview: (GeminiOptions) -> Unit = {}, onGeminiSave: (GeminiOptions) -> Unit = {},
-    onGeminiDirection: (GeminiDirection) -> Unit = {},
+    onGeminiDirection: (GeminiDirection) -> Unit = {}, onGeminiFallbackChange: () -> Unit = {},
 ) {
     var provider by remember { mutableStateOf(DubProvider.ANDROID) }
     val azure = provider == DubProvider.AZURE
@@ -146,7 +147,11 @@ internal fun DubbingPanel(
         DubSelector("provider", providerTitle, providerLabel(provider, ar), !working && (!gemini || !geminiBusy)) { picker = Picker.PROVIDER }
         if (gemini) {
             GeminiDubbingControls(ar, state.gemini, source?.plan, state.loading, geminiBusy, geminiOptions,
-                onOptions = { geminiOptions = it; onChoiceChanged() }, onDirection = onGeminiDirection, onSettings = onGeminiSettings)
+                onOptions = {
+                    if (geminiOptions.allowModelFallback != it.allowModelFallback) onGeminiFallbackChange()
+                    geminiOptions = it
+                    onChoiceChanged()
+                }, onDirection = onGeminiDirection, onSettings = onGeminiSettings)
         } else if (azure) {
             Text(if (ar) "أصوات Microsoft Azure Speech مولّدة بنطق أقرب للطبيعي. مش استنساخ لصوت صاحب الفيديو." else
                 "Microsoft Azure Speech generates more natural-sounding speech. It doesn't clone the original speaker.",
@@ -199,9 +204,24 @@ internal fun DubbingPanel(
             Text(it.text, style = MaterialTheme.typography.bodySmall, color = if (it.failed) V2.Danger else V2.Mint,
                 modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
         }
+        if (gemini) {
+            state.gemini.alternates.forEach { (task, model) ->
+                Text(if (ar) "بديل ${task.label(true)}: \u2066${model.id}\u2069" else "${task.label(false)} alternate: ${model.id}",
+                    style = MaterialTheme.typography.bodySmall, color = V2.Gold,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+            }
+            state.gemini.waiting?.let { wait ->
+                Text(if (ar) "${wait.task.label(true)} · بنستنى ${wait.seconds} ث عشان حدّ الاستخدام · \u2066${wait.model.id}\u2069"
+                    else "${wait.task.label(false)} · waiting ${wait.seconds}s for the rate limit · ${wait.model.id}",
+                    style = MaterialTheme.typography.bodySmall, color = V2.Gold,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }.testTag("dubbing.gemini.waiting"))
+            }
+        }
         val geminiStage = state.gemini.stage.takeIf { gemini }
         geminiStage?.let {
-            Text(it.label(ar), style = MaterialTheme.typography.bodySmall, color = V2.TextDim,
+            val model = it.task?.let { task -> state.gemini.alternates[task] ?: task.primary }
+            Text(it.label(ar) + (model?.let { model -> " · ${isolate(model.id)}" } ?: ""),
+                style = MaterialTheme.typography.bodySmall, color = V2.TextDim,
                 modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }.testTag("dubbing.gemini.stage"))
             if (it.total > 0) LinearProgressIndicator(progress = { (it.part - 1).coerceAtLeast(0).toFloat() / it.total },
                 modifier = Modifier.fillMaxWidth()) else LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -209,7 +229,9 @@ internal fun DubbingPanel(
         state.progress?.let { p ->
             if (geminiStage == null) {
                 LinearProgressIndicator(progress = { p.done.toFloat() / p.total.coerceAtLeast(1) }, modifier = Modifier.fillMaxWidth())
-                Text(if (ar) "جارٍ التوليد: ${p.done} / ${p.total}" else "Generating: ${p.done} / ${p.total}", style = MaterialTheme.typography.bodySmall)
+                val generating = if (ar) "جارٍ التوليد: ${p.done} / ${p.total}" else "Generating: ${p.done} / ${p.total}"
+                val model = state.gemini.alternates[GeminiTask.SPEECH] ?: GeminiTask.SPEECH.primary
+                Text(if (gemini) "$generating · ${isolate(model.id)}" else generating, style = MaterialTheme.typography.bodySmall)
             }
             OutlinedButton(onClick = onCancelSave, modifier = Modifier.fillMaxWidth().testTag("dubbing.cancel")) {
                 Text(if (ar) "إيقاف التوليد" else "Cancel generation")
@@ -269,6 +291,7 @@ internal fun DubbingPanel(
         }, provider.id, { picker = null }) { id ->
             val next = DubProvider.entries.first { it.id == id }
             if (provider != next) {
+                if (gemini && geminiOptions.allowModelFallback) onGeminiFallbackChange()
                 provider = next; dialectOverride = null; voiceOverride = null; allowNetwork = false
                 onChoiceChanged()
             }

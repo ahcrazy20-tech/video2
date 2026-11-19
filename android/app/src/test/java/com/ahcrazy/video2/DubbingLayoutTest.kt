@@ -6,6 +6,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -20,6 +21,12 @@ import com.ahcrazy.video2.core.model.SubCue
 import com.ahcrazy.video2.core.model.SubLang
 import com.ahcrazy.video2.data.SavedSourcePreview
 import com.ahcrazy.video2.data.dubbing.DubSource
+import com.ahcrazy.video2.data.dubbing.GeminiDubModel
+import com.ahcrazy.video2.data.dubbing.GeminiRoutingEvent
+import com.ahcrazy.video2.data.dubbing.GeminiStage
+import com.ahcrazy.video2.data.dubbing.GeminiStep
+import com.ahcrazy.video2.data.dubbing.GeminiTask
+import com.ahcrazy.video2.ui.dubbing.DubPreview
 import com.ahcrazy.video2.ui.dubbing.DubbingPanel
 import com.ahcrazy.video2.ui.dubbing.DubbingPanelState
 import com.ahcrazy.video2.ui.dubbing.GeminiPanelState
@@ -141,6 +148,10 @@ class DubbingLayoutTest {
         node("gemini.text").assertIsOff()
         node("gemini.accent").assertIsOn()
         node("gemini.reactions").assertIsOn()
+        node("gemini.modelFallback").assertIsOff()
+        tap("gemini.modelFallback")
+        node("gemini.modelFallback").assertIsOn()
+        node("preview").assertIsNotEnabled()
         tap("gemini.audio")
         node("preview").assertIsNotEnabled()
         node("save").assertIsNotEnabled()
@@ -151,11 +162,36 @@ class DubbingLayoutTest {
         provider("gemini-scene")
         node("gemini.audio").assertIsOff()
         node("gemini.text").assertIsOff()
+        node("gemini.modelFallback").assertIsOff()
         node("save").assertIsNotEnabled()
         compose.runOnIdle {
-            assertEquals(listOf(GeminiOptions(true, true, egyptianArabic = true, reactions = true)), previews)
+            assertEquals(listOf(GeminiOptions(true, true, egyptianArabic = true, reactions = true, allowModelFallback = true)), previews)
             assertEquals(previews, saves)
         }
+    }
+
+    @Test fun geminiCooldownShowsPartAndModelAndCanBeCancelled() {
+        val source = DubSource(planDub(listOf(SubCue(1, 540.0, 542.0, "عامل إيه؟")), 720.0), "ar", true, File("sample.srt"), 0, 0)
+        val panel = mutableStateOf(DubbingPanelState(source, null, gemini = GeminiPanelState(configured = true)))
+        var stopped = 0
+        compose.setContent { Video2Theme(rtl = true) {
+            DubbingPanel("عنوان", true, panel.value, onPreview = {}, onStopPreview = { stopped++ },
+                onSave = {}, onCancelSave = {}, onChoiceChanged = {}, onRefresh = {}, onSettings = {}, onInstall = {})
+        } }
+        fun node(tag: String) = compose.onNodeWithTag("dubbing.$tag")
+        node("provider").performScrollTo().performClick()
+        node("provider.gemini-scene").performClick()
+        val model = GeminiDubModel.TRANSCRIBE
+        compose.runOnIdle {
+            panel.value = panel.value.copy(preview = DubPreview.PREPARING, gemini = panel.value.gemini.copy(
+                stage = GeminiStage(GeminiStep.ASSIGN_SPEAKERS, 4, 5),
+                waiting = GeminiRoutingEvent.Waiting(GeminiTask.SPEAKERS, model, 30)))
+        }
+        node("gemini.stage").assertTextContains("جزء 4 من 5", substring = true)
+        node("gemini.waiting").assertTextContains(model.id, substring = true)
+        node("gemini.modelFallback").assertIsNotEnabled()
+        node("stopPreview").performScrollTo().assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(1, stopped) }
     }
 
     @Test fun tooLongCueAsksBeforeSilencingAnyLine() {

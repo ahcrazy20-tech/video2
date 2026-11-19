@@ -46,8 +46,14 @@ import com.ahcrazy.video2.data.dubbing.DubSelection
 import com.ahcrazy.video2.data.dubbing.DubSource
 import com.ahcrazy.video2.data.dubbing.GeminiDubApi
 import com.ahcrazy.video2.data.dubbing.GeminiDubMedia
+import com.ahcrazy.video2.data.dubbing.GeminiDubModel
+import com.ahcrazy.video2.data.dubbing.GeminiDubRouter
 import com.ahcrazy.video2.data.dubbing.GeminiDubSession
+import com.ahcrazy.video2.data.dubbing.GeminiHttpFailure
+import com.ahcrazy.video2.data.dubbing.GeminiQuotaKind
+import com.ahcrazy.video2.data.dubbing.GeminiRoutingEvent
 import com.ahcrazy.video2.data.dubbing.GeminiStage
+import com.ahcrazy.video2.data.dubbing.GeminiTask
 import com.ahcrazy.video2.data.dubbing.analyzeGeminiDub
 import com.ahcrazy.video2.data.dubbing.auditionDub
 import com.ahcrazy.video2.data.dubbing.checkDubSpace
@@ -92,6 +98,9 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> 
     var geminiInputError by remember { mutableStateOf<String?>(null) }
     var geminiSession by remember { mutableStateOf<GeminiDubSession?>(null) }
     var geminiStage by remember { mutableStateOf<GeminiStage?>(null) }
+    var geminiApi by remember { mutableStateOf<GeminiDubApi?>(null) }
+    var alternates by remember { mutableStateOf<Map<GeminiTask, GeminiDubModel>>(emptyMap()) }
+    var waiting by remember { mutableStateOf<GeminiRoutingEvent.Waiting?>(null) }
     var geminiRendering by remember { mutableStateOf(false) }
     var sourceError by remember { mutableStateOf<String?>(null) }
     var androidError by remember { mutableStateOf<String?>(null) }
@@ -102,10 +111,18 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> 
     var renderJob by remember { mutableStateOf<Job?>(null) }
     var tightCue by remember { mutableStateOf<TightCueChoice?>(null) }
 
+    fun resetGeminiRouting() {
+        geminiApi = null
+        waiting = null
+        // Changing which models may be used for future requests doesn't discard finished analysis or manual casting.
+        alternates = if (geminiSession == null) emptyMap() else alternates.filterKeys { it != GeminiTask.SPEECH }
+    }
     fun reload() {
         previewJob?.cancel()
         notice = null
         geminiSession = null
+        geminiStage = null
+        resetGeminiRouting()
         loading = true
         loadVersion++
     }
@@ -145,12 +162,19 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> 
     suspend fun geminiSelection(captions: DubSource, options: GeminiOptions): DubSelection {
         if (!options.consented) throw DubFailure(DubIssue.GEMINI_CONSENT)
         val media = geminiMedia ?: throw DubFailure(DubIssue.GEMINI_LOCAL)
-        val api = GeminiDubApi(loadGeminiDubConfig(app.settings))
-        val session = geminiSession ?: try {
-            analyzeGeminiDub(ctx.cacheDir, captions, media, api, options) { stage ->
-                withContext(Dispatchers.Main.immediate) { geminiStage = stage }
-            }.also { geminiSession = it }
-        } finally { geminiStage = null }
+        val api = geminiApi ?: run {
+            val router = GeminiDubRouter(options.allowModelFallback, update = { event ->
+                withContext(Dispatchers.Main.immediate) {
+                    waiting = event as? GeminiRoutingEvent.Waiting
+                    if (event is GeminiRoutingEvent.Switched) alternates = alternates + (event.task to event.alternate)
+                }
+            })
+            GeminiDubApi(loadGeminiDubConfig(app.settings), router = router).also { geminiApi = it }
+        }
+        val session = geminiSession ?: analyzeGeminiDub(ctx.cacheDir, captions, media, api, options) { stage ->
+            withContext(Dispatchers.Main.immediate) { geminiStage = stage }
+        }.also { geminiSession = it }
+        geminiStage = null
         return DubSelection.Gemini(session, api, options)
     }
     DisposableEffect(activity) {
@@ -183,6 +207,14 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> 
         }
     }
 
+    fun errorNotice(error: Exception): DubNotice {
+        val stage = geminiStage?.label(ar) ?: when ((error as? GeminiHttpFailure)?.model) {
+            GeminiDubModel.SPEAK, GeminiDubModel.SPEAK_LITE -> GeminiTask.SPEECH.label(ar)
+            else -> null
+        }
+        return DubNotice(listOfNotNull(stage, error.dubMessage(ar)).joinToString("\n"), failed = true)
+    }
+
     fun startPreview(pick: suspend (DubSource) -> DubSelection) {
         val sampleSource = source ?: return
         if (loading || preview != DubPreview.IDLE || progress != null) return
@@ -195,8 +227,8 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> 
                 preview = DubPreview.PLAYING
                 playPreview(ctx, sample)
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { notice = DubNotice(e.dubMessage(ar), failed = true) }
-            finally { sample.delete(); preview = DubPreview.IDLE }
+            catch (e: Exception) { notice = errorNotice(e) }
+            finally { sample.delete(); preview = DubPreview.IDLE; geminiStage = null; waiting = null }
         }
     }
 
@@ -231,8 +263,8 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> 
             } catch (e: CancellationException) {
                 notice = DubNotice(if (ar) "توليد الدبلجة اتوقف." else "Dubbing stopped.")
                 throw e
-            } catch (e: Exception) { notice = DubNotice(e.dubMessage(ar), failed = true) }
-            finally { progress = null; geminiRendering = false }
+            } catch (e: Exception) { notice = errorNotice(e) }
+            finally { progress = null; geminiRendering = false; geminiStage = null; waiting = null }
         }
     }
 
@@ -240,7 +272,7 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> 
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         DubbingPanel(video.title, ar, DubbingPanelState(source, catalog, loading, listOfNotNull(sourceError),
             preview, progress, notice, azureConfigured, androidError,
-            GeminiPanelState(geminiConfigured, geminiInputError, geminiSession?.direction, geminiStage, geminiKeyError)),
+            GeminiPanelState(geminiConfigured, geminiInputError, geminiSession?.direction, geminiStage, geminiKeyError, alternates, waiting)),
             onPreview = { voice ->
                 val engine = catalog?.preferredEngine
                 startPreview { selection(voice, engine) }
@@ -257,7 +289,8 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> 
             onAzureSettings = onOpenSettings, onGeminiSettings = onOpenGeminiSettings,
             onGeminiPreview = { options -> startPreview { geminiSelection(it, options) } },
             onGeminiSave = { options -> startSave(gemini = true) { geminiSelection(it, options) } },
-            onGeminiDirection = { direction -> geminiSession = geminiSession?.withDirection(direction); notice = null })
+            onGeminiDirection = { direction -> geminiSession = geminiSession?.withDirection(direction); notice = null },
+            onGeminiFallbackChange = ::resetGeminiRouting)
         tightCue?.let { choice -> TightCueDialog(ar, choice.line) { choice.answer.complete(it) } }
     }
 }
@@ -342,8 +375,18 @@ internal fun Throwable.dubMessage(ar: Boolean): String {
             else "The key's project lacks access. Check its Gemini API permissions in AI Studio."
         DubIssue.GEMINI_PROJECT -> if (ar) "Google طلبت مراجعة إتاحة المشروع أو الفوترة أو الرصيد. كادر مش هيغيّر أي حاجة في حسابك."
             else "Google reported a project, billing or credit requirement. Kadr won't change your account."
-        DubIssue.GEMINI_LIMIT -> if (ar) "Google أوقفت الطلب بسبب معدل الاستخدام أو الحصة. راجع حدود مشروعك في AI Studio أو اختار صوت Android على الجهاز."
-            else "Google stopped the request because of a rate or quota limit. Check your project limits or choose an offline Android voice."
+        DubIssue.GEMINI_LIMIT -> when ((failure as? GeminiHttpFailure)?.quota?.kind) {
+            GeminiQuotaKind.DAILY -> if (ar) "الحصة اليومية خلصت. راجع حصة مشروعك في AI Studio أو جرّب بعد تجديدها."
+                else "Daily quota exhausted. Check project limits in AI Studio or try after reset."
+            GeminiQuotaKind.ZERO -> if (ar) "المشروع ملوش حصة متاحة للموديل ده. راجع الإتاحة في AI Studio."
+                else "This project has no quota for this model. Check availability in AI Studio."
+            GeminiQuotaKind.SHORT -> if (ar) "Google وقفت الطلب بسبب معدل الطلبات أو التوكنز. جرّب بعد شوية."
+                else "Google hit a short-term request or token rate limit. Try again later."
+            GeminiQuotaKind.PROJECT -> if (ar) "Google أوقفت الطلب بسبب حد المشروع أو الفوترة. راجع AI Studio."
+                else "Google stopped the request at a project or billing limit. Check AI Studio."
+            else -> if (ar) "Google وقفت الطلب بسبب حدّ الاستخدام. راجع حدود مشروعك في AI Studio أو اختار صوت Android على الجهاز."
+                else "Google stopped the request because of a usage limit. Check AI Studio or choose an offline Android voice."
+        }
         DubIssue.GEMINI_MODEL -> if (ar) "موديل الدبلجة مش متاح لمشروع المفتاح. راجع الإتاحة في Google AI Studio." else "A dubbing model is unavailable to this API project. Check availability in Google AI Studio."
         DubIssue.GEMINI_SERVICE -> if (ar) "Gemini ما قدرش يكمل الطلب. جرّب تاني بعد شوية أو اختبر المفتاح في الإعدادات." else "Gemini couldn't complete the request. Try again later or test the key in Settings."
         DubIssue.GEMINI_NETWORK -> if (ar) "الاتصال بـ Gemini اتقطع أو الطلب أخد وقت طويل. راجع النت وجرّب تاني." else "The Gemini connection failed or timed out. Check your internet and try again."
@@ -352,5 +395,7 @@ internal fun Throwable.dubMessage(ar: Boolean): String {
             if (ar) "حصل خطأ في قراءة أو حفظ الملف. راجع المساحة المتاحة." else "Couldn't read or save a file. Check available storage."
         } else if (ar) "حصل خطأ في الدبلجة. حدّث القائمة وجرّب تاني." else "Dubbing failed. Refresh and try again."
     }
-    return failure?.line?.let { (if (ar) "السطر $it: " else "Cue $it: ") + text } ?: text
+    val model = (failure as? GeminiHttpFailure)?.let { "\u2066${it.model.id}\u2069 (${it.status})" }
+    val detail = if (model == null) text else "$model · $text"
+    return failure?.line?.let { (if (ar) "السطر $it: " else "Cue $it: ") + detail } ?: detail
 }

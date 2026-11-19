@@ -17,6 +17,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import com.ahcrazy.video2.ui.settings.ApiKeysEntry
 import com.ahcrazy.video2.ui.settings.ApiKeysScreen
+import com.ahcrazy.video2.data.dubbing.GeminiDubModel
 import com.ahcrazy.video2.ui.settings.GeminiKeyChecks
 import com.ahcrazy.video2.ui.theme.Video2Theme
 import org.junit.Assert.assertEquals
@@ -66,9 +67,10 @@ class ApiKeysLayoutTest {
     @Test fun savedGeminiKeyIsNotTestedUntilRequestedAndSpeechNeedsConfirmation() {
         var keyChecks = 0
         var speechChecks = 0
+        var missing = emptyList<GeminiDubModel>()
         compose.setContent { Video2Theme(rtl = true) {
             ApiKeysScreen(ar = true, { it == "gemini" }, { _, _ -> }, {}, initialProvider = "gemini",
-                geminiChecks = GeminiKeyChecks(models = { keyChecks++; emptyList() }, speech = { speechChecks++ })) {}
+                geminiChecks = GeminiKeyChecks(models = { keyChecks++; missing }, speech = { speechChecks++ })) {}
         } }
         fun node(tag: String) = compose.onNodeWithTag("settings.apiKeys.$tag")
         fun tap(tag: String) = node(tag).performScrollTo().assertIsDisplayed().performClick()
@@ -80,7 +82,14 @@ class ApiKeysLayoutTest {
         compose.runOnIdle { assertEquals(1, keyChecks); assertEquals(0, speechChecks) }
         compose.onNodeWithText("اختبر الصوت").assertIsDisplayed().performClick()
         node("testResult").assertTextContains("اختبار الصوت نجح", substring = true)
-        compose.runOnIdle { assertEquals(1, keyChecks); assertEquals(1, speechChecks) }
+        compose.runOnIdle {
+            assertEquals(1, keyChecks); assertEquals(1, speechChecks)
+            missing = listOf(GeminiDubModel.SPEAK_LITE)
+        }
+        tap("testGemini")
+        node("testResult").assertTextContains("Google قبلت المفتاح", substring = true)
+        node("testResult").assertTextContains(GeminiDubModel.SPEAK_LITE.id, substring = true)
+        compose.runOnIdle { assertEquals(2, keyChecks); assertEquals(1, speechChecks) }
     }
 
 }

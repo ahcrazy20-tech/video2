@@ -173,6 +173,22 @@ class GeminiDubPlanTest {
         assertEquals((2..10).toSet(), attribution.unlinked)
     }
 
+    @Test fun estimatedSpeakerPartDoesNotJoinNativeIdsOrEmitUncertainReactionTags() {
+        val plan = planDub(listOf(cue(1, 171.0), cue(2, 185.0, "إزيك؟")))
+        val parts = geminiSpeakerParts(plan, frame(200.0))
+        val tracker = GeminiSpeakerTracker()
+        tracker.add(parts[0], listOf(word("same raw id", 10.1, 10.8), word("same raw id", 24.1, 24.8)))
+        tracker.add(parts[1], listOf(word("same raw id", 1.1, 1.8), word("same raw id", 15.1, 15.8)), estimated = true)
+        val attribution = tracker.finish(plan)
+        assertFalse(attribution.matches.getValue(1).estimated)
+        assertTrue(attribution.matches.getValue(2).estimated)
+        assertNotEquals(attribution.matches.getValue(1).speaker, attribution.matches.getValue(2).speaker)
+        val direction = directGeminiCast(attribution, emptyMap(), mapOf(2 to GeminiPerformance(reaction = GeminiReaction.LAUGH)))
+        assertEquals(1, direction.estimatedCount)
+        assertEquals("إزيك؟", direction.take(plan.lines[1], GeminiOptions(true, true, true))?.text)
+        assertEquals(frame(185.0), plan.lines[1].start)
+    }
+
     private fun attributeGeminiLines(plan: DubPlan, words: List<GeminiSpeechWord>): GeminiAttribution {
         val part = geminiSpeakerParts(plan, plan.frames).single()
         val local = words.map { it.copy(start = it.start - part.start, end = it.end - part.start) }

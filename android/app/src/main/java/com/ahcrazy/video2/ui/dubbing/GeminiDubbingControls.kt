@@ -34,13 +34,18 @@ import com.ahcrazy.video2.core.dubbing.GeminiDirection
 import com.ahcrazy.video2.core.dubbing.GeminiOptions
 import com.ahcrazy.video2.core.dubbing.GeminiRegister
 import com.ahcrazy.video2.core.dubbing.geminiPresets
+import com.ahcrazy.video2.data.dubbing.GeminiDubModel
+import com.ahcrazy.video2.data.dubbing.GeminiRoutingEvent
 import com.ahcrazy.video2.data.dubbing.GeminiStage
 import com.ahcrazy.video2.data.dubbing.GeminiStep
+import com.ahcrazy.video2.data.dubbing.GeminiTask
 import com.ahcrazy.video2.ui.theme.V2
 
 internal data class GeminiPanelState(val configured: Boolean = false, val inputError: String? = null,
                                     val direction: GeminiDirection? = null, val stage: GeminiStage? = null,
-                                    val keyError: String? = null)
+                                    val keyError: String? = null,
+                                    val alternates: Map<GeminiTask, GeminiDubModel> = emptyMap(),
+                                    val waiting: GeminiRoutingEvent.Waiting? = null)
 
 @Composable
 internal fun GeminiDubbingControls(ar: Boolean, state: GeminiPanelState, plan: DubPlan?, loading: Boolean, busy: Boolean,
@@ -72,8 +77,8 @@ internal fun GeminiDubbingControls(ar: Boolean, state: GeminiPanelState, plan: D
             options.egyptianArabic, enabled) { onOptions(options.copy(egyptianArabic = it)) }
         GeminiToggle("reactions", if (ar) "ردود الفعل المسموعة (ضحك، تنهيدة…)" else "Audible vocal reactions (laughs, sighs…)",
             options.reactions, enabled) { onOptions(options.copy(reactions = it)) }
-        Text(if (ar) "المعاينة الأولى بتحلّل أجزاء الصوت حوالين السطور، وبتولّد عيّنة قصيرة بس. الدبلجة الكاملة ممكن تحتاج لحد ${plan.lines.size} طلب توليد، غير التحليل. الاستخدام حسب حصة وفوترة مشروعك، وجوجل ممكن تستخدم المدخلات لتحسين خدماتها في الحصة المجانية."
-            else "The first preview analyzes audio around the subtitles, then generates only a short sample. A full dub may need up to ${plan.lines.size} speech requests plus analysis. Usage follows your project's quota and billing; Google may use free-tier inputs to improve its services.",
+        Text(if (ar) "المعاينة الأولى بتحلّل أجزاء الصوت حوالين السطور، وبتولّد عيّنة قصيرة بس. الدبلجة الكاملة ممكن تحتاج لحد ${plan.lines.size} طلب توليد، غير التحليل وإعادة المحاولة. الاستخدام حسب حصة وفوترة مشروعك، وجوجل ممكن تستخدم المدخلات لتحسين خدماتها في الحصة المجانية."
+            else "The first preview analyzes audio around the subtitles, then generates only a short sample. A full dub may need up to ${plan.lines.size} speech requests before analysis and retries. Usage follows your project's quota and billing; Google may use free-tier inputs to improve its services.",
             style = MaterialTheme.typography.bodySmall, color = V2.TextDim)
         GeminiToggle("audio", if (ar) "أسمح بإرسال الصوت الأصلي إلى Gemini للتحليل (من غير صورة الفيديو)."
             else "Allow Gemini to analyze the original audio (no video frames).", options.allowAudio, enabled) {
@@ -83,6 +88,11 @@ internal fun GeminiDubbingControls(ar: Boolean, state: GeminiPanelState, plan: D
             else "Allow sending preview or subtitle text to Gemini to generate speech.", options.allowText, enabled) {
             onOptions(options.copy(allowText = it))
         }
+        GeminiToggle("modelFallback", if (ar) "جرّب بدائل Gemini عند بلوغ الحد" else "Try alternate Gemini models at the limit",
+            options.allowModelFallback, enabled) { onOptions(options.copy(allowModelFallback = it)) }
+        if (options.allowModelFallback) Text(if (ar) "Flash-Lite للتحليل وFlash-Lite TTS للصوت. لو Transcribe وقف، تحديد المتحدثين يبقى تقديري. البدائل مدرجة في Free Tier، لكن الاستخدام على نفس مشروع مفتاحك وحصته وفوترته."
+            else "Flash-Lite for analysis and Flash-Lite TTS for speech. Speaker assignments are estimated if Transcribe stops. Alternatives are listed on the Free Tier but use the same project's quotas and billing.",
+            style = MaterialTheme.typography.bodySmall, color = V2.TextDim)
         state.direction?.let { direction ->
             val roles = direction.cast.size
             Text(if (ar) "اتوزّعت أصوات جاهزة على $roles مجموعة كلام، من غير تحديد هوية الأشخاص."
@@ -90,6 +100,9 @@ internal fun GeminiDubbingControls(ar: Boolean, state: GeminiPanelState, plan: D
                 style = MaterialTheme.typography.bodySmall, color = V2.Mint)
             if (direction.uncertainCount > 0) Text(if (ar) "${direction.uncertainCount} سطر تحديد متحدثه مش واضح. تقدر تراجعه."
                 else "${direction.uncertainCount} cues have uncertain speaker assignments. You can review them.",
+                style = MaterialTheme.typography.bodySmall, color = V2.Gold)
+            if (direction.estimatedCount > 0) Text(if (ar) "${direction.estimatedCount} سطر متحدثه تقديري من الموديل البديل. راجع توزيع الأصوات لو محتاج تصحيح."
+                else "The alternate model estimated the speaker for ${direction.estimatedCount} cues. Review the cast if needed.",
                 style = MaterialTheme.typography.bodySmall, color = V2.Gold)
             val unlinked = direction.cast.count { it.unlinked }
             if (unlinked > 0) Text(if (ar) "$unlinked مجموعة ما قدرناش نربطها بالأجزاء اللي قبلها. لو نفس الشخص ظهر تاني تقدر تدمج مجموعته من توزيع الأصوات."
@@ -118,6 +131,18 @@ internal fun GeminiStage.label(ar: Boolean) = when (step) {
     GeminiStep.EXTRACT_AUDIO -> if (ar) "بنجهّز الصوت الأصلي على الجهاز…" else "Preparing original audio on your device…"
     GeminiStep.ASSIGN_SPEAKERS -> if (ar) "تمييز المتحدثين · جزء $part من $total" else "Identifying speakers · part $part of $total"
     GeminiStep.DIRECT_SCENES -> if (ar) "تحليل النبرة وردود الفعل · مشهد $part من $total" else "Analyzing delivery · scene $part of $total"
+}
+
+internal val GeminiStage.task: GeminiTask? get() = when (step) {
+    GeminiStep.EXTRACT_AUDIO -> null
+    GeminiStep.ASSIGN_SPEAKERS -> GeminiTask.SPEAKERS
+    GeminiStep.DIRECT_SCENES -> GeminiTask.SCENE
+}
+
+internal fun GeminiTask.label(ar: Boolean) = when (this) {
+    GeminiTask.SPEAKERS -> if (ar) "تمييز المتحدثين" else "Speaker analysis"
+    GeminiTask.SCENE -> if (ar) "تحليل النبرة" else "Scene direction"
+    GeminiTask.SPEECH -> if (ar) "توليد الصوت" else "Speech generation"
 }
 
 private sealed interface GeminiEdit {
@@ -178,9 +203,15 @@ private fun GeminiCastDialog(ar: Boolean, plan: DubPlan, direction: GeminiDirect
                             }
                         }
                     }
-                    GeminiEdit.Lines -> items(plan.lines.sortedByDescending { direction.matches[it.number]?.uncertain == true }, key = { it.number }) { line ->
+                    GeminiEdit.Lines -> items(plan.lines.sortedByDescending {
+                        direction.matches[it.number]?.let { match -> match.uncertain || match.estimated } == true
+                    }, key = { it.number }) { line ->
                         val match = direction.matches.getValue(line.number)
-                        val uncertain = if (match.uncertain) (if (ar) " · مش مؤكد" else " · uncertain") else ""
+                        val uncertain = when {
+                            match.estimated -> if (ar) " · تقديري" else " · estimated"
+                            match.uncertain -> if (ar) " · مش مؤكد" else " · uncertain"
+                            else -> ""
+                        }
                         ReviewRow("cue.${line.number}", "${line.number} · ${speakerLabel(match.speaker, ar)}$uncertain", line.text) {
                             edit = GeminiEdit.Line(line.number)
                         }

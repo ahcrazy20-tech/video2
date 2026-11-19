@@ -13,6 +13,7 @@ import com.ahcrazy.video2.core.dubbing.GeminiTone
 import com.ahcrazy.video2.core.dubbing.monoPcm16Header
 import com.ahcrazy.video2.core.dubbing.readSpeechWav
 import com.ahcrazy.video2.core.dubbing.planDub
+import com.ahcrazy.video2.core.dubbing.take
 import com.ahcrazy.video2.core.model.MediaKind
 import com.ahcrazy.video2.core.model.SavedVideo
 import com.ahcrazy.video2.core.model.SubCue
@@ -23,9 +24,14 @@ import com.ahcrazy.video2.data.dubbing.GeminiDubApi
 import com.ahcrazy.video2.data.dubbing.GeminiDubConfig
 import com.ahcrazy.video2.data.dubbing.GeminiDubMedia
 import com.ahcrazy.video2.data.dubbing.GeminiDubModel
+import com.ahcrazy.video2.data.dubbing.GeminiDubRouter
 import com.ahcrazy.video2.data.dubbing.GeminiDubSession
+import com.ahcrazy.video2.data.dubbing.GeminiHttpFailure
+import com.ahcrazy.video2.data.dubbing.GeminiQuotaKind
+import com.ahcrazy.video2.data.dubbing.GeminiRoutingEvent
 import com.ahcrazy.video2.data.dubbing.GeminiStep
 import com.ahcrazy.video2.data.dubbing.GeminiStage
+import com.ahcrazy.video2.data.dubbing.GeminiTask
 import com.ahcrazy.video2.data.dubbing.analyzeGeminiDub
 import com.ahcrazy.video2.data.dubbing.auditionDub
 import com.ahcrazy.video2.data.dubbing.directGeminiAudio
@@ -141,6 +147,23 @@ class GeminiDubbingTest {
             assertEquals(1_000, waveform[at].toInt())
         }
         assertEquals(original, subs.readText())
+        val priorTrack = File(requireNotNull(saved.dubbedAudioPath))
+        var speechAttempts = 0
+        val noCapacity = geminiDubHttp.newBuilder().addInterceptor { chain ->
+            if (++speechAttempts == 1) reply(chain.request(), 200, ok(JSONObject().put("inlineData",
+                JSONObject().put("mimeType", "audio/wav").put("data", Base64.getEncoder().encodeToString(speech)))))
+            else reply(chain.request(), 429, quotaError("GenerateRequestsPerDayPerProjectPerModel-FreeTier", "1"))
+        }.build()
+        val unavailable = DubSelection.Gemini(GeminiDubSession(source, media, direction),
+            GeminiDubApi(config, noCapacity, GeminiDubRouter(true)), options.copy(allowModelFallback = true))
+        val exhausted = failure { saveDub(ctx, library, saved, source, unavailable, { false }, { _, _ -> }) } as GeminiHttpFailure
+        assertEquals(GeminiQuotaKind.DAILY, exhausted.quota?.kind)
+        assertEquals(GeminiDubModel.SPEAK_LITE, exhausted.model)
+        assertEquals(2, exhausted.line)
+        assertEquals(3, speechAttempts)
+        assertEquals(priorTrack.path, library.byId(video.id)?.dubbedAudioPath)
+        assertArrayEquals(waveform, readSpeechWav(priorTrack).samples)
+        assertEquals(listOf(priorTrack), priorTrack.parentFile?.listFiles()?.toList())
         val (request, diarize) = requests[0]
         assertEquals("generativelanguage.googleapis.com", request.url.host)
         assertNull(request.url.query)
@@ -232,7 +255,7 @@ class GeminiDubbingTest {
         assertEquals(GeminiDubModel.entries.map { it.id }, checked)
         missing = null
         assertTrue(api.unavailableModels().isEmpty())
-        assertEquals(6, checked.size)
+        assertEquals(2 * GeminiDubModel.entries.size, checked.size)
     }
 
     @Test fun keyCheckDistinguishesRejectedKeyQuotaNetworkAndMalformedMetadata() = runBlocking<Unit> {
@@ -324,6 +347,121 @@ class GeminiDubbingTest {
         assertEquals(0, directions)
     }
 
+    @Test fun partFourFallsBackWithoutReplayingTheEarlierPartsAndMarksEstimatedSpeakers() = runBlocking<Unit> {
+        val plan = planDub((0..4).map { SubCue(it + 1, it * 180.0 + 5, it * 180.0 + 6, "Saved cue $it") }, 740.0)
+        val pcm = temp.newFile("five-parts.pcm")
+        RandomAccessFile(pcm, "rw").use { it.setLength(740 * 32_000L) }
+        val routes = mutableListOf<GeminiRoutingEvent?>()
+        val router = GeminiDubRouter(true, update = { routes += it }, pause = { error("Don't wait for daily quota") })
+        val calls = mutableListOf<String>()
+        var diarizations = 0
+        var approximate = 0
+        var directions = 0
+        var failedAudioBytes = 0L
+        val http = geminiDubHttp.newBuilder().addInterceptor { chain ->
+            val request = chain.request()
+            val model = request.url.pathSegments.last().substringBefore(':')
+            calls += model
+            assertEquals("fixture-api-key", request.header("x-goog-api-key"))
+            assertNull(request.url.query)
+            if (model == GeminiDubModel.TRANSCRIBE.id) {
+                val i = ++diarizations
+                if (i == 4) {
+                    failedAudioBytes = request.body!!.contentLength()
+                    reply(request, 429, quotaError("GenerateRequestsPerDayPerProjectPerModel-FreeTier", "3"))
+                } else {
+                    val offset = if (i == 1) 5 else 15
+                    reply(request, 200, ok(wordPart("native", "$offset.1s", "$offset.8s")))
+                }
+            } else {
+                val body = JSONObject(Buffer().also { request.body!!.writeTo(it) }.readUtf8())
+                val config = body.getJSONObject("generationConfig")
+                assertFalse(config.has("audioTranscriptionConfig"))
+                val schema = config.getJSONObject("responseFormat").getJSONObject("text").getJSONObject("schema")
+                    .getJSONObject("properties")
+                assertFalse(body.toString().contains("Saved cue"))
+                if (schema.has("turns")) {
+                    assertEquals(GeminiDubModel.DIRECT_LITE.id, model)
+                    if (approximate++ == 0) assertTrue(request.body!!.contentLength() in failedAudioBytes..failedAudioBytes + 4096)
+                    val invalid = """{"speaker":1,"from_ms":-15,"to_ms":100}"""
+                    reply(request, 200, ok(JSONObject().put("text", """{"turns":[$invalid,{"speaker":1,"from_ms":15100,"to_ms":15800}]}""")))
+                } else {
+                    val cue = ++directions
+                    if (model == GeminiDubModel.DIRECT.id) {
+                        assertEquals(1, cue)
+                        directions-- // Fallback is for this scene, not the first cue of the next one.
+                        reply(request, 404, "fixture model unavailable")
+                    } else {
+                        assertEquals(GeminiDubModel.DIRECT_LITE.id, model)
+                        reply(request, 200, ok(JSONObject().put("text", """{"speakers":[],"cues":[{"id":$cue,"tone":"warm","reaction":"laugh","placement":"after"}]}""")))
+                    }
+                }
+            }
+        }.build()
+        val stages = mutableListOf<GeminiStage>()
+        val direction = directGeminiAudio(pcm, plan, GeminiDubApi(config, http, router)) { stages += it }
+        assertEquals((1..5).toList(), stages.filter { it.step == GeminiStep.ASSIGN_SPEAKERS }.map { it.part })
+        assertEquals(4, diarizations)
+        assertEquals(2, approximate)
+        assertEquals(5, directions)
+        assertEquals(List(4) { GeminiDubModel.TRANSCRIBE.id } + List(2) { GeminiDubModel.DIRECT_LITE.id } +
+            GeminiDubModel.DIRECT.id + List(5) { GeminiDubModel.DIRECT_LITE.id }, calls)
+        assertEquals(listOf(GeminiTask.SPEAKERS, GeminiTask.SCENE), routes.filterIsInstance<GeminiRoutingEvent.Switched>().map { it.task })
+        assertEquals(listOf(4, 5), direction.matches.filterValues { it.estimated }.keys.toList())
+        assertNotEquals(direction.voiceFor(4), direction.voiceFor(5))
+        assertNull(direction.performance.getValue(4).reaction)
+        assertEquals("Saved cue 3", direction.take(plan.lines[3], options)?.text)
+        assertEquals(545L * DUB_SAMPLE_RATE, plan.lines[3].start)
+    }
+
+    @Test fun speechQuotaRetriesThenSendsTheSameTakeToLiteAndPinsItForTheNextCue() = runBlocking<Unit> {
+        val take = GeminiTake("Kore", "عامل إيه؟", "warm", "ar-EG")
+        val requests = mutableListOf<Pair<String, String>>()
+        val waits = mutableListOf<Long>()
+        var clock = 0L
+        val router = GeminiDubRouter(true, pause = { waits += it; clock += it }, clock = { clock })
+        val sample = wav(DUB_SAMPLE_RATE)
+        val http = geminiDubHttp.newBuilder().addInterceptor { chain ->
+            val request = chain.request()
+            val model = request.url.pathSegments.last().substringBefore(':')
+            val json = Buffer().also { request.body!!.writeTo(it) }.readUtf8()
+            assertEquals("fixture-api-key", request.header("x-goog-api-key"))
+            requests += model to json
+            if (model == GeminiDubModel.SPEAK.id) reply(request, 429, quotaError("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "30"))
+                .newBuilder().header("Retry-After", "4").build()
+            else reply(request, 200, ok(JSONObject().put("inlineData", JSONObject().put("mimeType", "audio/wav")
+                .put("data", Base64.getEncoder().encodeToString(sample)))))
+        }.build()
+        val api = GeminiDubApi(config, http, router)
+        assertArrayEquals(sample, api.synthesize(take, 4))
+        assertArrayEquals(sample, api.synthesize(take.copy(text = "أنا كويس."), 5))
+        assertEquals(listOf(4_250L), waits)
+        assertEquals(List(2) { GeminiDubModel.SPEAK.id } + List(2) { GeminiDubModel.SPEAK_LITE.id }, requests.map { it.first })
+        assertEquals(1, requests.take(3).map { it.second }.distinct().size)
+        val body = JSONObject(requests[2].second)
+        assertEquals(take.text, parts(body).getJSONObject(0).getString("text"))
+        assertFalse(parts(body).getJSONObject(0).has("inlineData"))
+        val speech = body.getJSONObject("generationConfig").getJSONObject("speechConfig")
+        assertEquals("ar-EG", speech.getString("languageCode"))
+        assertEquals("Kore", speech.getJSONObject("voiceConfig").getString("voice"))
+    }
+
+    @Test fun aSourceChangedDuringCooldownPreventsRetryAndFallback() = runBlocking<Unit> {
+        var requests = 0
+        var changed = false
+        val router = GeminiDubRouter(true, pause = { changed = true })
+        val http = geminiDubHttp.newBuilder().addInterceptor { chain ->
+            requests++
+            reply(chain.request(), 429, quotaError("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "30"))
+        }.build()
+        val pcm = temp.newFile().apply { writeBytes(ByteArray(4)) }
+        val error = failure { GeminiDubApi(config, http, router).speakers(GeminiAudioSlice(pcm, 0, 2)) {
+            if (changed) throw DubFailure(DubIssue.SOURCE_CHANGED)
+        } }
+        assertEquals(DubIssue.SOURCE_CHANGED, error.issue)
+        assertEquals(1, requests)
+    }
+
     @Test fun cancellingAnalysisCancelsTheActualCall() = runBlocking<Unit> {
         val queued = CompletableDeferred<Unit>()
         val canceled = CompletableDeferred<Unit>()
@@ -350,6 +488,13 @@ class GeminiDubbingTest {
         block()
         throw AssertionError("Expected DubFailure")
     } catch (e: DubFailure) { e }
+
+    private fun quotaError(quotaId: String, quotaValue: String): String = """{"error":{
+        "code":429,"status":"RESOURCE_EXHAUSTED","message":"private project fixture",
+        "details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[
+            {"quotaId":"$quotaId","quotaValue":"$quotaValue","quotaDimensions":{"model":"fixture"}}]},
+            {"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"2.125s"}]
+    }}"""
 
     private fun parts(body: JSONObject) = body.getJSONArray("contents").getJSONObject(0).getJSONArray("parts")
     private fun ok(vararg parts: JSONObject) = JSONObject().put("candidates", JSONArray(listOf(JSONObject().put("finishReason", "STOP")
