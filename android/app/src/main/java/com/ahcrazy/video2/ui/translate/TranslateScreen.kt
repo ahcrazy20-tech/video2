@@ -36,6 +36,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -87,9 +88,12 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
     var showModels by remember { mutableStateOf(false) }
     var performanceId by rememberSaveable { mutableStateOf<String?>(null) }
     var correctionId by rememberSaveable { mutableStateOf<String?>(null) }
+    var retryMoonshineId by rememberSaveable { mutableStateOf<String?>(null) }
     var requestedTranslator by remember { mutableStateOf(OfflineModel.HYMT_LITE) }
 
-    androidx.compose.runtime.LaunchedEffect(preselected) { if (preselected != null) showNew = true }
+    androidx.compose.runtime.LaunchedEffect(preselected) {
+        if (preselected != null) { retryMoonshineId = null; showNew = true }
+    }
 
     Column(Modifier.fillMaxSize().padding(14.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -97,7 +101,7 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
                 Text(if (ar) "الترجمة والدبلجة" else "Translate & Dub", fontSize = 24.sp, fontWeight = FontWeight.Bold)
                 Text(if (ar) "تفريغ صوتي وترجمة للفيديوهات المحفوظة · ٣ ملفات SRT" else "Transcription and translation for saved videos · 3 SRT files", fontSize = 11.sp, color = V2.TextDim)
             }
-            FloatingActionButton(onClick = { showNew = true }, containerColor = V2.Action, modifier = Modifier.padding(4.dp)) {
+            FloatingActionButton(onClick = { retryMoonshineId = null; showNew = true }, containerColor = V2.Action, modifier = Modifier.padding(4.dp)) {
                 Icon(Icons.Filled.Add, null, tint = Color.White)
             }
         }
@@ -152,7 +156,8 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
                         }
                         if (job.phase !in setOf(TranslationPhase.DONE)) LinearProgressIndicator(
                             progress = { job.progress.toFloat() }, Modifier.fillMaxWidth().padding(top = 7.dp), color = V2.Accent)
-                        val issue = if (retired && job.phase != TranslationPhase.DONE) OfflineIssue.RETIRED_TRANSLATOR
+                        val retryMoonshine = app.translations.moonshineRetryIssue(job)
+                        val issue = retryMoonshine ?: if (retired && job.phase != TranslationPhase.DONE) OfflineIssue.RETIRED_TRANSLATOR
                             else OfflineIssue.entries.firstOrNull { it.name == job.offlineIssue }
                         (issue?.text(ar) ?: job.message)?.let { Text(it, fontSize = 11.sp, color = V2.Gold, modifier = Modifier.padding(top = 6.dp)) }
                         if (issue == OfflineIssue.LANGUAGE && app.translations.canCorrectSource(job)) {
@@ -191,8 +196,14 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
                         if (offline && job.phase == TranslationPhase.DONE) PerformanceButton(job, ar) { performanceId = job.id }
                         Row {
                             if (job.phase == TranslationPhase.DONE) TextButton(onClick = { onReviewJob(job) }) { Text(if (ar) "مراجعة وتعديل" else "Review & edit") }
-                            if (!retired && issue !in setOf(OfflineIssue.LANGUAGE, OfflineIssue.FAST_PAIR) && job.phase in setOf(TranslationPhase.FAILED, TranslationPhase.PAUSED, TranslationPhase.CANCELLED))
+                            if (retryMoonshine != null && videos.any { it.id == job.videoId }) {
+                                TextButton(enabled = localWork == null, onClick = { retryMoonshineId = job.id; showNew = true }) {
+                                    Text(if (ar) "ابدأ مهمة جديدة بـWhisper" else "New job with Whisper")
+                                }
+                            } else if (retryMoonshine == null && !retired && issue !in setOf(OfflineIssue.LANGUAGE, OfflineIssue.FAST_PAIR) &&
+                                job.phase in setOf(TranslationPhase.FAILED, TranslationPhase.PAUSED, TranslationPhase.CANCELLED)) {
                                 TextButton(enabled = !offline || localWork == null, onClick = { app.translations.resume(job.id) }) { Text(if (ar) "استئناف" else "Resume") }
+                            }
                             if (running) TextButton(enabled = !stopping, onClick = { app.translations.cancel(job.id) }) { Text(if (ar) "إيقاف" else "Stop") }
                             Spacer(Modifier.weight(1f))
                             if (!running) TextButton(onClick = { app.translations.delete(job.id) }) { Text(if (ar) "حذف" else "Delete", color = V2.Accent) }
@@ -205,7 +216,17 @@ fun TranslateScreen(ar: Boolean, preselected: SavedVideo?, onConsumePreselected:
 
     jobs.firstOrNull { it.id == correctionId }?.let { SourceLanguageSheet(it, app.translations, localWork != null, ar) { correctionId = null } }
     jobs.firstOrNull { it.id == performanceId }?.let { PerformanceSheet(it, ar) { performanceId = null } }
-    if (showNew) NewTranslationSheet(app, ar, videos, preselected, onDismiss = { showNew = false; onConsumePreselected() })
+    if (showNew) {
+        val retry = jobs.firstOrNull { it.id == retryMoonshineId }
+        val selected = videos.firstOrNull { it.id == retry?.videoId } ?: preselected
+        key(retry?.id) {
+            NewTranslationSheet(app, ar, videos, selected, retry, onDismiss = {
+                showNew = false
+                retryMoonshineId = null
+                onConsumePreselected()
+            })
+        }
+    }
     if (showModels) ModalBottomSheet(onDismissRequest = { showModels = false }) {
         var speech by remember { mutableStateOf(app.offlineModels.defaultSpeech) }
         var model by remember(requestedTranslator) { mutableStateOf(requestedTranslator) }
@@ -236,16 +257,19 @@ private fun phaseText(p: TranslationPhase, ar: Boolean) = when (p) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: List<SavedVideo>, preselected: SavedVideo?, onDismiss: () -> Unit) {
+private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: List<SavedVideo>, preselected: SavedVideo?,
+                                retryMoonshine: TranslationJob?, onDismiss: () -> Unit) {
     var videoId by remember(preselected) { mutableStateOf(preselected?.id ?: videos.firstOrNull()?.id ?: "") }
-    var source by remember { mutableStateOf(SubLang.AUTO) }
-    var target by remember { mutableStateOf(SubLang.AR) }
+    var source by remember { mutableStateOf(if (retryMoonshine != null) SubLang.EN else SubLang.AUTO) }
+    var target by remember { mutableStateOf(SubLang.of(retryMoonshine?.targetLang).takeUnless { it == SubLang.AUTO } ?: SubLang.AR) }
     var mode by remember { mutableStateOf(TranslationMode.ON_DEVICE) }
-    var speech by remember { mutableStateOf(app.offlineModels.defaultSpeech) }
+    var speech by remember { mutableStateOf(if (retryMoonshine != null) app.offlineModels.rapidWhisper else app.offlineModels.defaultSpeech) }
     var fastSpeech by remember { mutableStateOf(false) }
     var gateRequested by rememberSaveable { mutableStateOf(false) }
     var preset by rememberSaveable { mutableStateOf(OfflinePreset.CPU) }
-    var localTranslator by remember { mutableStateOf(app.offlineModels.defaultTranslator) }
+    var localTranslator by remember {
+        mutableStateOf(OfflineModel.translatorForJob(retryMoonshine?.offlineModel) ?: app.offlineModels.defaultTranslator)
+    }
     var stt by remember { mutableStateOf(STTProvider.AUTO) }
     var refiner by remember { mutableStateOf(RefinerProvider.AUTO) }
     var translator by remember { mutableStateOf(TranslatorProvider.AUTO) }
@@ -262,6 +286,10 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
             Text(if (ar) "مهمة ترجمة جديدة" else "New translation job", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            if (retryMoonshine != null) Text(
+                if (ar) "نفس الفيديو، بتفريغ Whisper جديد. المهمة القديمة وملفاتك مش هتتغيّر."
+                else "Same video, new Whisper transcription. Your previous job and files stay unchanged.",
+                color = V2.TextDim, fontSize = 12.sp)
             if (video == null) Text(if (ar) "المكتبة فاضية — حمل أو استورد فيديو الأول." else "Library is empty — download or import a video first.",
                 color = V2.TextDim, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
             else {
@@ -276,23 +304,36 @@ private fun NewTranslationSheet(app: Video2Application, ar: Boolean, videos: Lis
                 val pairSupported = supportsLocalPair(source.code, target.code, speech, localTranslator)
                 if (offline) {
                     SectionTitle(if (ar) "اختصارات السرعة" else "Speed presets")
-                    val rapidCompatible = remember(app) {
-                        OfflineModel.pack(OfflineModel.MOONSHINE_EN, OfflineModel.FIREFOX_EN_AR).all(app.offlineModels::compatible)
+                    val usesMoonshine = remember(app) { app.offlineModels.compatible(OfflineModel.MOONSHINE_EN) }
+                    val rapidSpeech = if (usesMoonshine) OfflineModel.MOONSHINE_EN else remember(app, models) { app.offlineModels.rapidWhisper }
+                    val rapidCompatible = remember(app, rapidSpeech) {
+                        OfflineModel.pack(rapidSpeech, OfflineModel.FIREFOX_EN_AR).all(app.offlineModels::compatible)
                     }
                     OutlinedButton(onClick = {
                         source = SubLang.EN
                         target = SubLang.AR
-                        speech = OfflineModel.MOONSHINE_EN
+                        speech = rapidSpeech
                         localTranslator = OfflineModel.FIREFOX_EN_AR
                         fastSpeech = false
                         gateRequested = false
                         preset = OfflinePreset.CPU
                     }, modifier = Modifier.fillMaxWidth(), enabled = work == null && rapidCompatible) {
-                        Text(if (ar) "مسار سريع جديد · إنجليزي إلى عربي (تجريبي)" else "Rapid English → Arabic (experimental)")
+                        Text(if (usesMoonshine) {
+                            if (ar) "مسار سريع جديد · إنجليزي إلى عربي (تجريبي)" else "Rapid English → Arabic (experimental)"
+                        } else {
+                            if (ar) "سريع · إنجليزي إلى عربي (Whisper + Firefox)" else "Rapid English → Arabic (Whisper + Firefox)"
+                        })
                     }
-                    Text(if (ar) "Moonshine + Firefox Translations. للكلام الإنجليزي الواضح فقط؛ للعربي أو الكلام المختلط اختار Whisper وHy‑MT2. مفيش تنزيل تلقائي."
-                        else "Moonshine + Firefox Translations for clear English speech. For Arabic or mixed speech, keep Whisper and Hy‑MT2. No automatic download.",
-                        fontSize = 12.sp, color = V2.TextDim)
+                    Text(if (usesMoonshine) {
+                        if (ar) "Moonshine + Firefox Translations. للكلام الإنجليزي الواضح فقط؛ للعربي أو الكلام المختلط اختار Whisper وHy‑MT2. مفيش تنزيل تلقائي."
+                        else "Moonshine + Firefox Translations for clear English speech. For Arabic or mixed speech, keep Whisper and Hy‑MT2. No automatic download."
+                    } else if (app.offlineModels.moonshineIssue == OfflineIssue.MOONSHINE_CPU) {
+                        if (ar) "Moonshine متوقف على المعالج ده لتفادي الكراش. المسار بيستخدم Whisper متوافق وبيستفيد من Firefox اللي نزّلته بالفعل."
+                        else "Moonshine is disabled on this CPU to prevent a crash. This uses compatible Whisper and reuses your Firefox install."
+                    } else {
+                        if (ar) "Moonshine مش متاح. المسار بيستخدم Whisper وFirefox، من غير تنزيل تلقائي."
+                        else "Moonshine is unavailable. This uses Whisper and Firefox, with no automatic downloads."
+                    }, fontSize = 12.sp, color = V2.TextDim)
                     if (!rapidCompatible) Text(if (ar) "المسار الجديد محتاج أندرويد ٩ أو أحدث وجهاز ARM64 برام كافية."
                         else "The new route needs Android 9+ on ARM64 with enough RAM.", fontSize = 11.sp, color = V2.Gold)
                     SectionTitle(if (ar) "تجربة الإسباني والإيطالي" else "Spanish & Italian preview")
@@ -485,7 +526,10 @@ private fun OfflineModelPanel(
         fontSize = 11.sp, color = V2.TextDim)
     else Text(if (ar) "جاهز من غير نت. المعالجة المحلية ممكن تاخد وقت وتسخّن الجهاز، خصوصًا مع الفيديو الطويل." else
         "Ready offline. Long videos can take time and warm up your phone.", fontSize = 11.sp, color = V2.TextDim)
-    if (!compatible) Text(OfflineIssue.NOT_SUPPORTED.text(ar), color = V2.Gold, fontSize = 12.sp)
+    if (!compatible) {
+        val blocked = if (speech.isMoonshine) app.offlineModels.moonshineIssue else null
+        Text((blocked ?: OfflineIssue.NOT_SUPPORTED).text(ar), color = V2.Gold, fontSize = 12.sp)
+    }
     if (downloading != null) {
         val ids = downloading.key.split('/')
         val selected = ids.mapNotNull { id -> OfflineModel.entries.firstOrNull { it.id == id } }.joinToString(" + ") { it.label }

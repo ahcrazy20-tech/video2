@@ -116,6 +116,46 @@ class RapidSubtitleTest {
         assertEquals(1, timings.report().generationCalls)
     }
 
+    @Test fun incompatibleMoonshineNeverOpensNativeSpeechButCanTranslateAnExistingTranscript() {
+        val video = tmp.newFile().apply { writeText("same private video") }
+        val dir = tmp.newFolder()
+        val scratch = java.io.File(dir, "audio-16k.pcm").apply { writeBytes(byteArrayOf(1, 0)) }
+        val marker = java.io.File(dir, "offline-stt-${speech.id}").apply { mkdirs() }.resolve("0.json")
+        marker.writeText("old speech checkpoint")
+        val loads = mutableListOf<OfflineModel>()
+        var checks = 0
+        val pipeline = OfflinePipeline({ loads += it; video }, object : LocalEngines {
+            override fun checkSpeechCompatibility(kind: OfflineModel) {
+                assertEquals(speech, kind)
+                checks++
+                throw OfflineFailure(OfflineIssue.MOONSHINE_CPU)
+            }
+            override fun speech(model: java.io.File, signal: CancellationSignal): LocalSpeech = error("No Whisper rerun")
+            override fun speechMoonshine(model: java.io.File, signal: CancellationSignal): LocalSpeech = error("Must guard before native code")
+            override fun translator(model: java.io.File, kind: OfflineModel, signal: CancellationSignal) = object : LocalTranslator {
+                override fun translateBatch(lines: List<String>): List<String> {
+                    assertEquals(firefox, kind)
+                    assertEquals(listOf("Good morning."), lines)
+                    return listOf("صباح الخير.")
+                }
+                override fun close() = Unit
+            }
+        }, pcmDecoder = { _, _, _, _ -> error("Do not extract when the speech engine is blocked or a transcript is complete") })
+        fun run() = pipeline.run(dir, video, SubLang.EN, SubLang.AR, speech, CancellationSignal(), translator = firefox) { _, _, _, _ -> }
+        assertEquals(OfflineIssue.MOONSHINE_CPU, assertThrows(OfflineFailure::class.java) { run() }.issue)
+        assertTrue(loads.isEmpty())
+        assertTrue(scratch.isFile)
+        assertEquals("old speech checkpoint", marker.readText())
+
+        // A job that finished ASR on an earlier build/device can still resume its MT and export.
+        val cue = com.ahcrazy.video2.core.model.SubCue(0, 1.2, 2.4, "Good morning.")
+        CueJson.write(java.io.File(dir, "cues-original.json"), listOf(cue))
+        atomicText(java.io.File(dir, "offline-language.txt"), "en")
+        assertEquals(listOf(cue.copy(translated = "صباح الخير.")), run())
+        assertEquals(listOf(firefox), loads)
+        assertEquals(1, checks)
+    }
+
     @Test fun cancelledFirefoxBatchDoesNotWriteOrReplaceSubtitles() {
         val video = tmp.newFile().apply { writeText("fake") }
         val original = tmp.newFolder()

@@ -50,6 +50,7 @@ internal class OfflinePipeline(
         stats.reusedTranscript = existingTranscript
         var early: List<SubCue>? = null
         if (!existingTranscript) {
+            engines.checkSpeechCompatibility(speechModel)
             if (pcm.isFile) stats.resumed = true
             if (!pcm.exists()) {
                 progress(TranslationPhase.EXTRACTING, 0.02, 0, false)

@@ -2,6 +2,7 @@
 #include "whisper.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <memory>
 #include <vector>
@@ -57,6 +58,15 @@ extern "C" JNIEXPORT jboolean JNICALL WHISPER_JNI(supportsFp16Dotprod)(JNIEnv *,
     return (getauxval(AT_HWCAP) & required) == required ? JNI_TRUE : JNI_FALSE;
 #else
     return JNI_FALSE;
+#endif
+}
+extern "C" JNIEXPORT jlong JNICALL WHISPER_JNI(arm64Hwcap2)(JNIEnv *, jobject) {
+#if defined(__ANDROID__) && defined(__aarch64__)
+    errno = 0;
+    const auto hwcap2 = getauxval(AT_HWCAP2);
+    return errno == 0 ? static_cast<jlong>(hwcap2) : -1;
+#else
+    return -1;
 #endif
 }
 #endif

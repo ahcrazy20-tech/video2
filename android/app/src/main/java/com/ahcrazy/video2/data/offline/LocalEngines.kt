@@ -18,6 +18,7 @@ internal interface LocalTranslator : AutoCloseable {
     fun translateBatch(lines: List<String>): List<String> = error("Direct translation unavailable")
 }
 internal interface LocalEngines {
+    fun checkSpeechCompatibility(kind: OfflineModel) {}
     fun speech(model: File, signal: CancellationSignal): LocalSpeech
     fun speechMoonshine(model: File, signal: CancellationSignal): LocalSpeech = error("Moonshine unavailable")
     fun speechVulkan(model: File, signal: CancellationSignal): LocalSpeech = error("Vulkan backend unavailable")
@@ -42,6 +43,10 @@ internal object JniEngines : LocalEngines {
                 WhisperFp16Jni
             } catch (_: LinkageError) { WhisperJni }
         } else WhisperJni
+    }
+
+    override fun checkSpeechCompatibility(kind: OfflineModel) {
+        if (kind.isMoonshine) requireBundledMoonshineSupport()
     }
 
     override fun speech(model: File, signal: CancellationSignal) = openSpeech(model, signal, whisper, threads, false)
@@ -158,6 +163,7 @@ internal object WhisperJni : WhisperNative {
     fun ensureLoaded() { library }
     external fun supportsFp16(): Boolean
     external fun supportsFp16Dotprod(): Boolean
+    external fun arm64Hwcap2(): Long
     external override fun create(): Long
     external override fun cancel(handle: Long)
     external override fun destroy(handle: Long)

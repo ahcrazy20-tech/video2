@@ -52,6 +52,8 @@ internal enum class OfflineIssue(val en: String, val ar: String) {
     AUDIO("This file doesn't have a supported local audio track. Try a saved MP4 or audio file.", "الملف مفيهوش مسار صوت محلي مدعوم. جرّب ملف MP4 أو صوت محفوظ."),
     TOO_LONG("This file exceeds the 12-hour local audio limit.", "الملف أطول من حد التفريغ المحلي: ١٢ ساعة."),
     NO_SPEECH("The speech engine didn't find clear speech in this audio.", "محرك التفريغ ما لقاش كلام واضح في الصوت."),
+    MOONSHINE_CPU("Moonshine's bundled runtime can crash on this CPU. Use Whisper for new transcription. Saved transcripts can still be translated.",
+        "مكتبة Moonshine الحالية ممكن تقفل التطبيق على المعالج ده. استخدم Whisper للتفريغ الجديد؛ التفريغ المحفوظ يفضل قابل للترجمة."),
     FAST_PAIR("Choose the exact source language for Firefox (English, Spanish or Italian to Arabic). Moonshine still needs English. Use Whisper and Hy-MT2 for other or mixed speech.",
         "اختار لغة الكلام المطابقة لحزمة Firefox (إنجليزي، إسباني أو إيطالي إلى عربي). Moonshine للإنجليزي فقط. للصوت المختلط أو اللغات التانية اختار Whisper وHy‑MT2."),
     LANGUAGE("Couldn't identify a supported source language. Review the saved transcript, or pick the source language manually in a new job.", "ما قدرناش نحدد لغة مصدر مدعومة. راجع التفريغ المحفوظ أو اختار لغة الكلام يدويًا في مهمة جديدة."),

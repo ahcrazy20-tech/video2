@@ -9,6 +9,8 @@ import java.io.File
 import kotlin.math.roundToLong
 
 internal fun openMoonshine(model: File, signal: CancellationSignal): LocalSpeech {
+    signal.throwIfCanceled()
+    requireBundledMoonshineSupport() // Must run before the AAR's JNI (or ORT) is loaded.
     verifyBundle(model, OfflineModel.MOONSHINE_EN, signal)
     JNI.ensureLibraryLoaded()
     val options = arrayOf(

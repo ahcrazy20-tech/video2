@@ -14,6 +14,7 @@ final class WhisperJni {
     native void destroy(long h);
     native void load(long h, byte[] path, int threads);
     native boolean supportsFp16();
+    native long arm64Hwcap2();
     native int[] speechBounds(long h, short[] samples, byte[] path);
     native byte[][] decode(long h, short[] samples, byte[] lang, byte[] prompt, boolean fast, Object progress);
 }
@@ -40,7 +41,7 @@ public final class OfflineNativeSmoke {
             Files.write(model, new byte[128]);
             byte[] bad = model.toString().getBytes(StandardCharsets.UTF_8);
             var w = new WhisperJni();
-            if (w.supportsFp16()) throw new AssertionError("Host smoke build must use the generic engine");
+            if (w.supportsFp16() || w.arm64Hwcap2() != -1L) throw new AssertionError("Host smoke build must not report Android CPU features");
             long wHandle = w.create();
             try {
                 mustFail(() -> w.load(wHandle, bad, 1), "Whisper could not load its model");

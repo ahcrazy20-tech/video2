@@ -147,8 +147,12 @@ internal class OfflineModels(private val context: Context, private val work: Off
 
     val defaultTranslator: OfflineModel get() = OfflineModel.translators.firstOrNull { !it.isFirefox && ready(it) && compatible(it) } ?: OfflineModel.HYMT_LITE
 
+    val rapidWhisper: OfflineModel get() = chooseRapidWhisper { ready(it) && compatible(it) }
+    val moonshineIssue: OfflineIssue? get() = if (Build.SUPPORTED_ABIS.firstOrNull() == "arm64-v8a") bundledMoonshineIssue
+        else OfflineIssue.NOT_SUPPORTED
+
     fun compatible(model: OfflineModel): Boolean = Build.VERSION.SDK_INT >= model.minSdk && Build.SUPPORTED_ABIS.firstOrNull() == "arm64-v8a" &&
-        !manager.isLowRamDevice && memory().totalMem >= model.minTotalRam
+        (!model.isMoonshine || moonshineIssue == null) && !manager.isLowRamDevice && memory().totalMem >= model.minTotalRam
 
     // Vulkan is optional; the driver and actual native backend are checked again on load.
     fun supportsVulkan() = Build.VERSION.SDK_INT >= 29 && Build.SUPPORTED_ABIS.firstOrNull() == "arm64-v8a" &&

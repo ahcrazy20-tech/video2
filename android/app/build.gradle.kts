@@ -28,8 +28,8 @@ android {
         applicationId = "com.ahcrazy.video2"
         minSdk = 26
         targetSdk = 34
-        versionCode = 21
-        versionName = "2.6"
+        versionCode = 22
+        versionName = "2.6.1"
         // Keep the same ABI as the existing offline APK. The Moonshine AAR also
         // ships other ABIs, but they don't have the rest of Kadr's local runtimes.
         ndk { abiFilters += "arm64-v8a" }
@@ -142,6 +142,7 @@ dependencies {
     implementation(libs.androidx.media3.session)
     implementation(libs.androidx.media3.datasource.okhttp)
     implementation(libs.okhttp)
+    // Bundles ORT 1.23.2. Re-audit the CPU guard in MoonshineCompatibility.kt before upgrading.
     implementation("ai.moonshine:moonshine-voice:0.1.6")
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.datastore.preferences)

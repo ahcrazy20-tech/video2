@@ -95,7 +95,8 @@ class TranslationManager internal constructor(
                                              fastSpeech: Boolean = false, preset: OfflinePreset = OfflinePreset.CPU,
                                              silenceGate: Boolean = false): Boolean {
         if (offlineWork.status.value != null || speech !in OfflineModel.speechModels || model !in OfflineModel.translators || target == SubLang.AUTO ||
-            !supportsLocalPair(source.code, target.code, speech, model) || (silenceGate && !supportsSilenceGate(source.code, speech))) return false
+            !supportsLocalPair(source.code, target.code, speech, model) || (silenceGate && !supportsSilenceGate(source.code, speech)) ||
+            (speech.isMoonshine && offlineModels.moonshineIssue != null)) return false
         val video = library.byId(videoId) ?: return false
         val job = TranslationJob(UUID.randomUUID().toString(), videoId, video.title, source.code, target.code,
             mode = TranslationMode.ON_DEVICE, offlineModel = model.id, offlineSpeechModel = speech.id,
@@ -111,6 +112,13 @@ class TranslationManager internal constructor(
         val dir = File(root, job.id)
         return dir.takeIf { listOf("cues-original.json", "offline-language.txt", "offline-source.json")
             .all { name -> hasCheckpoint(File(dir, name)) } }
+    }
+
+    /** Don't suggest a new transcript when the existing job can just finish translating. */
+    internal fun moonshineRetryIssue(job: TranslationJob): OfflineIssue? {
+        if (job.mode != TranslationMode.ON_DEVICE || job.phase !in RESUMABLE || job.offlineSpeechModel != OfflineModel.MOONSHINE_EN.id ||
+            job.offlineTranscriptFrom != null || hasCheckpoint(File(File(root, job.id), "cues-original.json"))) return null
+        return offlineModels.moonshineIssue
     }
 
     internal fun canCorrectSource(job: TranslationJob): Boolean = job.mode == TranslationMode.ON_DEVICE &&
@@ -206,6 +214,7 @@ class TranslationManager internal constructor(
 
     @Synchronized fun resume(id: String) {
         val job = _jobs.value.firstOrNull { it.id == id && it.phase in RESUMABLE } ?: return
+        moonshineRetryIssue(job)?.let { failOffline(id, it); return }
         when (job.mode) {
             TranslationMode.ON_DEVICE -> if (job.offlineIssue !in setOf(OfflineIssue.LANGUAGE.name, OfflineIssue.FAST_PAIR.name)) startOffline(job) else Unit
             TranslationMode.CLOUD -> startCloud(job)
