@@ -47,6 +47,8 @@ import androidx.compose.ui.unit.dp
 import com.ahcrazy.video2.core.dubbing.DubProvider
 import com.ahcrazy.video2.core.dubbing.DubVoice
 import com.ahcrazy.video2.core.dubbing.DubVoices
+import com.ahcrazy.video2.core.dubbing.GeminiDirection
+import com.ahcrazy.video2.core.dubbing.GeminiOptions
 import com.ahcrazy.video2.core.dubbing.azureDubVoices
 import com.ahcrazy.video2.data.dubbing.DubSource
 import com.ahcrazy.video2.ui.theme.V2
@@ -58,7 +60,7 @@ internal data class DubNotice(val text: String, val failed: Boolean = false)
 internal data class DubbingPanelState(
     val source: DubSource?, val catalog: DubVoices?, val loading: Boolean = false, val loadErrors: List<String> = emptyList(),
     val preview: DubPreview = DubPreview.IDLE, val progress: DubProgress? = null, val notice: DubNotice? = null,
-    val azureConfigured: Boolean = false, val androidError: String? = null,
+    val azureConfigured: Boolean = false, val androidError: String? = null, val gemini: GeminiPanelState = GeminiPanelState(),
 )
 
 private enum class Picker { PROVIDER, LANGUAGE, DIALECT, VOICE }
@@ -71,11 +73,18 @@ internal fun DubbingPanel(
     title: String, ar: Boolean, state: DubbingPanelState,
     onPreview: (DubVoice) -> Unit, onStopPreview: () -> Unit, onSave: (DubVoice) -> Unit, onCancelSave: () -> Unit,
     onChoiceChanged: () -> Unit, onRefresh: () -> Unit, onSettings: () -> Unit, onInstall: () -> Unit,
-    onAzureSettings: (() -> Unit)? = null,
+    onAzureSettings: (() -> Unit)? = null, onGeminiSettings: (() -> Unit)? = null,
+    onGeminiPreview: (GeminiOptions) -> Unit = {}, onGeminiSave: (GeminiOptions) -> Unit = {},
+    onGeminiDirection: (GeminiDirection) -> Unit = {},
 ) {
     var provider by remember { mutableStateOf(DubProvider.ANDROID) }
     val azure = provider == DubProvider.AZURE
-    val catalog = if (azure) azureDubVoices else state.catalog
+    val gemini = provider == DubProvider.GEMINI
+    val catalog = when (provider) {
+        DubProvider.ANDROID -> state.catalog
+        DubProvider.AZURE -> azureDubVoices
+        DubProvider.GEMINI -> null
+    }
     val source = state.source
     val preferred = remember(source?.language) {
         Locale.forLanguageTag(source?.language.orEmpty().replace('_', '-')).takeUnless { it.language == "auto" } ?: Locale.ROOT
@@ -84,6 +93,8 @@ internal fun DubbingPanel(
     var dialectOverride by remember { mutableStateOf<String?>(null) }
     var voiceOverride by remember { mutableStateOf<String?>(null) }
     var allowNetwork by remember { mutableStateOf(false) }
+    var geminiOptions by remember(source, provider) { mutableStateOf(GeminiOptions(false, false,
+        egyptianArabic = preferred.language == "ar" && preferred.country in setOf("", "EG"))) }
     var picker by remember { mutableStateOf<Picker?>(null) }
     val language = languageOverride ?: preferred.language
     val defaultDialect = remember(catalog, language, preferred) {
@@ -95,8 +106,11 @@ internal fun DubbingPanel(
     val selected = voices.firstOrNull { it.id == voiceOverride }
     val resolved = remember(catalog, dialect, voiceOverride, allowNetwork) { catalog?.resolve(dialect, voiceOverride, allowNetwork) }
     val working = state.progress != null
+    val geminiBusy = working || state.preview != DubPreview.IDLE
     val ready = !state.loading && !working
-    val enabled = ready && resolved != null && source != null && (!azure || state.azureConfigured)
+    val enabled = ready && source != null && if (gemini) {
+        !geminiBusy && state.gemini.configured && state.gemini.inputError == null && geminiOptions.consented
+    } else resolved != null && (!azure || state.azureConfigured)
     val providerTitle = if (ar) "نوع الصوت" else "Voice provider"
     val auto = if (ar) "اختيار تلقائي" else "Auto"
     val placeholder = if (ar) "اختار من المتاح" else "Choose from the engine"
@@ -126,11 +140,14 @@ internal fun DubbingPanel(
             style = MaterialTheme.typography.bodySmall, color = V2.TextDim)
         if (state.loading) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
-            Text(if (ar) "بنشوف الأصوات اللي محرّك النطق على جهازك بيوفّرها…" else "Checking voices reported by your speech engine…",
+            Text(if (ar) "بنجهّز نص الدبلجة وإعدادات الأصوات…" else "Loading subtitles and voice settings…",
                 style = MaterialTheme.typography.bodySmall)
         }
-        DubSelector("provider", providerTitle, providerLabel(provider, ar), !working) { picker = Picker.PROVIDER }
-        if (azure) {
+        DubSelector("provider", providerTitle, providerLabel(provider, ar), !working && (!gemini || !geminiBusy)) { picker = Picker.PROVIDER }
+        if (gemini) {
+            GeminiDubbingControls(ar, state.gemini, source?.plan, state.loading, geminiBusy, geminiOptions,
+                onOptions = { geminiOptions = it; onChoiceChanged() }, onDirection = onGeminiDirection, onSettings = onGeminiSettings)
+        } else if (azure) {
             Text(if (ar) "أصوات Microsoft Azure Speech مولّدة بنطق أقرب للطبيعي. مش استنساخ لصوت صاحب الفيديو." else
                 "Microsoft Azure Speech generates more natural-sounding speech. It doesn't clone the original speaker.",
                 style = MaterialTheme.typography.bodySmall, color = V2.TextDim)
@@ -182,30 +199,40 @@ internal fun DubbingPanel(
             Text(it.text, style = MaterialTheme.typography.bodySmall, color = if (it.failed) V2.Danger else V2.Mint,
                 modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
         }
+        val geminiStage = state.gemini.stage.takeIf { gemini }
+        geminiStage?.let {
+            Text(it.label(ar), style = MaterialTheme.typography.bodySmall, color = V2.TextDim,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }.testTag("dubbing.gemini.stage"))
+        }
         state.progress?.let { p ->
-            LinearProgressIndicator(progress = { p.done.toFloat() / p.total.coerceAtLeast(1) }, modifier = Modifier.fillMaxWidth())
-            Text(if (ar) "جارٍ التوليد: ${p.done} / ${p.total}" else "Generating: ${p.done} / ${p.total}", style = MaterialTheme.typography.bodySmall)
+            if (geminiStage != null) LinearProgressIndicator(Modifier.fillMaxWidth()) else {
+                LinearProgressIndicator(progress = { p.done.toFloat() / p.total.coerceAtLeast(1) }, modifier = Modifier.fillMaxWidth())
+                Text(if (ar) "جارٍ التوليد: ${p.done} / ${p.total}" else "Generating: ${p.done} / ${p.total}", style = MaterialTheme.typography.bodySmall)
+            }
             OutlinedButton(onClick = onCancelSave, modifier = Modifier.fillMaxWidth().testTag("dubbing.cancel")) {
                 Text(if (ar) "إيقاف التوليد" else "Cancel generation")
             }
         } ?: run {
             if (state.preview != DubPreview.IDLE) {
-                if (state.preview == DubPreview.PREPARING) Text(if (ar) "جارٍ تجهيز عيّنة من النص المحفوظ…" else "Preparing a sample from the saved text…",
+                if (state.preview == DubPreview.PREPARING && geminiStage == null) Text(if (ar) "جارٍ تجهيز عيّنة من النص المحفوظ…" else "Preparing a sample from the saved text…",
                     style = MaterialTheme.typography.bodySmall, color = V2.TextDim)
                 OutlinedButton(onClick = onStopPreview, modifier = Modifier.fillMaxWidth().testTag("dubbing.stopPreview")) {
                     Text(if (ar) "إيقاف المعاينة" else "Stop preview")
                 }
             } else {
-                OutlinedButton(onClick = { resolved?.let(onPreview) }, enabled = enabled,
+                OutlinedButton(onClick = { if (gemini) onGeminiPreview(geminiOptions) else resolved?.let(onPreview) }, enabled = enabled,
                     modifier = Modifier.fillMaxWidth().testTag("dubbing.preview")) {
-                    Text(if (ar) "اسمع معاينة قصيرة" else "Listen to a short preview")
+                    Text(if (gemini && state.gemini.direction == null) {
+                        if (ar) "حلّل المقطع واسمع معاينة" else "Analyze and preview"
+                    } else if (ar) "اسمع معاينة قصيرة" else "Listen to a short preview")
                 }
             }
-            Button(onClick = { resolved?.let(onSave) }, enabled = enabled, modifier = Modifier.fillMaxWidth().testTag("dubbing.save")) {
+            Button(onClick = { if (gemini) onGeminiSave(geminiOptions) else resolved?.let(onSave) }, enabled = enabled,
+                modifier = Modifier.fillMaxWidth().testTag("dubbing.save")) {
                 Text(if (ar) "ابدأ الدبلجة" else "Start dubbing")
             }
         }
-        if (!azure) {
+        if (provider == DubProvider.ANDROID) {
             val engineName = catalog?.engineLabel ?: catalog?.preferredEngine
             Text(if (ar) "أصوات محرّك Android المفضّل" else "Android speech engine", style = MaterialTheme.typography.titleMedium)
             engineName?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = V2.Accent) }
@@ -221,19 +248,22 @@ internal fun DubbingPanel(
                 }
             }
         }
-        TextButton(enabled = ready, onClick = {
+        TextButton(enabled = ready && (!gemini || !geminiBusy), onClick = {
             allowNetwork = false
+            geminiOptions = geminiOptions.copy(allowAudio = false, allowText = false)
             onRefresh()
         }, modifier = Modifier.fillMaxWidth().testTag("dubbing.refresh")) {
-            Text(if (azure) (if (ar) "حدّث النص والإعدادات" else "Refresh text and settings")
+            Text(if (provider != DubProvider.ANDROID) (if (ar) "حدّث النص والإعدادات" else "Refresh text and settings")
                 else (if (ar) "حدّث قائمة الأصوات" else "Refresh voices"))
         }
     }
     when (picker) {
         Picker.PROVIDER -> DubChoiceDialog(ar, providerTitle, "provider", DubProvider.entries.map { item ->
-            Choice(item.id, providerLabel(item, ar), if (item == DubProvider.AZURE) {
-                if (ar) "سلمى وشاكر بالمصري، وأصوات تانية. يحتاج نت ومفتاح Speech." else "Egyptian Arabic and other voices. Needs internet and a Speech key."
-            } else if (ar) "نفس الأصوات المثبّتة أو المتاحة في محرّك جهازك." else "Voices listed by your Android speech engine.")
+            Choice(item.id, providerLabel(item, ar), when (item) {
+                DubProvider.ANDROID -> if (ar) "نفس الأصوات المثبّتة أو المتاحة في محرّك جهازك." else "Voices listed by your Android speech engine."
+                DubProvider.AZURE -> if (ar) "سلمى وشاكر بالمصري، وأصوات تانية. يحتاج نت ومفتاح Speech." else "Egyptian Arabic and other voices. Needs internet and a Speech key."
+                DubProvider.GEMINI -> if (ar) "أصوات تلقائية حسب المتحدث والنبرة. يحتاج مفتاح Gemini." else "Automatic casting and expressive delivery. Needs a Gemini API key."
+            })
         }, provider.id, { picker = null }) { id ->
             val next = DubProvider.entries.first { it.id == id }
             if (provider != next) {
@@ -314,6 +344,7 @@ private fun isolate(value: String) = "\u2066$value\u2069"
 private fun providerLabel(provider: DubProvider, ar: Boolean) = when (provider) {
     DubProvider.ANDROID -> if (ar) "أصوات Android" else "Android voices"
     DubProvider.AZURE -> if (ar) "صوت طبيعي · Azure Neural" else "Natural voice · Azure Neural"
+    DubProvider.GEMINI -> if (ar) "دبلجة حسب المشهد · Gemini" else "Scene dubbing · Gemini"
 }
 
 private fun voiceLabel(voice: DubVoice, ar: Boolean) = (if (ar) voice.labelAr else voice.label) ?: isolate(voice.id)

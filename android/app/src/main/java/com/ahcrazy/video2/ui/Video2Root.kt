@@ -141,7 +141,7 @@ fun Video2Root() {
                 }
             }
             if (!locked) dubTarget?.let { v ->
-                DubbingSheet(v, ar, onAzureSettings = { dubTarget = null; selectTab(AppTab.SETTINGS) }) { dubTarget = null }
+                DubbingSheet(v, ar, onOpenSettings = { dubTarget = null; selectTab(AppTab.SETTINGS) }) { dubTarget = null }
             }
         }
     }

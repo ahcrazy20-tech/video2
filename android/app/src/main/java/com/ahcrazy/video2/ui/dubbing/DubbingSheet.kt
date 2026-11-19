@@ -37,14 +37,24 @@ import com.ahcrazy.video2.core.dubbing.DubIssue
 import com.ahcrazy.video2.core.dubbing.DubProvider
 import com.ahcrazy.video2.core.dubbing.DubVoice
 import com.ahcrazy.video2.core.dubbing.DubVoices
+import com.ahcrazy.video2.core.dubbing.GEMINI_MAX_CUES
+import com.ahcrazy.video2.core.dubbing.GEMINI_MAX_SECONDS
+import com.ahcrazy.video2.core.dubbing.GEMINI_MAX_SPEAKERS
+import com.ahcrazy.video2.core.dubbing.GeminiOptions
 import com.ahcrazy.video2.core.model.SavedVideo
 import com.ahcrazy.video2.data.dubbing.AndroidDubEngine
 import com.ahcrazy.video2.data.dubbing.DubRenderReport
 import com.ahcrazy.video2.data.dubbing.DubSelection
 import com.ahcrazy.video2.data.dubbing.DubSource
+import com.ahcrazy.video2.data.dubbing.GeminiDubApi
+import com.ahcrazy.video2.data.dubbing.GeminiDubMedia
+import com.ahcrazy.video2.data.dubbing.GeminiDubSession
+import com.ahcrazy.video2.data.dubbing.GeminiStage
+import com.ahcrazy.video2.data.dubbing.analyzeGeminiDub
 import com.ahcrazy.video2.data.dubbing.auditionDub
 import com.ahcrazy.video2.data.dubbing.loadAzureDubConfig
 import com.ahcrazy.video2.data.dubbing.loadDubSource
+import com.ahcrazy.video2.data.dubbing.loadGeminiDubConfig
 import com.ahcrazy.video2.data.dubbing.saveDub
 import com.ahcrazy.video2.ui.theme.V2
 import kotlinx.coroutines.CancellationException
@@ -64,7 +74,7 @@ private data class TightCueChoice(val line: Int, val answer: CompletableDeferred
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onAzureSettings: () -> Unit, onDismiss: () -> Unit) {
+internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onOpenSettings: () -> Unit, onDismiss: () -> Unit) {
     val activity = LocalContext.current as ComponentActivity
     val ctx = activity.applicationContext
     val app = activity.app()
@@ -76,6 +86,12 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onAzureSettings: () ->
     var source by remember { mutableStateOf<DubSource?>(null) }
     var catalog by remember { mutableStateOf<DubVoices?>(null) }
     var azureConfigured by remember { mutableStateOf(false) }
+    var geminiConfigured by remember { mutableStateOf(false) }
+    var geminiMedia by remember { mutableStateOf<GeminiDubMedia?>(null) }
+    var geminiInputError by remember { mutableStateOf<String?>(null) }
+    var geminiSession by remember { mutableStateOf<GeminiDubSession?>(null) }
+    var geminiStage by remember { mutableStateOf<GeminiStage?>(null) }
+    var geminiRendering by remember { mutableStateOf(false) }
     var sourceError by remember { mutableStateOf<String?>(null) }
     var androidError by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<DubNotice?>(null) }
@@ -88,33 +104,58 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onAzureSettings: () ->
     fun reload() {
         previewJob?.cancel()
         notice = null
+        geminiSession = null
         loading = true
         loadVersion++
     }
     LaunchedEffect(video.id, loadVersion) {
         previewJob?.join()
         val current = library.byId(video.id)
-        val (subtitles, voices, configured) = coroutineScope {
+        coroutineScope {
             val subs = async { dubResult { loadDubSource(current ?: throw DubFailure(DubIssue.SOURCE_CHANGED)) } }
             val engine = async { dubResult { AndroidDubEngine.use(ctx) { it.catalog() } } }
-            val cloud = async { dubResult { loadAzureDubConfig(app.settings) }.isSuccess }
-            Triple(subs.await(), engine.await(), cloud.await())
+            val azure = async { dubResult { loadAzureDubConfig(app.settings) }.isSuccess }
+            val gemini = async { dubResult { loadGeminiDubConfig(app.settings) }.isSuccess }
+            val subtitles = subs.await()
+            val captions = subtitles.getOrNull()
+            val media = if (current == null || captions == null) null else dubResult {
+                withContext(Dispatchers.IO) { GeminiDubMedia.from(current, captions) }
+            }
+            val voices = engine.await()
+            sourceVideo = current
+            source = captions
+            catalog = voices.getOrNull()
+            azureConfigured = azure.await()
+            geminiConfigured = gemini.await()
+            geminiMedia = media?.getOrNull()
+            geminiInputError = media?.exceptionOrNull()?.dubMessage(ar)
+            sourceError = subtitles.exceptionOrNull()?.dubMessage(ar)
+            androidError = voices.exceptionOrNull()?.dubMessage(ar)
+            loading = false
         }
-        sourceVideo = current
-        source = subtitles.getOrNull()
-        catalog = voices.getOrNull()
-        azureConfigured = configured
-        sourceError = subtitles.exceptionOrNull()?.dubMessage(ar)
-        androidError = voices.exceptionOrNull()?.dubMessage(ar)
-        loading = false
     }
     suspend fun selection(voice: DubVoice, engine: String?): DubSelection = when (voice.provider) {
         DubProvider.ANDROID -> DubSelection.Device(voice, engine)
         DubProvider.AZURE -> DubSelection.Azure(voice, loadAzureDubConfig(app.settings))
+        DubProvider.GEMINI -> throw DubFailure(DubIssue.GEMINI_SETUP)
+    }
+    suspend fun geminiSelection(captions: DubSource, options: GeminiOptions): DubSelection {
+        if (!options.consented) throw DubFailure(DubIssue.GEMINI_CONSENT)
+        val media = geminiMedia ?: throw DubFailure(DubIssue.GEMINI_LOCAL)
+        val api = GeminiDubApi(loadGeminiDubConfig(app.settings))
+        val session = geminiSession ?: try {
+            analyzeGeminiDub(ctx.cacheDir, captions, media, api, options) { stage ->
+                withContext(Dispatchers.Main.immediate) { geminiStage = stage }
+            }.also { geminiSession = it }
+        } finally { geminiStage = null }
+        return DubSelection.Gemini(session, api, options)
     }
     DisposableEffect(activity) {
         val lifecycle = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) previewJob?.cancel()
+            if (event == Lifecycle.Event.ON_STOP) {
+                previewJob?.cancel()
+                if (geminiRendering) renderJob?.cancel()
+            }
         }
         activity.lifecycle.addObserver(lifecycle)
         onDispose { activity.lifecycle.removeObserver(lifecycle) }
@@ -139,65 +180,79 @@ internal fun DubbingSheet(video: SavedVideo, ar: Boolean, onAzureSettings: () ->
         }
     }
 
+    fun startPreview(pick: suspend (DubSource) -> DubSelection) {
+        val sampleSource = source ?: return
+        if (loading || preview != DubPreview.IDLE || progress != null) return
+        notice = null
+        preview = DubPreview.PREPARING
+        previewJob = scope.launch {
+            val sample = File(ctx.cacheDir, "kadr-preview-${UUID.randomUUID()}.wav")
+            try {
+                auditionDub(ctx, sampleSource, pick(sampleSource), sample)
+                preview = DubPreview.PLAYING
+                playPreview(ctx, sample)
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { notice = DubNotice(e.dubMessage(ar), failed = true) }
+            finally { sample.delete(); preview = DubPreview.IDLE }
+        }
+    }
+
+    fun startSave(gemini: Boolean = false, pick: suspend (DubSource) -> DubSelection) {
+        val snapshot = sourceVideo ?: return
+        val captions = source ?: return
+        if (loading || progress != null || (gemini && preview != DubPreview.IDLE)) return
+        val pending = previewJob
+        pending?.cancel()
+        notice = null
+        progress = DubProgress(0, captions.plan.lines.size)
+        geminiRendering = gemini
+        renderJob = scope.launch {
+            try {
+                pending?.join()
+                var skipRemaining = false
+                val report = saveDub(ctx, library, snapshot, captions, pick(captions), onUnfittable = { line ->
+                    withContext(Dispatchers.Main.immediate) {
+                        if (skipRemaining) true else {
+                            val choice = TightCueChoice(line, CompletableDeferred())
+                            tightCue = choice
+                            try { choice.answer.await().also { skipRemaining = it } }
+                            finally { tightCue = null }
+                        }
+                    }
+                }) { done, total ->
+                    withContext(Dispatchers.Main.immediate) { progress = DubProgress(done, total) }
+                }
+                notice = DubNotice(report.savedMessage(ar))
+            } catch (e: CancellationException) {
+                notice = DubNotice(if (ar) "توليد الدبلجة اتوقف." else "Dubbing stopped.")
+                throw e
+            } catch (e: Exception) { notice = DubNotice(e.dubMessage(ar), failed = true) }
+            finally { progress = null; geminiRendering = false }
+        }
+    }
+
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = V2.Card,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         DubbingPanel(video.title, ar, DubbingPanelState(source, catalog, loading, listOfNotNull(sourceError),
-            preview, progress, notice, azureConfigured, androidError),
-            onPreview = listen@{ voice ->
-                val sampleSource = source ?: return@listen
-                if (previewJob?.isActive == true || renderJob?.isActive == true) return@listen
+            preview, progress, notice, azureConfigured, androidError,
+            GeminiPanelState(geminiConfigured, geminiInputError, geminiSession?.direction, geminiStage)),
+            onPreview = { voice ->
                 val engine = catalog?.preferredEngine
-                notice = null
-                preview = DubPreview.PREPARING
-                previewJob = scope.launch {
-                    val sample = File(ctx.cacheDir, "kadr-preview-${UUID.randomUUID()}.wav")
-                    try {
-                        auditionDub(ctx, sampleSource, selection(voice, engine), sample)
-                        preview = DubPreview.PLAYING
-                        playPreview(ctx, sample)
-                    } catch (e: CancellationException) { throw e }
-                    catch (e: Exception) { notice = DubNotice(e.dubMessage(ar), failed = true) }
-                    finally { sample.delete(); preview = DubPreview.IDLE }
-                }
+                startPreview { selection(voice, engine) }
             },
             onStopPreview = { previewJob?.cancel() },
-            onSave = save@{ voice ->
-                val snapshot = sourceVideo ?: return@save
-                val captions = source ?: return@save
-                if (renderJob?.isActive == true) return@save
+            onSave = { voice ->
                 val engine = catalog?.preferredEngine
-                val pending = previewJob
-                pending?.cancel()
-                notice = null
-                progress = DubProgress(0, captions.plan.lines.size)
-                renderJob = scope.launch {
-                    try {
-                        pending?.join()
-                        var skipRemaining = false
-                        val report = saveDub(ctx, library, snapshot, captions, selection(voice, engine), onUnfittable = { line ->
-                            withContext(Dispatchers.Main.immediate) {
-                                if (skipRemaining) true else {
-                                    val choice = TightCueChoice(line, CompletableDeferred())
-                                    tightCue = choice
-                                    try { choice.answer.await().also { skipRemaining = it } }
-                                    finally { tightCue = null }
-                                }
-                            }
-                        }) { done, total ->
-                            withContext(Dispatchers.Main.immediate) { progress = DubProgress(done, total) }
-                        }
-                        notice = DubNotice(report.savedMessage(ar))
-                    } catch (e: CancellationException) {
-                        notice = DubNotice(if (ar) "توليد الدبلجة اتوقف." else "Dubbing stopped.")
-                        throw e
-                    } catch (e: Exception) { notice = DubNotice(e.dubMessage(ar), failed = true) }
-                    finally { progress = null }
-                }
+                startSave { selection(voice, engine) }
             },
             onCancelSave = { renderJob?.cancel() },
             onChoiceChanged = { previewJob?.cancel(); notice = null },
             onRefresh = ::reload,
-            onSettings = { openSettings(false) }, onInstall = { openSettings(true) }, onAzureSettings = onAzureSettings)
+            onSettings = { openSettings(false) }, onInstall = { openSettings(true) },
+            onAzureSettings = onOpenSettings, onGeminiSettings = onOpenSettings,
+            onGeminiPreview = { options -> startPreview { geminiSelection(it, options) } },
+            onGeminiSave = { options -> startSave(gemini = true) { geminiSelection(it, options) } },
+            onGeminiDirection = { direction -> geminiSession = geminiSession?.withDirection(direction); notice = null })
         tightCue?.let { choice -> TightCueDialog(ar, choice.line) { choice.answer.complete(it) } }
     }
 }
@@ -261,6 +316,23 @@ private fun Throwable.dubMessage(ar: Boolean): String {
         DubIssue.AZURE_LIMIT -> if (ar) "Azure وصل لحد الطلبات أو الحصة. جرّب بعد شوية أو راجع حسابك." else "Azure hit a request limit or quota. Try later or check your account."
         DubIssue.AZURE_SERVICE -> if (ar) "Azure ما قدرش يولّد الصوت. راجع المنطقة أو جرّب صوت تاني بعد شوية." else "Azure couldn't synthesize this voice. Check the region or try again with a different voice."
         DubIssue.AZURE_NETWORK -> if (ar) "ما قدرناش نتصل بـ Azure. راجع النت وجرّب المعاينة تاني." else "Couldn't connect to Azure. Check your internet connection and preview again."
+        DubIssue.GEMINI_SETUP -> if (ar) "أضف مفتاح Gemini من Google AI Studio في الإعدادات ← مفاتيح الـAPI." else "Add a Google AI Studio key under Settings → API keys → Gemini."
+        DubIssue.GEMINI_CONSENT -> if (ar) "اسمح بإرسال الصوت الأصلي للتحليل والنص للتوليد الأول." else "Allow both original-audio analysis and subtitle-text synthesis first."
+        DubIssue.GEMINI_LOCAL -> if (ar) "Gemini محتاج ملف صوت أو فيديو محلي، مش رابط أو قائمة بث. جرّب ملف MP4 محفوظ." else "Gemini needs a local audio or video file, not a stream or playlist. Try a saved MP4."
+        DubIssue.GEMINI_SIZE -> if (ar) "دبلجة Gemini التجريبية تدعم لحد ${GEMINI_MAX_SECONDS / 60} دقايق و$GEMINI_MAX_CUES سطر. جرّب مقطع أقصر أو صوت Android/Azure."
+            else "Experimental Gemini dubbing supports up to ${GEMINI_MAX_SECONDS / 60} minutes and $GEMINI_MAX_CUES cues. Try a shorter clip or Android/Azure."
+        DubIssue.GEMINI_AUDIO -> if (ar) "ما قدرناش نقرأ مسار الصوت الأصلي على الجهاز. جرّب ملف MP4 فيه صوت شغّال." else "Couldn't decode the original audio track on-device. Try an MP4 with playable audio."
+        DubIssue.GEMINI_CAST -> if (ar) "Gemini رجّع أكتر من $GEMINI_MAX_SPEAKERS متحدثين. جرّب مشهد أقصر." else "Gemini returned more than $GEMINI_MAX_SPEAKERS speakers. Try a shorter scene."
+        DubIssue.GEMINI_ANALYSIS -> if (ar) "Gemini ما رجّعش تحليل صالح للمشهد. جرّب حوار أوضح واتأكد إن توقيت الـSRT ماشي مع الصوت."
+            else "Gemini didn't return a usable scene analysis. Try clearer dialogue and check that the SRT timing matches the audio."
+        DubIssue.GEMINI_AUTH -> if (ar) "Gemini رفض مفتاح الـAPI أو صلاحيات المشروع. راجع المفتاح وإعدادات مشروعه في Google AI Studio."
+            else "Gemini refused the API key or project access. Check your key and project in Google AI Studio."
+        DubIssue.GEMINI_LIMIT -> if (ar) "وصلت لحد طلبات أو حصة Gemini API. راجع حدود مشروع المفتاح في AI Studio وجرّب بعدين."
+            else "Gemini API hit a rate or quota limit. Check the key's project limits in AI Studio and try again later."
+        DubIssue.GEMINI_MODEL -> if (ar) "موديل الدبلجة مش متاح لمشروع المفتاح. راجع الإتاحة في Google AI Studio." else "A dubbing model is unavailable to this API project. Check availability in Google AI Studio."
+        DubIssue.GEMINI_SERVICE -> if (ar) "Gemini ما قدرش يكمل الطلب. جرّب معاينة مقطع أقصر أو ارجع بعد شوية." else "Gemini couldn't complete the request. Try a shorter clip or try again later."
+        DubIssue.GEMINI_NETWORK -> if (ar) "الاتصال بـ Gemini اتقطع أو الطلب أخد وقت طويل. راجع النت وجرّب تاني." else "The Gemini connection failed or timed out. Check your internet and try again."
+        DubIssue.GEMINI_BLOCKED -> if (ar) "Gemini ما رجّعش نتيجة بسبب فلترة المحتوى. الدبلجة القديمة ما اتغيّرتش." else "Gemini blocked the request. The previous dub hasn't changed."
         null -> if (this is IOException) {
             if (ar) "حصل خطأ في قراءة أو حفظ الملف. راجع المساحة المتاحة." else "Couldn't read or save a file. Check available storage."
         } else if (ar) "حصل خطأ في الدبلجة. حدّث القائمة وجرّب تاني." else "Dubbing failed. Refresh and try again."

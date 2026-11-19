@@ -7,7 +7,7 @@ import java.nio.ByteOrder
 import kotlin.math.roundToInt
 
 internal data class SpeechPcm(val rate: Int, val samples: ShortArray)
-internal enum class SpeechPcmHint { HEADER, FLOAT32, AZURE_PCM16 }
+internal enum class SpeechPcmHint { HEADER, FLOAT32, AZURE_PCM16, GEMINI_PCM16 }
 private const val HEADER = 44L
 private const val CHUNK_FRAMES = 8192
 private const val MAX_SPEECH_BYTES = 32L * 1024 * 1024
@@ -15,8 +15,15 @@ private const val MAX_SPEECH_BYTES = 32L * 1024 * 1024
 private fun RandomAccessFile.u16() = java.lang.Short.reverseBytes(readShort()).toInt() and 0xffff
 private fun RandomAccessFile.u32() = Integer.toUnsignedLong(Integer.reverseBytes(readInt()))
 private fun RandomAccessFile.tag() = ByteArray(4).also(::readFully).toString(Charsets.US_ASCII)
-private fun RandomAccessFile.put16(n: Int) = writeShort(java.lang.Short.reverseBytes(n.toShort()).toInt())
-private fun RandomAccessFile.put32(n: Long) = writeInt(Integer.reverseBytes(n.toInt()))
+internal fun monoPcm16Header(rate: Int, dataBytes: Long): ByteArray {
+    require(rate > 0 && dataBytes in 2..(0xffff_ffffL - 36) && dataBytes % 2 == 0L)
+    return ByteBuffer.allocate(HEADER.toInt()).order(ByteOrder.LITTLE_ENDIAN).apply {
+        put("RIFF".toByteArray(Charsets.US_ASCII)); putInt((36 + dataBytes).toInt())
+        put("WAVEfmt ".toByteArray(Charsets.US_ASCII)); putInt(16)
+        putShort(1); putShort(1); putInt(rate); putInt(rate * 2); putShort(2); putShort(16)
+        put("data".toByteArray(Charsets.US_ASCII)); putInt(dataBytes.toInt())
+    }.array()
+}
 
 /** Accept PCM WAV output from different Android engines, including metadata and padded RIFF chunks. */
 internal fun readSpeechWav(file: File, hint: SpeechPcmHint = SpeechPcmHint.HEADER, check: () -> Unit = {}): SpeechPcm = RandomAccessFile(file, "r").use { input ->
@@ -62,7 +69,9 @@ internal fun readSpeechWav(file: File, hint: SpeechPcmHint = SpeechPcmHint.HEADE
         dataSize % block != 0L || dataSize / block > rate * 90L) invalid()
     // Android's file synthesis callback can mark 32-bit floats as integer PCM in the WAV header.
     if (hint == SpeechPcmHint.FLOAT32 && bits != 32) invalid()
-    if (hint == SpeechPcmHint.AZURE_PCM16 && (encoding != 1 || channels != 1 || bits != 16 || rate != DUB_SAMPLE_RATE)) invalid()
+    if ((hint == SpeechPcmHint.AZURE_PCM16 || hint == SpeechPcmHint.GEMINI_PCM16) &&
+        (encoding != 1 || channels != 1 || bits != 16 || rate != DUB_SAMPLE_RATE)) invalid()
+    if (hint == SpeechPcmHint.GEMINI_PCM16 && end != input.length()) invalid()
     val floating = encoding == 3 || hint == SpeechPcmHint.FLOAT32
     val samples = ShortArray((dataSize / block).toInt())
     val bytes = ByteArray(CHUNK_FRAMES * block)
@@ -101,9 +110,7 @@ internal class TimedDubWav(private val out: RandomAccessFile, private val endFra
     init {
         require(endFrame in 1..MAX_DUB_FRAMES)
         out.setLength(0)
-        out.writeBytes("RIFF"); out.put32(36 + endFrame * 2); out.writeBytes("WAVEfmt "); out.put32(16)
-        out.put16(1); out.put16(1); out.put32(DUB_SAMPLE_RATE.toLong()); out.put32(DUB_SAMPLE_RATE * 2L)
-        out.put16(2); out.put16(16); out.writeBytes("data"); out.put32(endFrame * 2)
+        out.write(monoPcm16Header(DUB_SAMPLE_RATE, endFrame * 2))
     }
 
     private fun pad(until: Long) {

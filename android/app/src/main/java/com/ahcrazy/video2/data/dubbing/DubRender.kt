@@ -10,7 +10,9 @@ import com.ahcrazy.video2.core.dubbing.DubFailure
 import com.ahcrazy.video2.core.dubbing.DubIssue
 import com.ahcrazy.video2.core.dubbing.DubLine
 import com.ahcrazy.video2.core.dubbing.DubPlan
+import com.ahcrazy.video2.core.dubbing.DubProvider
 import com.ahcrazy.video2.core.dubbing.DubVoice
+import com.ahcrazy.video2.core.dubbing.GeminiOptions
 import com.ahcrazy.video2.core.dubbing.SpeechPcm
 import com.ahcrazy.video2.core.dubbing.SpeechPcmHint
 import com.ahcrazy.video2.core.dubbing.TimedDubWav
@@ -183,9 +185,9 @@ internal suspend fun renderDub(plan: DubPlan, output: File, scratch: File,
 }
 
 internal sealed interface DubSelection {
-    val voice: DubVoice
-    class Device(override val voice: DubVoice, val preferredEngine: String?) : DubSelection
-    class Azure(override val voice: DubVoice, val config: AzureDubConfig) : DubSelection
+    class Device(val voice: DubVoice, val preferredEngine: String?) : DubSelection
+    class Azure(val voice: DubVoice, val config: AzureDubConfig) : DubSelection
+    class Gemini(val session: GeminiDubSession, val api: GeminiDubApi, val options: GeminiOptions) : DubSelection
 }
 
 private suspend fun renderWithEngine(context: Context, plan: DubPlan, selection: DubSelection, output: File,
@@ -193,7 +195,7 @@ private suspend fun renderWithEngine(context: Context, plan: DubPlan, selection:
                                      progress: suspend (Int, Int) -> Unit = { _, _ -> }): DubRenderReport = withContext(Dispatchers.IO) {
     suspend fun render(synthesize: suspend (DubLine, File) -> SpeechPcmHint): DubRenderReport {
         val scratch = File.createTempFile("kadr-cue-", ".wav", context.cacheDir)
-        return renderDub(plan, output, scratch, synthesize, preferNaturalPacing = selection is DubSelection.Azure,
+        return renderDub(plan, output, scratch, synthesize, preferNaturalPacing = selection !is DubSelection.Device,
             onUnfittable = onUnfittable, progress = progress)
     }
     when (selection) {
@@ -205,20 +207,40 @@ private suspend fun renderWithEngine(context: Context, plan: DubPlan, selection:
             val engine = AzureDubEngine(selection.config)
             render { line, scratch -> engine.synthesize(selection.voice, line, scratch) }
         }
+        is DubSelection.Gemini -> render { line, scratch -> selection.session.synthesize(selection.api, selection.options, line, scratch) }
     }
 }
 
 internal suspend fun auditionDub(context: Context, source: DubSource, selection: DubSelection, output: File) {
-    if (!withContext(Dispatchers.IO) { source.stillExists() }) throw DubFailure(DubIssue.SOURCE_CHANGED)
-    renderWithEngine(context, source.plan.preview(), selection, output)
+    withContext<Unit>(Dispatchers.IO) {
+        if (!source.stillExists()) throw DubFailure(DubIssue.SOURCE_CHANGED)
+        val plan = if (selection is DubSelection.Gemini) {
+            selection.session.checkSource(source)
+            selection.session.plan(selection.options, preview = true)
+        } else source.plan.preview()
+        renderWithEngine(context, plan, selection, output)
+        if (selection is DubSelection.Gemini) selection.session.checkSource(source)
+    }
 }
 
 internal suspend fun saveDub(context: Context, library: LibraryStore, video: SavedVideo, source: DubSource, selection: DubSelection,
                              onUnfittable: suspend (Int) -> Boolean, progress: suspend (Int, Int) -> Unit): DubRenderReport {
-    val voice = selection.voice
-    val info = DubbedInfo(voice.provider.id, voice.id, voice.tag, System.currentTimeMillis(), source.plan.frames.toDouble() / DUB_SAMPLE_RATE)
-    return publishDub(library, video, source, info) { staged ->
-        renderWithEngine(context, source.plan, selection, staged, onUnfittable, progress)
+    val duration = source.plan.frames.toDouble() / DUB_SAMPLE_RATE
+    fun info(voice: DubVoice) = DubbedInfo(voice.provider.id, voice.id, voice.tag, System.currentTimeMillis(), duration)
+    val metadata = when (selection) {
+        is DubSelection.Device -> info(selection.voice)
+        is DubSelection.Azure -> info(selection.voice)
+        is DubSelection.Gemini -> DubbedInfo(DubProvider.GEMINI.id, "scene-cast", selection.options.language ?: source.language ?: "auto",
+            System.currentTimeMillis(), duration)
+    }
+    return publishDub(library, video, source, metadata) { staged ->
+        val plan = if (selection is DubSelection.Gemini) {
+            selection.session.checkSource(source)
+            selection.session.plan(selection.options, preview = false)
+        } else source.plan
+        renderWithEngine(context, plan, selection, staged, onUnfittable, progress).also {
+            if (selection is DubSelection.Gemini) selection.session.checkSource(source)
+        }
     }
 }
 

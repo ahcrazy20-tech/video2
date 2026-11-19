@@ -20,8 +20,14 @@ import kotlin.math.sin
 internal const val SAMPLE_RATE = 16_000
 internal const val MAX_LOCAL_SECONDS = 12 * 3600
 
+internal fun decodeLocalPcm(input: File, output: File, signal: CancellationSignal, progress: (Double) -> Unit) =
+    decodeLocalPcmBounded(input, output, MAX_LOCAL_SECONDS, signal::throwIfCanceled, progress)
+
 /** Only a local file descriptor is given to the platform decoder. No URL, HLS or network data source. */
-internal fun decodeLocalPcm(input: File, output: File, signal: CancellationSignal, progress: (Double) -> Unit) {
+internal fun decodeLocalPcmBounded(input: File, output: File, maxSeconds: Int, check: () -> Unit,
+                                   progress: (Double) -> Unit = {}) {
+    require(maxSeconds in 1..MAX_LOCAL_SECONDS)
+    check()
     val extractor = MediaExtractor()
     try {
         FileInputStream(input).use { source ->
@@ -32,7 +38,7 @@ internal fun decodeLocalPcm(input: File, output: File, signal: CancellationSigna
             val format = extractor.getTrackFormat(track)
             val mime = format.getString(MediaFormat.KEY_MIME) ?: throw OfflineFailure(OfflineIssue.AUDIO)
             val durationUs = if (format.containsKey(MediaFormat.KEY_DURATION)) format.getLong(MediaFormat.KEY_DURATION) else 0L
-            if (durationUs > MAX_LOCAL_SECONDS * 1_000_000L) throw OfflineFailure(OfflineIssue.TOO_LONG)
+            if (durationUs > maxSeconds * 1_000_000L) throw OfflineFailure(OfflineIssue.TOO_LONG)
             val pcmBytes = durationUs.coerceAtLeast(0L) * SAMPLE_RATE * 2 / 1_000_000L
             if (output.parentFile!!.usableSpace < pcmBytes + 128 * MIB) throw OfflineFailure(OfflineIssue.STORAGE)
             extractor.selectTrack(track)
@@ -41,7 +47,7 @@ internal fun decodeLocalPcm(input: File, output: File, signal: CancellationSigna
                 codec.configure(format, null, null, 0)
                 codec.start()
                 output.outputStream().use { stream ->
-                    val sink = TimedPcmSink(stream)
+                    val sink = TimedPcmSink(stream, maxSeconds * SAMPLE_RATE.toLong(), check)
                     val info = MediaCodec.BufferInfo()
                     var spec: PcmFormat? = null
                     var inputDone = false
@@ -49,7 +55,7 @@ internal fun decodeLocalPcm(input: File, output: File, signal: CancellationSigna
                     var lastActivity = SystemClock.elapsedRealtime()
                     var lastUpdate = 0L
                     while (!outputDone) {
-                        signal.throwIfCanceled()
+                        check()
                         if (!inputDone) {
                             val index = codec.dequeueInputBuffer(5_000)
                             if (index >= 0) {
@@ -136,7 +142,9 @@ internal data class PcmFormat(val rate: Int, val channels: Int, val encoding: In
 }
 
 /** Keep decoder PTS on the video timeline (including an initial audio delay and real gaps). */
-internal class TimedPcmSink(private val output: OutputStream) {
+internal class TimedPcmSink(private val output: OutputStream,
+                            private val maxFrames: Long = MAX_LOCAL_SECONDS * SAMPLE_RATE.toLong(),
+                            private val check: () -> Unit = {}) {
     private val buffer = ByteArray(64 * 1024)
     private var size = 0
     private var written = 0L
@@ -182,6 +190,7 @@ internal class TimedPcmSink(private val output: OutputStream) {
         flush()
         buffer.fill(0)
         while (written < frame) {
+            check()
             val count = (frame - written).coerceAtMost(buffer.size / 2L).toInt()
             output.write(buffer, 0, count * 2)
             written += count
@@ -206,7 +215,7 @@ internal class TimedPcmSink(private val output: OutputStream) {
     }
 
     private fun checkLimit(frames: Long) {
-        if (frames > MAX_LOCAL_SECONDS * SAMPLE_RATE.toLong()) throw OfflineFailure(OfflineIssue.TOO_LONG)
+        if (frames > maxFrames) throw OfflineFailure(OfflineIssue.TOO_LONG)
     }
 }
 

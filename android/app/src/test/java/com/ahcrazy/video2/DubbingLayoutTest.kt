@@ -4,6 +4,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -12,6 +13,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import com.ahcrazy.video2.core.dubbing.DubVoice
 import com.ahcrazy.video2.core.dubbing.DubVoices
+import com.ahcrazy.video2.core.dubbing.GeminiOptions
 import com.ahcrazy.video2.core.dubbing.azureDubVoices
 import com.ahcrazy.video2.core.dubbing.planDub
 import com.ahcrazy.video2.core.model.SubCue
@@ -20,6 +22,7 @@ import com.ahcrazy.video2.data.SavedSourcePreview
 import com.ahcrazy.video2.data.dubbing.DubSource
 import com.ahcrazy.video2.ui.dubbing.DubbingPanel
 import com.ahcrazy.video2.ui.dubbing.DubbingPanelState
+import com.ahcrazy.video2.ui.dubbing.GeminiPanelState
 import com.ahcrazy.video2.ui.dubbing.TightCueDialog
 import com.ahcrazy.video2.ui.theme.Video2Theme
 import com.ahcrazy.video2.ui.translate.SourceLanguageForm
@@ -109,6 +112,49 @@ class DubbingLayoutTest {
             val chosen = azureDubVoices.voices.first { it.id == "ar-EG-ShakirNeural" }
             assertEquals(listOf(chosen), played)
             assertEquals(played, saved)
+        }
+    }
+
+    @Test fun geminiIsOptInAndPreviewAndSaveRequireSeparateAudioAndTextConsent() {
+        val configured = mutableStateOf(false)
+        val source = DubSource(planDub(listOf(SubCue(1, 1.0, 2.0, "إزيّك؟"))), "ar", true, File("sample.srt"), 0, 0)
+        val previews = mutableListOf<GeminiOptions>()
+        val saves = mutableListOf<GeminiOptions>()
+        compose.setContent { Video2Theme(rtl = true) {
+            DubbingPanel("عنوان", true, DubbingPanelState(source, null, gemini = GeminiPanelState(configured.value)),
+                onPreview = { error("Expected Gemini, not a device voice") }, onStopPreview = {},
+                onSave = { error("Expected Gemini, not a device voice") }, onCancelSave = {},
+                onChoiceChanged = {}, onRefresh = {}, onSettings = {}, onInstall = {},
+                onGeminiPreview = { previews += it }, onGeminiSave = { saves += it })
+        } }
+        fun node(tag: String) = compose.onNodeWithTag("dubbing.$tag")
+        fun tap(tag: String) = node(tag).performScrollTo().assertIsDisplayed().performClick()
+        fun provider(id: String) {
+            tap("provider")
+            node("provider.$id").assertIsDisplayed().performClick()
+        }
+        node("gemini.audio").assertDoesNotExist()
+        provider("gemini-scene")
+        node("save").assertIsNotEnabled()
+        compose.runOnIdle { configured.value = true }
+        node("gemini.audio").assertIsOff()
+        node("gemini.text").assertIsOff()
+        node("gemini.accent").assertIsOn()
+        node("gemini.reactions").assertIsOn()
+        tap("gemini.audio")
+        node("preview").assertIsNotEnabled()
+        node("save").assertIsNotEnabled()
+        tap("gemini.text")
+        tap("preview")
+        tap("save")
+        provider("android-tts")
+        provider("gemini-scene")
+        node("gemini.audio").assertIsOff()
+        node("gemini.text").assertIsOff()
+        node("save").assertIsNotEnabled()
+        compose.runOnIdle {
+            assertEquals(listOf(GeminiOptions(true, true, egyptianArabic = true, reactions = true)), previews)
+            assertEquals(previews, saves)
         }
     }
 
